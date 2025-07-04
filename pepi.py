@@ -15,9 +15,13 @@ class CustomCommand(click.Command):
 
 def parse_connections(logfile):
     """Parse connection information from MongoDB log file."""
-    connections = defaultdict(lambda: {'opened': 0, 'closed': 0})
+    def default_connection_data():
+        return {'opened': 0, 'closed': 0, 'durations': []}
+    
+    connections = defaultdict(default_connection_data)
     total_opened = 0
     total_closed = 0
+    connection_starts = {}  # Track connection start times by connection ID
     
     with open(logfile, 'r') as f:
         for line in f:
@@ -33,6 +37,16 @@ def parse_connections(logfile):
                         ip = attr['remote'].split(':')[0]  # Extract IP from host:port
                         connections[ip]['opened'] += 1
                         total_opened += 1
+                        
+                        # Track connection start time for duration calculation
+                        if 'connectionId' in attr:
+                            conn_id = attr['connectionId']
+                            start_time = entry.get('t', {}).get('$date')
+                            if start_time:
+                                connection_starts[conn_id] = {
+                                    'start_time': start_time,
+                                    'ip': ip
+                                }
                 
                 # Connection closed
                 elif (entry.get('msg') == 'Connection ended' and 
@@ -43,6 +57,29 @@ def parse_connections(logfile):
                         ip = attr['remote'].split(':')[0]  # Extract IP from host:port
                         connections[ip]['closed'] += 1
                         total_closed += 1
+                        
+                        # Calculate connection duration
+                        if 'connectionId' in attr:
+                            conn_id = attr['connectionId']
+                            if conn_id in connection_starts:
+                                start_data = connection_starts[conn_id]
+                                if start_data['ip'] == ip:  # Ensure same IP
+                                    start_time = start_data['start_time']
+                                    end_time = entry.get('t', {}).get('$date')
+                                    
+                                    if start_time and end_time:
+                                        # Parse timestamps and calculate duration
+                                        try:
+                                            from datetime import datetime
+                                            start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                                            end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+                                            duration = (end_dt - start_dt).total_seconds()
+                                            connections[ip]['durations'].append(duration)
+                                        except:
+                                            pass  # Skip if timestamp parsing fails
+                                
+                                # Clean up
+                                del connection_starts[conn_id]
                         
             except Exception:
                 pass
@@ -186,12 +223,41 @@ def reconstruct_command_line(options):
     
     return ' '.join(cmd_parts)
 
+def calculate_connection_stats(connections_data):
+    """Calculate connection duration statistics."""
+    all_durations = []
+    for ip, conn_info in connections_data.items():
+        all_durations.extend(conn_info['durations'])
+    
+    if not all_durations:
+        return None, {}
+    
+    # Overall statistics
+    overall_stats = {
+        'avg': sum(all_durations) / len(all_durations),
+        'min': min(all_durations),
+        'max': max(all_durations)
+    }
+    
+    # Per-IP statistics
+    ip_stats = {}
+    for ip, conn_info in connections_data.items():
+        if conn_info['durations']:
+            ip_stats[ip] = {
+                'avg': sum(conn_info['durations']) / len(conn_info['durations']),
+                'min': min(conn_info['durations']),
+                'max': max(conn_info['durations'])
+            }
+    
+    return overall_stats, ip_stats
+
 @click.command()
 @click.option('--fetch', '-f', 'logfile', type=click.Path(exists=True), help='MongoDB log file to analyze.')
 @click.option('--rs-conf', is_flag=True, help='Print replica set configuration(s) from the log.')
 @click.option('--rs-state', is_flag=True, help='Print replica set node status from the log.')
 @click.option('--connections', is_flag=True, help='Print connection information from the log.')
-def main(logfile, rs_conf, rs_state, connections):
+@click.option('--stats', is_flag=True, help='Include connection duration statistics (use with --connections).')
+def main(logfile, rs_conf, rs_state, connections, stats):
     """pepi: MongoDB log analysis tool."""
     
     # Check if logfile is provided
@@ -264,12 +330,11 @@ def main(logfile, rs_conf, rs_state, connections):
             # Show only the latest configuration
             latest_config = configs[-1]
             click.echo(f"Timestamp: {latest_config['timestamp']}")
-            click.echo("=" * 50)
+            click.echo("-" * 50)
             json_str = json.dumps(latest_config['config'], indent=2, sort_keys=False)
             click.echo(json_str)
         else:
             click.echo("No replica set configuration found in the log.")
-        click.echo("=" * 40)
         return
     elif rs_state:
         click.echo("===== Replica Set State =====")
@@ -286,7 +351,6 @@ def main(logfile, rs_conf, rs_state, connections):
         if states:
             click.echo("State Transitions:")
             click.echo("-" * 30)
-            
             # Group states by host
             states_by_host = {}
             for state_data in states:
@@ -299,22 +363,23 @@ def main(logfile, rs_conf, rs_state, connections):
             for host, host_states in states_by_host.items():
                 click.echo(f"------- {host} -------")
                 for state_data in host_states:
-                    state = state_data['new_state']
-                    timestamp = state_data['timestamp']
-                    click.echo(f"{state:<12} - {timestamp}")
+                    click.echo(f"{state_data['new_state']:<12} - {state_data['timestamp']}")
                 click.echo("-" * 30)
         else:
             click.echo("No replica set state transitions found in the log.")
-        click.echo("=" * 40)
         return
     elif connections:
-        click.echo("===== Connection Information =====")
-        
         # Get connection data
         connections_data, total_opened, total_closed = parse_connections(logfile)
         
-        # Display MongoDB Log Summary in header
-        click.echo("\n===== MongoDB Log Summary =====")
+        # Calculate statistics if requested
+        overall_stats = None
+        ip_stats = {}
+        if stats:
+            overall_stats, ip_stats = calculate_connection_stats(connections_data)
+        
+        # Display MongoDB Log Summary
+        click.echo("===== MongoDB Log Summary =====")
         labels = [
             ("Log file", logfile),
             ("Start date", start_date if start_date else 'N/A'),
@@ -356,16 +421,27 @@ def main(logfile, rs_conf, rs_state, connections):
         max_label_len = max(len(label) for label, _ in labels)
         for label, value in labels:
             click.echo(f"{label.ljust(max_label_len)} : {value}")
-        click.echo("================================\n")
         
         # Display connection information
-        click.echo("===== Connection Details =====")
+        click.echo("\n===== Connection Details =====")
         click.echo(f"Total Connections Opened: {total_opened}")
         click.echo(f"Total Connections Closed: {total_closed}")
+        
+        # Display overall statistics if available
+        if stats and overall_stats:
+            click.echo(f"Overall Average Connection Duration: {overall_stats['avg']:.2f}s")
+            click.echo(f"Overall Minimum Connection Duration: {overall_stats['min']:.2f}s")
+            click.echo(f"Overall Maximum Connection Duration: {overall_stats['max']:.2f}s")
+        
         click.echo("-" * 30)
+        
+        # Display per-IP details
         for ip, conn_info in connections_data.items():
-            click.echo(f"{ip} | opened:{conn_info['opened']} | closed:{conn_info['closed']}")
-        click.echo("=" * 40)
+            if stats and ip in ip_stats:
+                stats_info = ip_stats[ip]
+                click.echo(f"{ip} | opened:{conn_info['opened']} | closed:{conn_info['closed']} | dur-avg:{stats_info['avg']:.2f}s | dur-min:{stats_info['min']:.2f}s | dur-max:{stats_info['max']:.2f}s")
+            else:
+                click.echo(f"{ip} | opened:{conn_info['opened']} | closed:{conn_info['closed']}")
         return
 
     # Default: summary mode
@@ -377,7 +453,7 @@ def main(logfile, rs_conf, rs_state, connections):
         click.echo()
     else:
         click.echo("No command line options found.")
-    click.echo("================================\n")
+    click.echo()
 
     # Prepare aligned output
     labels = [
@@ -423,7 +499,6 @@ def main(logfile, rs_conf, rs_state, connections):
     click.echo("===== MongoDB Log Summary =====")
     for label, value in labels:
         click.echo(f"{label.ljust(max_label_len)} : {value}")
-    click.echo("================================\n")
 
 if __name__ == '__main__':
     main()  # Let Click handle argument parsing
