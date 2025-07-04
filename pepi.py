@@ -149,11 +149,12 @@ def main(logfile, rs_conf, rs_state):
         click.echo("===== Replica Set Configuration =====")
         configs = parse_replica_set_config(logfile)
         if configs:
-            for i, config_data in enumerate(configs, 1):
-                click.echo(f"\nConfiguration #{i} (Timestamp: {config_data['timestamp']})")
-                click.echo("=" * 50)
-                yaml_str = yaml.dump(config_data['config'], sort_keys=False, default_flow_style=False)
-                click.echo(yaml_str)
+            # Show only the latest configuration
+            latest_config = configs[-1]
+            click.echo(f"Timestamp: {latest_config['timestamp']}")
+            click.echo("=" * 50)
+            json_str = json.dumps(latest_config['config'], indent=2, sort_keys=False)
+            click.echo(json_str)
         else:
             click.echo("No replica set configuration found in the log.")
         click.echo("=" * 40)
