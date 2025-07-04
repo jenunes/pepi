@@ -1,6 +1,53 @@
 import click
 import json
 import yaml
+from collections import defaultdict
+
+class CustomCommand(click.Command):
+    def main(self, args=None, prog_name=None, complete_var=None, standalone_mode=True, **kwargs):
+        try:
+            return super().main(args, prog_name, complete_var, standalone_mode, **kwargs)
+        except click.MissingParameter as e:
+            if '--fetch' in str(e) or '-f' in str(e):
+                click.echo("Pepi didn't find anything to fetch")
+                return 1
+            raise
+
+def parse_connections(logfile):
+    """Parse connection information from MongoDB log file."""
+    connections = defaultdict(lambda: {'opened': 0, 'closed': 0})
+    total_opened = 0
+    total_closed = 0
+    
+    with open(logfile, 'r') as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+                
+                # Connection opened
+                if (entry.get('msg') == 'Connection accepted' and 
+                    entry.get('c') == 'NETWORK' and
+                    entry.get('attr')):
+                    attr = entry['attr']
+                    if 'remote' in attr:
+                        ip = attr['remote'].split(':')[0]  # Extract IP from host:port
+                        connections[ip]['opened'] += 1
+                        total_opened += 1
+                
+                # Connection closed
+                elif (entry.get('msg') == 'Connection ended' and 
+                      entry.get('c') == 'NETWORK' and
+                      entry.get('attr')):
+                    attr = entry['attr']
+                    if 'remote' in attr:
+                        ip = attr['remote'].split(':')[0]  # Extract IP from host:port
+                        connections[ip]['closed'] += 1
+                        total_closed += 1
+                        
+            except Exception:
+                pass
+    
+    return connections, total_opened, total_closed
 
 def parse_replica_set_config(logfile):
     """Parse replica set configuration from MongoDB log file."""
@@ -140,11 +187,76 @@ def reconstruct_command_line(options):
     return ' '.join(cmd_parts)
 
 @click.command()
-@click.argument('logfile', type=click.Path(exists=True))
+@click.option('--fetch', '-f', 'logfile', type=click.Path(exists=True), help='MongoDB log file to analyze.')
 @click.option('--rs-conf', is_flag=True, help='Print replica set configuration(s) from the log.')
 @click.option('--rs-state', is_flag=True, help='Print replica set node status from the log.')
-def main(logfile, rs_conf, rs_state):
+@click.option('--connections', is_flag=True, help='Print connection information from the log.')
+def main(logfile, rs_conf, rs_state, connections):
     """pepi: MongoDB log analysis tool."""
+    
+    # Check if logfile is provided
+    if not logfile:
+        click.echo("Pepi didn't find anything to fetch")
+        return
+    
+    # Initialize variables for all sections
+    start_date = None
+    end_date = None
+    num_lines = 0
+    os_version = None
+    kernel_version = None
+    db_version = None
+    cmd_options = None
+    last_line = None
+
+    # Parse log file for basic information
+    with open(logfile, 'r') as f:
+        for line in f:
+            num_lines += 1
+            if not start_date:
+                try:
+                    entry = json.loads(line)
+                    start_date = entry.get('t', {}).get('$date')
+                except Exception:
+                    pass
+            # Check for OS and kernel version
+            if not os_version or not kernel_version:
+                try:
+                    entry = json.loads(line)
+                    if entry.get('msg') == 'Operating System':
+                        os_version = entry.get('attr', {}).get('os', {}).get('name')
+                        kernel_version = entry.get('attr', {}).get('os', {}).get('version')
+                except Exception:
+                    pass
+            # Check for DB version
+            if not db_version:
+                try:
+                    entry = json.loads(line)
+                    if entry.get('msg') == 'Build Info':
+                        db_version = entry.get('attr', {}).get('buildInfo', {}).get('version')
+                except Exception:
+                    pass
+            # Check for command line options
+            if not cmd_options:
+                try:
+                    entry = json.loads(line)
+                    if (
+                        entry.get('msg') == 'Options set by command line' and
+                        entry.get('ctx') == 'initandlisten'
+                    ):
+                        cmd_options = entry.get('attr', {}).get('options')
+                except Exception:
+                    pass
+            last_line = line
+
+    # Get end date from last line
+    if last_line:
+        try:
+            entry = json.loads(last_line)
+            end_date = entry.get('t', {}).get('$date')
+        except Exception:
+            pass
+
     if rs_conf:
         click.echo("===== Replica Set Configuration =====")
         configs = parse_replica_set_config(logfile)
@@ -195,66 +307,68 @@ def main(logfile, rs_conf, rs_state):
             click.echo("No replica set state transitions found in the log.")
         click.echo("=" * 40)
         return
+    elif connections:
+        click.echo("===== Connection Information =====")
+        
+        # Get connection data
+        connections_data, total_opened, total_closed = parse_connections(logfile)
+        
+        # Display MongoDB Log Summary in header
+        click.echo("\n===== MongoDB Log Summary =====")
+        labels = [
+            ("Log file", logfile),
+            ("Start date", start_date if start_date else 'N/A'),
+            ("End date", end_date if end_date else 'N/A'),
+            ("Number of lines", num_lines),
+        ]
+        
+        # Add host information if available
+        host_info = None
+        if cmd_options and 'net' in cmd_options and 'port' in cmd_options['net']:
+            port = cmd_options['net']['port']
+            # Try to get hostname from command line options or use localhost
+            hostname = "localhost"  # Default
+            host_info = f"{hostname}:{port}"
+        if host_info:
+            labels.append(("Host", host_info))
+        
+        labels.extend([
+            ("OS version", os_version if os_version else 'N/A'),
+            ("Kernel version", kernel_version if kernel_version else 'N/A'),
+            ("MongoDB version", db_version if db_version else 'N/A'),
+        ])
+        # Add ReplicaSet Name if available
+        repl_name = None
+        if cmd_options and 'replication' in cmd_options and 'replSet' in cmd_options['replication']:
+            repl_name = cmd_options['replication']['replSet']
+        if repl_name:
+            labels.append(("ReplicaSet Name", repl_name))
+        # Add number of nodes if replica set config is available
+        if repl_name:
+            configs = parse_replica_set_config(logfile)
+            if configs:
+                # Get the latest config
+                latest_config = configs[-1]['config']
+                if 'members' in latest_config:
+                    num_nodes = len(latest_config['members'])
+                    labels.append(("Nodes", str(num_nodes)))
+        
+        max_label_len = max(len(label) for label, _ in labels)
+        for label, value in labels:
+            click.echo(f"{label.ljust(max_label_len)} : {value}")
+        click.echo("================================\n")
+        
+        # Display connection information
+        click.echo("===== Connection Details =====")
+        click.echo(f"Total Connections Opened: {total_opened}")
+        click.echo(f"Total Connections Closed: {total_closed}")
+        click.echo("-" * 30)
+        for ip, conn_info in connections_data.items():
+            click.echo(f"{ip} | opened:{conn_info['opened']} | closed:{conn_info['closed']}")
+        click.echo("=" * 40)
+        return
 
     # Default: summary mode
-    start_date = None
-    end_date = None
-    num_lines = 0
-    os_version = None
-    kernel_version = None
-    db_version = None
-    cmd_options = None
-
-    # For efficiency, store last line
-    last_line = None
-
-    with open(logfile, 'r') as f:
-        for line in f:
-            num_lines += 1
-            if not start_date:
-                try:
-                    entry = json.loads(line)
-                    start_date = entry.get('t', {}).get('$date')
-                except Exception:
-                    pass
-            # Check for OS and kernel version
-            if not os_version or not kernel_version:
-                try:
-                    entry = json.loads(line)
-                    if entry.get('msg') == 'Operating System':
-                        os_version = entry.get('attr', {}).get('os', {}).get('name')
-                        kernel_version = entry.get('attr', {}).get('os', {}).get('version')
-                except Exception:
-                    pass
-            # Check for DB version
-            if not db_version:
-                try:
-                    entry = json.loads(line)
-                    if entry.get('msg') == 'Build Info':
-                        db_version = entry.get('attr', {}).get('buildInfo', {}).get('version')
-                except Exception:
-                    pass
-            # Check for command line options
-            if not cmd_options:
-                try:
-                    entry = json.loads(line)
-                    if (
-                        entry.get('msg') == 'Options set by command line' and
-                        entry.get('ctx') == 'initandlisten'
-                    ):
-                        cmd_options = entry.get('attr', {}).get('options')
-                except Exception:
-                    pass
-            last_line = line
-
-    # Get end date from last line
-    if last_line:
-        try:
-            entry = json.loads(last_line)
-            end_date = entry.get('t', {}).get('$date')
-        except Exception:
-            pass
-
     # Print reconstructed command line
     click.echo("===== Node Command Line Startup =====")
     command_line = reconstruct_command_line(cmd_options)
@@ -271,10 +385,23 @@ def main(logfile, rs_conf, rs_state):
         ("Start date", start_date if start_date else 'N/A'),
         ("End date", end_date if end_date else 'N/A'),
         ("Number of lines", num_lines),
+    ]
+    
+    # Add host information if available
+    host_info = None
+    if cmd_options and 'net' in cmd_options and 'port' in cmd_options['net']:
+        port = cmd_options['net']['port']
+        # Try to get hostname from command line options or use localhost
+        hostname = "localhost"  # Default
+        host_info = f"{hostname}:{port}"
+    if host_info:
+        labels.append(("Host", host_info))
+    
+    labels.extend([
         ("OS version", os_version if os_version else 'N/A'),
         ("Kernel version", kernel_version if kernel_version else 'N/A'),
         ("MongoDB version", db_version if db_version else 'N/A'),
-    ]
+    ])
     # Add ReplicaSet Name if available
     repl_name = None
     if cmd_options and 'replication' in cmd_options and 'replSet' in cmd_options['replication']:
@@ -290,6 +417,7 @@ def main(logfile, rs_conf, rs_state):
             if 'members' in latest_config:
                 num_nodes = len(latest_config['members'])
                 labels.append(("Nodes", str(num_nodes)))
+    
     max_label_len = max(len(label) for label, _ in labels)
 
     click.echo("===== MongoDB Log Summary =====")
