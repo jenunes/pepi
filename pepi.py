@@ -4,6 +4,46 @@ import yaml
 from collections import defaultdict
 
 class CustomCommand(click.Command):
+    def format_help(self, ctx, formatter):
+        """Custom help formatter with visual hierarchy."""
+        # Write usage
+        with formatter.section("Usage"):
+            formatter.write_text("pepi.py --fetch <logfile> [OPTIONS]")
+        
+        # Write description
+        with formatter.section("Description"):
+            formatter.write_text("pepi: MongoDB log analysis tool for extracting insights from MongoDB log files.")
+        
+        # Write required options
+        with formatter.section("Required Options"):
+            formatter.write_text("--fetch, -f PATH    MongoDB log file to analyze")
+        
+        # Write main analysis modes
+        with formatter.section("Main Analysis Modes"):
+            formatter.write_text("--rs-conf           Print replica set configuration(s)")
+            formatter.write_text("--rs-state          Print replica set node status and transitions")
+            formatter.write_text("--clients           Print client/driver information")
+        
+        # Write connection analysis (with sub-options)
+        with formatter.section("Connection Analysis"):
+            formatter.write_text("--connections       Print connection information and statistics")
+            formatter.write_text("")
+            formatter.write_text("  Connection Sub-options (use with --connections):")
+            formatter.write_text("    --stats          Include connection duration statistics")
+            formatter.write_text("    --sort-by        Sort by: opened | closed")
+            formatter.write_text("    --compare        Compare 2-3 specific hostnames/IPs")
+            formatter.write_text("")
+            formatter.write_text("  Examples:")
+            formatter.write_text("    pepi.py --fetch logfile --connections")
+            formatter.write_text("    pepi.py --fetch logfile --connections --stats")
+            formatter.write_text("    pepi.py --fetch logfile --connections --sort-by opened")
+            formatter.write_text("    pepi.py --fetch logfile --connections --compare ip1 --compare ip2")
+            formatter.write_text("    pepi.py --fetch logfile --connections --stats --sort-by opened --compare ip1 --compare ip2")
+        
+        # Write default behavior
+        with formatter.section("Default Behavior"):
+            formatter.write_text("When no analysis mode is specified, shows MongoDB log summary and command line startup options.")
+
     def main(self, args=None, prog_name=None, complete_var=None, standalone_mode=True, **kwargs):
         try:
             return super().main(args, prog_name, complete_var, standalone_mode, **kwargs)
@@ -319,14 +359,24 @@ def calculate_connection_stats(connections_data):
     
     return overall_stats, ip_stats
 
-@click.command()
-@click.option('--fetch', '-f', 'logfile', type=click.Path(exists=True), help='MongoDB log file to analyze.')
-@click.option('--rs-conf', is_flag=True, help='Print replica set configuration(s) from the log.')
-@click.option('--rs-state', is_flag=True, help='Print replica set node status from the log.')
-@click.option('--connections', is_flag=True, help='Print connection information from the log.')
-@click.option('--stats', is_flag=True, help='Include connection duration statistics (use with --connections).')
-@click.option('--clients', is_flag=True, help='Print client/driver information from the log.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients):
+@click.command(cls=CustomCommand)
+@click.option('--fetch', '-f', 'logfile', type=click.Path(exists=True), 
+              help='MongoDB log file to analyze.')
+@click.option('--rs-conf', is_flag=True, 
+              help='Print replica set configuration(s) from the log.')
+@click.option('--rs-state', is_flag=True, 
+              help='Print replica set node status and state transitions.')
+@click.option('--connections', is_flag=True, 
+              help='Print connection information and statistics.')
+@click.option('--stats', is_flag=True, 
+              help='Include connection duration statistics (use with --connections).')
+@click.option('--sort-by', type=click.Choice(['opened', 'closed']), 
+              help='Sort connections by opened/closed count (use with --connections).')
+@click.option('--compare', multiple=True, 
+              help='Compare 2-3 specific hostnames/IPs (use with --connections).')
+@click.option('--clients', is_flag=True, 
+              help='Print client/driver information and authentication details.')
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare):
     """pepi: MongoDB log analysis tool."""
     
     # Check if logfile is provided
@@ -502,15 +552,56 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients):
             click.echo(f"Overall Minimum Connection Duration: {overall_stats['min']:.2f}s")
             click.echo(f"Overall Maximum Connection Duration: {overall_stats['max']:.2f}s")
         
-        click.echo("-" * 30)
+        # Sort connections if requested
+        if sort_by:
+            click.echo(f"--------Sorted by {sort_by}--------")
+            if sort_by == 'opened':
+                sorted_ips = sorted(connections_data.keys(), key=lambda ip: connections_data[ip]['opened'], reverse=True)
+            elif sort_by == 'closed':
+                sorted_ips = sorted(connections_data.keys(), key=lambda ip: connections_data[ip]['closed'], reverse=True)
+        else:
+            sorted_ips = list(connections_data.keys())
+        
+        # Filter for comparison if requested
+        if compare:
+            if len(compare) < 2:
+                click.echo("Error: --compare requires at least 2 hostnames/IPs to compare.")
+                return
+            elif len(compare) > 3:
+                click.echo("Error: --compare accepts maximum 3 hostnames/IPs. Only the first 3 will be used.")
+                compare = compare[:3]
+            
+            click.echo(f"--------Comparing {', '.join(compare)}--------")
+            # Filter to only show the specified hostnames/IPs
+            filtered_ips = []
+            for host in compare:
+                if host in connections_data:
+                    filtered_ips.append(host)
+                else:
+                    click.echo(f"Warning: {host} not found in connection data")
+            
+            if filtered_ips:
+                # Keep the order of compare, not sorted_ips
+                sorted_ips = [ip for ip in compare if ip in filtered_ips]
+            else:
+                click.echo("No matching hostnames/IPs found for comparison")
+                return
         
         # Display per-IP details
-        for ip, conn_info in connections_data.items():
+        # Calculate max width for IP for alignment
+        ip_list = list(sorted_ips)
+        if ip_list:
+            max_ip_len = max(len(ip) for ip in ip_list)
+        else:
+            max_ip_len = 15  # fallback
+        fmt = f"{{:<{max_ip_len}}} | opened:{{:<5}} | closed:{{:<5}}"
+        for ip in sorted_ips:
+            conn_info = connections_data[ip]
             if stats and ip in ip_stats:
                 stats_info = ip_stats[ip]
-                click.echo(f"{ip} | opened:{conn_info['opened']} | closed:{conn_info['closed']} | dur-avg:{stats_info['avg']:.2f}s | dur-min:{stats_info['min']:.2f}s | dur-max:{stats_info['max']:.2f}s")
+                click.echo(f"{ip.ljust(max_ip_len)} | opened:{str(conn_info['opened']).ljust(5)} | closed:{str(conn_info['closed']).ljust(5)} | dur-avg:{stats_info['avg']:.2f}s | dur-min:{stats_info['min']:.2f}s | dur-max:{stats_info['max']:.2f}s")
             else:
-                click.echo(f"{ip} | opened:{conn_info['opened']} | closed:{conn_info['closed']}")
+                click.echo(fmt.format(ip, conn_info['opened'], conn_info['closed']))
         return
     elif clients:
         # Get client data
