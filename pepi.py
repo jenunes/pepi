@@ -171,6 +171,74 @@ def parse_replica_set_state(logfile):
     
     return states, node_status
 
+def parse_clients(logfile):
+    """Parse client/driver information from MongoDB log file."""
+    clients = {}  # Group by driver info
+    connection_drivers = {}  # Track which connections belong to which driver
+    
+    with open(logfile, 'r') as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+                
+                # Connection accepted with driver info
+                if (entry.get('msg') == 'Connection accepted' and 
+                    entry.get('c') == 'NETWORK' and
+                    entry.get('attr')):
+                    attr = entry['attr']
+                    if 'remote' in attr:
+                        ip = attr['remote'].split(':')[0]
+                        conn_id = attr.get('connectionId')
+                        
+                        # Extract driver information
+                        driver_info = {}
+                        if 'driver' in attr:
+                            driver_info['name'] = attr['driver'].get('name', 'Unknown')
+                            driver_info['version'] = attr['driver'].get('version', 'Unknown')
+                            if 'app' in attr['driver']:
+                                driver_info['app'] = attr['driver']['app']
+                        
+                        # Create driver key
+                        if driver_info:
+                            driver_key = f"{driver_info['name']} | Version: {driver_info['version']}"
+                            if 'app' in driver_info:
+                                driver_key += f" | App: {driver_info['app']}"
+                            
+                            if driver_key not in clients:
+                                clients[driver_key] = {
+                                    'driver_info': driver_info,
+                                    'ips': set(),
+                                    'connections': 0,
+                                    'users': set()
+                                }
+                            
+                            clients[driver_key]['ips'].add(ip)
+                            clients[driver_key]['connections'] += 1
+                            
+                            # Track connection to driver mapping
+                            if conn_id:
+                                connection_drivers[conn_id] = driver_key
+                
+                # Authentication events to track users
+                elif (entry.get('msg') == 'Authentication succeeded' and 
+                      entry.get('c') == 'ACCESS' and
+                      entry.get('attr')):
+                    attr = entry['attr']
+                    conn_id = attr.get('connectionId')
+                    
+                    if conn_id and conn_id in connection_drivers:
+                        driver_key = connection_drivers[conn_id]
+                        if 'user' in attr:
+                            user = attr['user']
+                            db = attr.get('db', 'admin')
+                            user_key = f"{user}@{db}"
+                            clients[driver_key]['users'].add(user_key)
+                        
+            except Exception:
+                pass
+    
+    return clients
+
 def reconstruct_command_line(options):
     """Reconstruct the command line from MongoDB options."""
     if not options:
@@ -257,7 +325,8 @@ def calculate_connection_stats(connections_data):
 @click.option('--rs-state', is_flag=True, help='Print replica set node status from the log.')
 @click.option('--connections', is_flag=True, help='Print connection information from the log.')
 @click.option('--stats', is_flag=True, help='Include connection duration statistics (use with --connections).')
-def main(logfile, rs_conf, rs_state, connections, stats):
+@click.option('--clients', is_flag=True, help='Print client/driver information from the log.')
+def main(logfile, rs_conf, rs_state, connections, stats, clients):
     """pepi: MongoDB log analysis tool."""
     
     # Check if logfile is provided
@@ -442,6 +511,88 @@ def main(logfile, rs_conf, rs_state, connections, stats):
                 click.echo(f"{ip} | opened:{conn_info['opened']} | closed:{conn_info['closed']} | dur-avg:{stats_info['avg']:.2f}s | dur-min:{stats_info['min']:.2f}s | dur-max:{stats_info['max']:.2f}s")
             else:
                 click.echo(f"{ip} | opened:{conn_info['opened']} | closed:{conn_info['closed']}")
+        return
+    elif clients:
+        # Get client data
+        clients_data = parse_clients(logfile)
+        
+        # Display MongoDB Log Summary
+        click.echo("===== MongoDB Log Summary =====")
+        labels = [
+            ("Log file", logfile),
+            ("Start date", start_date if start_date else 'N/A'),
+            ("End date", end_date if end_date else 'N/A'),
+            ("Number of lines", num_lines),
+        ]
+        
+        # Add host information if available
+        host_info = None
+        if cmd_options and 'net' in cmd_options and 'port' in cmd_options['net']:
+            port = cmd_options['net']['port']
+            # Try to get hostname from command line options or use localhost
+            hostname = "localhost"  # Default
+            host_info = f"{hostname}:{port}"
+        if host_info:
+            labels.append(("Host", host_info))
+        
+        labels.extend([
+            ("OS version", os_version if os_version else 'N/A'),
+            ("Kernel version", kernel_version if kernel_version else 'N/A'),
+            ("MongoDB version", db_version if db_version else 'N/A'),
+        ])
+        # Add ReplicaSet Name if available
+        repl_name = None
+        if cmd_options and 'replication' in cmd_options and 'replSet' in cmd_options['replication']:
+            repl_name = cmd_options['replication']['replSet']
+        if repl_name:
+            labels.append(("ReplicaSet Name", repl_name))
+        # Add number of nodes if replica set config is available
+        if repl_name:
+            configs = parse_replica_set_config(logfile)
+            if configs:
+                # Get the latest config
+                latest_config = configs[-1]['config']
+                if 'members' in latest_config:
+                    num_nodes = len(latest_config['members'])
+                    labels.append(("Nodes", str(num_nodes)))
+        
+        max_label_len = max(len(label) for label, _ in labels)
+        for label, value in labels:
+            click.echo(f"{label.ljust(max_label_len)} : {value}")
+        
+        # Display client information
+        click.echo("\n===== Client/Driver Information =====")
+        if clients_data:
+            for driver_key, client_info in clients_data.items():
+                # Extract driver info for cleaner display
+                driver_name = client_info['driver_info']['name']
+                driver_version = client_info['driver_info']['version']
+                app_info = client_info['driver_info'].get('app', '')
+                
+                # Format driver header
+                if app_info:
+                    click.echo(f"\n{driver_name} v{driver_version} ({app_info})")
+                else:
+                    click.echo(f"\n{driver_name} v{driver_version}")
+                
+                # Display connections count
+                click.echo(f"├─ Connections: {client_info['connections']}")
+                
+                # Display IP addresses
+                ips = sorted(client_info['ips'])
+                if ips:
+                    click.echo(f"├─ IP Addresses: {', '.join(ips)}")
+                else:
+                    click.echo("├─ IP Addresses: None")
+                
+                # Display users
+                users = sorted(client_info['users'])
+                if users:
+                    click.echo(f"└─ Users: {', '.join(users)}")
+                else:
+                    click.echo("└─ Users: None")
+        else:
+            click.echo("No client/driver information found in the log.")
         return
 
     # Default: summary mode
