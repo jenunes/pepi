@@ -103,7 +103,8 @@ python pepi.py --fetch /path/to/mongod.log --connections --stats --sort-by opene
 The `--queries` flag analyzes query patterns and provides performance statistics:
 
 - **Pattern Truncation**: By default, query patterns longer than 150 characters are truncated with "..." to keep terminal output readable
-- **Full Patterns**: Use `--full-patterns <file>` to write complete patterns to a file instead of printing to terminal
+- **Full Patterns**: Use `--report-full-patterns <file>` to write complete patterns to a file instead of printing to terminal
+- **Namespace Filtering**: Use `--namespace` to filter queries by specific database.collection
 - **Sorting**: Use `--sort-by` with values like `count`, `mean`, `max`, `min`, `95%-ile`, or `sum`
 
 Example:
@@ -112,10 +113,22 @@ Example:
 pepi --fetch mongodb.log --queries
 
 # Write complete patterns to file
-pepi --fetch mongodb.log --queries --full-patterns query_report.txt
+pepi --fetch mongodb.log --queries --report-full-patterns query_report.txt
 
 # Sort by execution count
 pepi --fetch mongodb.log --queries --sort-by count
+
+# Filter by specific namespace
+pepi --fetch mongodb.log --queries --namespace test.users
+
+# Filter by namespace and sort by count
+pepi --fetch mongodb.log --queries --namespace test.users --sort-by count
+
+# Filter by namespace and generate full report
+pepi --fetch mongodb.log --queries --namespace test.users --report-full-patterns report.txt
+
+# Filter by namespace, sort by mean, and generate full report
+pepi --fetch mongodb.log --queries --namespace test.users --sort-by mean --report-full-patterns slow_queries.txt
 ```
 
 ### Connection Analysis
@@ -237,7 +250,7 @@ test.users | delete    | [{"limit": "?", "q": {"status": "?"}}]                 
 - `--rs-state`: Print replica set node status and transitions
 - `--clients`: Print client/driver information
 - `--queries`: Print query pattern statistics and performance analysis
-- `--full-patterns <file>`: Write complete query patterns to file (requires output file path)
+- `--report-full-patterns <file>`: Write complete query patterns to file (requires output file path)
 - `--clear-cache`: Clear all cached data and re-parse files
 
 ### Connection Analysis
