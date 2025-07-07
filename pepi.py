@@ -9,10 +9,16 @@ import hashlib
 import os
 import pickle
 from pathlib import Path
+import time
 
 # Cache management
 CACHE_DIR = Path.home() / '.pepi_cache'
 CACHE_DIR.mkdir(exist_ok=True)
+CACHE_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
+def is_cache_expired(cache_file):
+    mtime = os.path.getmtime(cache_file)
+    return (time.time() - mtime) > CACHE_TTL_SECONDS
 
 def get_file_hash(filepath):
     """Calculate SHA256 hash of file for cache invalidation."""
@@ -32,12 +38,18 @@ def get_cache_file(cache_key):
     return CACHE_DIR / f"{cache_key}.pkl"
 
 def load_from_cache(cache_key):
-    """Load cached results if available and valid."""
+    """Load cached results if available, valid, and not expired. Resets TTL on use."""
     cache_file = get_cache_file(cache_key)
     if cache_file.exists():
+        if is_cache_expired(cache_file):
+            cache_file.unlink(missing_ok=True)
+            return None
         try:
             with open(cache_file, 'rb') as f:
-                return pickle.load(f)
+                data = pickle.load(f)
+            # Reset TTL: update mtime to now
+            os.utime(cache_file, None)
+            return data
         except Exception:
             # If cache is corrupted, remove it
             cache_file.unlink(missing_ok=True)
@@ -342,61 +354,74 @@ def parse_clients(logfile):
             try:
                 entry = json.loads(line)
                 
-                # Connection accepted with driver info
-                if (entry.get('msg') == 'Connection accepted' and 
-                    entry.get('c') == 'NETWORK' and
+                # Look for client metadata entries
+                if (entry.get('c') == 'NETWORK' and 
+                    entry.get('msg') == 'client metadata' and
                     entry.get('attr')):
                     attr = entry['attr']
-                    if 'remote' in attr:
-                        ip = attr['remote'].split(':')[0]
-                        conn_id = attr.get('connectionId')
-                        
-                        # Extract driver information
-                        driver_info = {}
-                        if 'driver' in attr:
-                            driver_info['name'] = attr['driver'].get('name', 'Unknown')
-                            driver_info['version'] = attr['driver'].get('version', 'Unknown')
-                            if 'app' in attr['driver']:
-                                driver_info['app'] = attr['driver']['app']
-                        
-                        # Create driver key
-                        if driver_info:
-                            driver_key = f"{driver_info['name']} | Version: {driver_info['version']}"
-                            if 'app' in driver_info:
-                                driver_key += f" | App: {driver_info['app']}"
-                            
-                            if driver_key not in clients:
-                                clients[driver_key] = {
-                                    'driver_info': driver_info,
-                                    'ips': set(),
-                                    'connections': 0,
-                                    'users': set()
-                                }
-                            
-                            clients[driver_key]['ips'].add(ip)
-                            clients[driver_key]['connections'] += 1
-                            
-                            # Track connection to driver mapping
-                            if conn_id:
-                                connection_drivers[conn_id] = driver_key
+                    remote = attr.get('remote', 'unknown')
+                    client_id = attr.get('client', 'unknown')
+                    
+                    # Extract client document info
+                    doc = attr.get('doc', {})
+                    driver_info = doc.get('driver', {})
+                    app_info = doc.get('application', {})
+                    os_info = doc.get('os', {})
+                    
+                    # Build driver identifier
+                    driver_name = driver_info.get('name', 'Unknown')
+                    driver_version = driver_info.get('version', '')
+                    app_name = app_info.get('name', '')
+                    
+                    # Create a unique driver identifier
+                    if app_name:
+                        driver_key = f"{app_name} v{driver_version}" if driver_version else app_name
+                    else:
+                        driver_key = f"{driver_name} v{driver_version}" if driver_version else driver_name
+                    
+                    # Initialize driver entry if not exists
+                    if driver_key not in clients:
+                        clients[driver_key] = {
+                            'connections': set(),
+                            'ips': set(),
+                            'users': set(),
+                            'driver_name': driver_name,
+                            'driver_version': driver_version,
+                            'app_name': app_name,
+                            'os_name': os_info.get('name', ''),
+                            'os_version': os_info.get('version', '')
+                        }
+                    
+                    # Add connection info
+                    clients[driver_key]['connections'].add(client_id)
+                    clients[driver_key]['ips'].add(remote.split(':')[0])  # Extract IP from host:port
+                    
+                    # Track connection to driver mapping
+                    connection_drivers[client_id] = driver_key
                 
-                # Authentication events to track users
-                elif (entry.get('msg') == 'Authentication succeeded' and 
-                      entry.get('c') == 'ACCESS' and
+                # Also look for connection accepted entries (existing logic)
+                elif (entry.get('c') == 'NETWORK' and 
+                      entry.get('msg') == 'Connection accepted' and
                       entry.get('attr')):
                     attr = entry['attr']
-                    conn_id = attr.get('connectionId')
+                    remote = attr.get('remote', 'unknown')
+                    client_id = attr.get('connectionId', 'unknown')
                     
-                    if conn_id and conn_id in connection_drivers:
-                        driver_key = connection_drivers[conn_id]
-                        if 'user' in attr:
-                            user = attr['user']
-                            db = attr.get('db', 'admin')
-                            user_key = f"{user}@{db}"
-                            clients[driver_key]['users'].add(user_key)
-                        
+                    # If we have driver info for this connection, associate it
+                    if client_id in connection_drivers:
+                        driver_key = connection_drivers[client_id]
+                        if driver_key in clients:
+                            clients[driver_key]['connections'].add(client_id)
+                            clients[driver_key]['ips'].add(remote.split(':')[0])
+                
             except Exception:
                 pass
+    
+    # Convert sets to lists for JSON serialization
+    for driver_key, client_info in clients.items():
+        client_info['connections'] = list(client_info['connections'])
+        client_info['ips'] = list(client_info['ips'])
+        client_info['users'] = list(client_info['users'])
     
     # Save to cache
     cache_data = {'clients': clients}
@@ -477,48 +502,37 @@ def parse_queries(logfile):
         for line in tqdm(f, total=total_lines, desc="Parsing queries", unit="lines"):
             try:
                 entry = json.loads(line)
-                
-                # Look for command execution logs
+                # Accept both 'command' and 'Slow query' as valid query log entries
                 if (entry.get('c') == 'COMMAND' and 
-                    entry.get('msg') == 'command' and
+                    entry.get('msg') in ('command', 'Slow query') and
                     entry.get('attr')):
                     attr = entry['attr']
-                    
                     # Extract namespace (database.collection)
                     namespace = attr.get('ns', '')
                     if not namespace:
                         continue
-                    
                     # Extract command details
                     command = attr.get('command', {})
                     if not command:
                         continue
-                    
                     # Get the operation type (first key in command)
                     operation = list(command.keys())[0] if command else 'unknown'
-                    
                     # Extract pattern
                     pattern = extract_query_pattern(operation, command)
-                    
                     # Group key: (namespace, operation, pattern)
                     group_key = (namespace, operation, pattern)
-                    
                     # Extract duration
                     duration_ms = attr.get('durationMillis', 0)
-                    
                     # Extract allowDiskUse flag
                     allow_disk_use = command.get('allowDiskUse', False)
-                    
                     # Update query statistics
                     queries[group_key]['count'] += 1
                     queries[group_key]['durations'].append(duration_ms)
                     queries[group_key]['operations'].add(operation)
                     queries[group_key]['allowDiskUse'] = queries[group_key]['allowDiskUse'] or allow_disk_use
                     queries[group_key]['pattern'] = pattern
-                    
             except Exception:
                 pass
-    
     # Save to cache - convert defaultdict to dict for pickling
     cache_data = {'queries': dict(queries)}
     save_to_cache(cache_key, cache_data)
@@ -977,9 +991,9 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
         if clients_data:
             for driver_key, client_info in clients_data.items():
                 # Extract driver info for cleaner display
-                driver_name = client_info['driver_info']['name']
-                driver_version = client_info['driver_info']['version']
-                app_info = client_info['driver_info'].get('app', '')
+                driver_name = client_info['driver_name']
+                driver_version = client_info['driver_version']
+                app_info = client_info['app_name']
                 
                 # Format driver header
                 if app_info:
@@ -988,7 +1002,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                     click.echo(f"\n{driver_name} v{driver_version}")
                 
                 # Display connections count
-                click.echo(f"├─ Connections: {client_info['connections']}")
+                click.echo(f"├─ Connections: {len(client_info['connections'])}")
                 
                 # Display IP addresses
                 ips = sorted(client_info['ips'])
