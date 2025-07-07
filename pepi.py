@@ -672,9 +672,11 @@ def calculate_connection_stats(connections_data):
               help='Print client/driver information and authentication details.')
 @click.option('--queries', is_flag=True, 
               help='Print query pattern statistics and performance analysis.')
+@click.option('--full-patterns', type=click.Path(), 
+              help='Write complete query patterns to file (requires output file path).')
 @click.option('--clear-cache', is_flag=True, 
               help='Clear all cached data and re-parse files.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, clear_cache):
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, full_patterns, clear_cache):
     """pepi: MongoDB log analysis tool."""
     
     # Check if logfile is provided
@@ -1024,8 +1026,45 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
         # Get query data
         queries_data = parse_queries(logfile)
         
-        # Calculate query statistics
+        # Calculate statistics
         query_stats = calculate_query_stats(queries_data)
+        
+        # Handle full patterns output to file
+        if full_patterns:
+            with open(full_patterns, 'w') as f:
+                f.write("===== Complete Query Pattern Statistics =====\n")
+                f.write(f"Log file: {logfile}\n")
+                f.write(f"Analysis date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                
+                # Sort if requested
+                if sort_by:
+                    if sort_by == 'count':
+                        sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['count'], reverse=True)
+                    elif sort_by == 'min':
+                        sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['min'], reverse=True)
+                    elif sort_by == 'max':
+                        sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['max'], reverse=True)
+                    elif sort_by == '95%-ile':
+                        sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['percentile_95'], reverse=True)
+                    elif sort_by == 'sum':
+                        sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['sum'], reverse=True)
+                    elif sort_by == 'mean':
+                        sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['mean'], reverse=True)
+                    else:
+                        sorted_queries = list(query_stats.items())
+                else:
+                    sorted_queries = list(query_stats.items())
+                
+                # Write header
+                f.write("Namespace | Operation | Pattern | Count | Min(ms) | Max(ms) | 95%-ile(ms) | Sum(ms) | Mean(ms) | AllowDiskUse\n")
+                f.write("-" * 120 + "\n")
+                
+                # Write each query with full pattern
+                for (namespace, operation, pattern), stats_info in sorted_queries:
+                    f.write(f"{namespace} | {operation} | {pattern} | {stats_info['count']} | {stats_info['min']:.1f} | {stats_info['max']:.1f} | {stats_info['percentile_95']:.1f} | {stats_info['sum']:.1f} | {stats_info['mean']:.1f} | {'Yes' if stats_info['allowDiskUse'] else 'No'}\n")
+            
+            click.echo(f"Complete query patterns written to: {full_patterns}")
+            return
         
         # Display MongoDB Log Summary
         click.echo("===== MongoDB Log Summary =====")
@@ -1071,51 +1110,40 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
         for label, value in labels:
             click.echo(f"{label.ljust(max_label_len)} : {value}")
         
-        # Display query information
+        # Display query pattern statistics
         click.echo("\n===== Query Pattern Statistics =====")
-        if query_stats:
-            # Calculate column widths for alignment
-            max_namespace_len = max(len(key[0]) for key in query_stats.keys()) if query_stats else 10
-            max_operation_len = max(len(key[1]) for key in query_stats.keys()) if query_stats else 10
-            max_pattern_len = max(len(stats['pattern']) for stats in query_stats.values()) if query_stats else 20
-            
-            # Header
-            header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:<8}} | {{:<8}} | {{:<10}} | {{:<8}} | {{:<8}} | {{:<10}}"
-            click.echo(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%-ile(ms)", "Sum(ms)", "Mean(ms)", "AllowDiskUse"))
-            click.echo("-" * (max_namespace_len + max_operation_len + max_pattern_len + 80))
-            
-            # Sort by specified metric or default to count (descending)
-            if sort_by and sort_by in ['count', 'min', 'max', '95%-ile', 'sum', 'mean']:
-                if sort_by == '95%-ile':
-                    sort_key = 'percentile_95'
-                else:
-                    sort_key = sort_by
-                sorted_patterns = sorted(query_stats.keys(), key=lambda p: query_stats[p][sort_key], reverse=True)
-                click.echo(f"--------Sorted by {sort_by}--------")
+        
+        # Sort if requested
+        if sort_by:
+            if sort_by == 'count':
+                sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['count'], reverse=True)
+            elif sort_by == 'min':
+                sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['min'], reverse=True)
+            elif sort_by == 'max':
+                sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['max'], reverse=True)
+            elif sort_by == '95%-ile':
+                sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['percentile_95'], reverse=True)
+            elif sort_by == 'sum':
+                sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['sum'], reverse=True)
+            elif sort_by == 'mean':
+                sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['mean'], reverse=True)
             else:
-                # Default sort by count
-                sorted_patterns = sorted(query_stats.keys(), key=lambda p: query_stats[p]['count'], reverse=True)
-            
-            for key in sorted_patterns:
-                stats = query_stats[key]
-                namespace = key[0]
-                operation = key[1]
-                pattern_str = stats['pattern']
-                
-                row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:<8}} | {{:<8}} | {{:<10}} | {{:<8}} | {{:<8}} | {{:<10}}"
-                click.echo(row_fmt.format(
-                    namespace,
-                    operation,
-                    pattern_str,
-                    stats['count'],
-                    f"{stats['min']:.1f}",
-                    f"{stats['max']:.1f}",
-                    f"{stats['percentile_95']:.1f}",
-                    f"{stats['sum']:.1f}",
-                    f"{stats['mean']:.1f}",
-                    "Yes" if stats['allowDiskUse'] else "No"
-                ))
+                sorted_queries = list(query_stats.items())
         else:
+            sorted_queries = list(query_stats.items())
+        
+        # Display header
+        click.echo("Namespace | Operation | Pattern | Count | Min(ms) | Max(ms) | 95%-ile(ms) | Sum(ms) | Mean(ms)")
+        click.echo("-" * 120)
+        
+        # Display each query with truncated pattern
+        for (namespace, operation, pattern), stats_info in sorted_queries:
+            # Truncate pattern to 150 characters
+            display_pattern = pattern[:150] + "..." if len(pattern) > 150 else pattern
+            
+            click.echo(f"{namespace} | {operation} | {display_pattern} | {stats_info['count']} | {stats_info['min']:.1f} | {stats_info['max']:.1f} | {stats_info['percentile_95']:.1f} | {stats_info['sum']:.1f} | {stats_info['mean']:.1f}")
+        
+        if not query_stats:
             click.echo("No query patterns found in the log.")
         return
 

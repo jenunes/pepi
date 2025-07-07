@@ -37,6 +37,16 @@ pepi is designed to handle large log files efficiently:
 - **Optimized parsing** for large files (tested up to 2GB+)
 - **Early termination** support for long-running operations
 
+## Cache System
+
+pepi uses an automatic cache system to speed up repeated analysis of large log files:
+- **Automatic 7-day TTL**: Cache files are kept for 7 days since their last use. Every time a cache file is used, its timer resets (sliding expiration).
+- **No manual cleanup needed**: If a cache file is not used for 7 days, it is automatically deleted and rebuilt on next use.
+- **Location**: Cache files are stored in `~/.pepi_cache/`.
+- **Safe and efficient**: This ensures your cache stays fresh and never grows indefinitely.
+
+You can always force a re-parse and clear the cache with the `--clear-cache` flag.
+
 2. Create and activate a Python virtual environment (recommended):
    ```bash
    python -m venv venv
@@ -89,6 +99,26 @@ python pepi.py --fetch /path/to/mongod.log --connections --compare 127.0.0.1 --c
 python pepi.py --fetch /path/to/mongod.log --connections --stats --sort-by opened --compare 127.0.0.1 --compare 192.168.1.100
 
 ### Query Analysis
+
+The `--queries` flag analyzes query patterns and provides performance statistics:
+
+- **Pattern Truncation**: By default, query patterns longer than 150 characters are truncated with "..." to keep terminal output readable
+- **Full Patterns**: Use `--full-patterns <file>` to write complete patterns to a file instead of printing to terminal
+- **Sorting**: Use `--sort-by` with values like `count`, `mean`, `max`, `min`, `95%-ile`, or `sum`
+
+Example:
+```bash
+# Show truncated patterns in terminal
+pepi --fetch mongodb.log --queries
+
+# Write complete patterns to file
+pepi --fetch mongodb.log --queries --full-patterns query_report.txt
+
+# Sort by execution count
+pepi --fetch mongodb.log --queries --sort-by count
+```
+
+### Connection Analysis
 ```bash
 # Basic query pattern statistics
 python pepi.py --fetch /path/to/mongod.log --queries
@@ -207,6 +237,8 @@ test.users | delete    | [{"limit": "?", "q": {"status": "?"}}]                 
 - `--rs-state`: Print replica set node status and transitions
 - `--clients`: Print client/driver information
 - `--queries`: Print query pattern statistics and performance analysis
+- `--full-patterns <file>`: Write complete query patterns to file (requires output file path)
+- `--clear-cache`: Clear all cached data and re-parse files
 
 ### Connection Analysis
 - `--connections`: Print connection information and statistics
