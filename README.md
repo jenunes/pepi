@@ -106,7 +106,9 @@ The `--queries` flag analyzes query patterns and provides performance statistics
 - **Full Patterns**: Use `--report-full-patterns <file>` to write complete patterns to a file instead of printing to terminal
 - **Namespace Filtering**: Use `--namespace` to filter queries by specific database.collection
 - **Operation Filtering**: Use `--operation` to filter queries by operation type (find, insert, update, delete, aggregate)
-- **Histogram**: Use `--report-histogram` to show execution time distribution
+- **Histogram**: Use `--report-histogram` to show overall execution time distribution for the filtered data
+  - Time ranges use mathematical notation: `[a,b)` means "a to less than b"
+  - Example: `[10,100)ms` = 10ms to less than 100ms
 - **Sorting**: Use `--sort-by` with values like `count`, `mean`, `max`, `min`, `95%-ile`, or `sum`
 
 Example:

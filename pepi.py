@@ -552,14 +552,14 @@ def generate_histogram(durations, max_bars=50):
     if not durations:
         return "No data available for histogram."
     
-    # Define time buckets (in milliseconds)
+    # Define time buckets (in milliseconds) with explicit range notation
     buckets = [
-        (0, 1, "1ms"),
-        (1, 10, "10ms"),
-        (10, 100, "100ms"),
-        (100, 1000, "1s"),
-        (1000, 10000, "10s"),
-        (10000, float('inf'), "10s+")
+        (0, 1, "<1ms"),
+        (1, 10, "[1,10)ms"),
+        (10, 100, "[10,100)ms"),
+        (100, 1000, "[100,1000)ms"),
+        (1000, 10000, "[1,10)s"),
+        (10000, float('inf'), "≥10s")
     ]
     
     # Count durations in each bucket
@@ -1349,7 +1349,6 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                     all_durations.extend(stats_info['durations'])
                 
                 if all_durations:
-                    click.echo("\n# Execution time distribution")
                     click.echo(generate_histogram(all_durations))
             
             click.echo("\n💡 For the full pattern report, use --report-full-patterns <output-file>.")
