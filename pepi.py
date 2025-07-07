@@ -2,6 +2,8 @@ import click
 import json
 import yaml
 from collections import defaultdict
+import statistics
+import re
 
 class CustomCommand(click.Command):
     def format_help(self, ctx, formatter):
@@ -23,6 +25,7 @@ class CustomCommand(click.Command):
             formatter.write_text("--rs-conf           Print replica set configuration(s)")
             formatter.write_text("--rs-state          Print replica set node status and transitions")
             formatter.write_text("--clients           Print client/driver information")
+            formatter.write_text("--queries           Print query pattern statistics and performance analysis")
         
         # Write connection analysis (with sub-options)
         with formatter.section("Connection Analysis"):
@@ -32,6 +35,13 @@ class CustomCommand(click.Command):
             formatter.write_text("    --stats          Include connection duration statistics")
             formatter.write_text("    --sort-by        Sort by: opened | closed")
             formatter.write_text("    --compare        Compare 2-3 specific hostnames/IPs")
+        
+        # Write query analysis (with sub-options)
+        with formatter.section("Query Analysis"):
+            formatter.write_text("--queries           Print query pattern statistics and performance analysis")
+            formatter.write_text("")
+            formatter.write_text("  Query Sub-options (use with --queries):")
+            formatter.write_text("    --sort-by        Sort by: count | min | max | 95%-ile | sum | mean")
             formatter.write_text("")
             formatter.write_text("  Examples:")
             formatter.write_text("    pepi.py --fetch logfile --connections")
@@ -39,6 +49,10 @@ class CustomCommand(click.Command):
             formatter.write_text("    pepi.py --fetch logfile --connections --sort-by opened")
             formatter.write_text("    pepi.py --fetch logfile --connections --compare ip1 --compare ip2")
             formatter.write_text("    pepi.py --fetch logfile --connections --stats --sort-by opened --compare ip1 --compare ip2")
+            formatter.write_text("    pepi.py --fetch logfile --queries")
+            formatter.write_text("    pepi.py --fetch logfile --queries --sort-by count")
+            formatter.write_text("    pepi.py --fetch logfile --queries --sort-by mean")
+            formatter.write_text("    pepi.py --fetch logfile --queries --sort-by 95%-ile")
         
         # Write default behavior
         with formatter.section("Default Behavior"):
@@ -279,6 +293,139 @@ def parse_clients(logfile):
     
     return clients
 
+def extract_query_pattern(operation, command):
+    """Extract a normalized query pattern string for grouping."""
+    def normalize(obj):
+        if isinstance(obj, dict):
+            return {k: normalize(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [normalize(v) for v in obj]
+        else:
+            return '?'  # Replace all values with '?'
+
+    if operation == 'find':
+        # Use filter structure
+        filt = command.get('filter', {})
+        return json.dumps(normalize(filt), sort_keys=True)
+    elif operation == 'update':
+        # Use update structure
+        updates = command.get('updates', [])
+        return json.dumps(normalize(updates), sort_keys=True)
+    elif operation == 'delete':
+        deletes = command.get('deletes', [])
+        return json.dumps(normalize(deletes), sort_keys=True)
+    elif operation == 'insert':
+        docs = command.get('documents', [])
+        if docs and isinstance(docs, list):
+            keys = sorted(set(k for doc in docs for k in doc.keys()))
+            return 'insert_keys:' + ','.join(keys)
+        return 'insert_keys:unknown'
+    elif operation == 'aggregate':
+        pipeline = command.get('pipeline', [])
+        if pipeline and isinstance(pipeline, list):
+            stages = [list(stage.keys())[0] for stage in pipeline if isinstance(stage, dict) and stage]
+            return '[' + ','.join(stages) + ']'
+        return '[unknown]'
+    else:
+        # For other commands, just show the keys
+        return json.dumps(sorted(command.keys()))
+
+
+def parse_queries(logfile):
+    """Parse query patterns and statistics from MongoDB log file, grouped by pattern."""
+    def default_query_data():
+        return {
+            'count': 0,
+            'durations': [],
+            'allowDiskUse': False,
+            'operations': set(),
+            'pattern': None
+        }
+    
+    queries = defaultdict(default_query_data)
+    
+    with open(logfile, 'r') as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+                
+                # Look for command execution logs
+                if (entry.get('c') == 'COMMAND' and 
+                    entry.get('msg') == 'command' and
+                    entry.get('attr')):
+                    attr = entry['attr']
+                    
+                    # Extract namespace (database.collection)
+                    namespace = attr.get('ns', '')
+                    if not namespace:
+                        continue
+                    
+                    # Extract command details
+                    command = attr.get('command', {})
+                    if not command:
+                        continue
+                    
+                    # Get the operation type (first key in command)
+                    operation = list(command.keys())[0] if command else 'unknown'
+                    
+                    # Extract pattern
+                    pattern = extract_query_pattern(operation, command)
+                    
+                    # Group key: (namespace, operation, pattern)
+                    group_key = (namespace, operation, pattern)
+                    
+                    # Extract duration
+                    duration_ms = attr.get('durationMillis', 0)
+                    
+                    # Extract allowDiskUse flag
+                    allow_disk_use = command.get('allowDiskUse', False)
+                    
+                    # Update query statistics
+                    queries[group_key]['count'] += 1
+                    queries[group_key]['durations'].append(duration_ms)
+                    queries[group_key]['operations'].add(operation)
+                    queries[group_key]['allowDiskUse'] = queries[group_key]['allowDiskUse'] or allow_disk_use
+                    queries[group_key]['pattern'] = pattern
+                    
+            except Exception:
+                pass
+    
+    return queries
+
+def calculate_query_stats(queries_data):
+    """Calculate query statistics including percentiles, grouped by pattern."""
+    stats = {}
+    
+    for group_key, query_info in queries_data.items():
+        if not query_info['durations']:
+            continue
+            
+        durations = query_info['durations']
+        durations.sort()
+        
+        # Calculate statistics
+        count = len(durations)
+        min_duration = min(durations)
+        max_duration = max(durations)
+        sum_duration = sum(durations)
+        mean_duration = sum_duration / count
+        
+        # Calculate 95th percentile
+        percentile_95 = durations[int(0.95 * count)-1] if count > 0 else 0
+        
+        stats[group_key] = {
+            'count': count,
+            'min': min_duration,
+            'max': max_duration,
+            'sum': sum_duration,
+            'mean': mean_duration,
+            'percentile_95': percentile_95,
+            'allowDiskUse': query_info['allowDiskUse'],
+            'pattern': query_info['pattern']
+        }
+    
+    return stats
+
 def reconstruct_command_line(options):
     """Reconstruct the command line from MongoDB options."""
     if not options:
@@ -370,13 +517,15 @@ def calculate_connection_stats(connections_data):
               help='Print connection information and statistics.')
 @click.option('--stats', is_flag=True, 
               help='Include connection duration statistics (use with --connections).')
-@click.option('--sort-by', type=click.Choice(['opened', 'closed']), 
-              help='Sort connections by opened/closed count (use with --connections).')
+@click.option('--sort-by', type=click.Choice(['opened', 'closed', 'count', 'min', 'max', '95%-ile', 'sum', 'mean']), 
+              help='Sort by specified metric (use with --connections or --queries).')
 @click.option('--compare', multiple=True, 
               help='Compare 2-3 specific hostnames/IPs (use with --connections).')
 @click.option('--clients', is_flag=True, 
               help='Print client/driver information and authentication details.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare):
+@click.option('--queries', is_flag=True, 
+              help='Print query pattern statistics and performance analysis.')
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries):
     """pepi: MongoDB log analysis tool."""
     
     # Check if logfile is provided
@@ -684,6 +833,104 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                     click.echo("└─ Users: None")
         else:
             click.echo("No client/driver information found in the log.")
+        return
+    elif queries:
+        # Get query data
+        queries_data = parse_queries(logfile)
+        
+        # Calculate query statistics
+        query_stats = calculate_query_stats(queries_data)
+        
+        # Display MongoDB Log Summary
+        click.echo("===== MongoDB Log Summary =====")
+        labels = [
+            ("Log file", logfile),
+            ("Start date", start_date if start_date else 'N/A'),
+            ("End date", end_date if end_date else 'N/A'),
+            ("Number of lines", num_lines),
+        ]
+        
+        # Add host information if available
+        host_info = None
+        if cmd_options and 'net' in cmd_options and 'port' in cmd_options['net']:
+            port = cmd_options['net']['port']
+            # Try to get hostname from command line options or use localhost
+            hostname = "localhost"  # Default
+            host_info = f"{hostname}:{port}"
+        if host_info:
+            labels.append(("Host", host_info))
+        
+        labels.extend([
+            ("OS version", os_version if os_version else 'N/A'),
+            ("Kernel version", kernel_version if kernel_version else 'N/A'),
+            ("MongoDB version", db_version if db_version else 'N/A'),
+        ])
+        # Add ReplicaSet Name if available
+        repl_name = None
+        if cmd_options and 'replication' in cmd_options and 'replSet' in cmd_options['replication']:
+            repl_name = cmd_options['replication']['replSet']
+        if repl_name:
+            labels.append(("ReplicaSet Name", repl_name))
+        # Add number of nodes if replica set config is available
+        if repl_name:
+            configs = parse_replica_set_config(logfile)
+            if configs:
+                # Get the latest config
+                latest_config = configs[-1]['config']
+                if 'members' in latest_config:
+                    num_nodes = len(latest_config['members'])
+                    labels.append(("Nodes", str(num_nodes)))
+        
+        max_label_len = max(len(label) for label, _ in labels)
+        for label, value in labels:
+            click.echo(f"{label.ljust(max_label_len)} : {value}")
+        
+        # Display query information
+        click.echo("\n===== Query Pattern Statistics =====")
+        if query_stats:
+            # Calculate column widths for alignment
+            max_namespace_len = max(len(key[0]) for key in query_stats.keys()) if query_stats else 10
+            max_operation_len = max(len(key[1]) for key in query_stats.keys()) if query_stats else 10
+            max_pattern_len = max(len(stats['pattern']) for stats in query_stats.values()) if query_stats else 20
+            
+            # Header
+            header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:<8}} | {{:<8}} | {{:<10}} | {{:<8}} | {{:<8}} | {{:<10}}"
+            click.echo(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%-ile(ms)", "Sum(ms)", "Mean(ms)", "AllowDiskUse"))
+            click.echo("-" * (max_namespace_len + max_operation_len + max_pattern_len + 80))
+            
+            # Sort by specified metric or default to count (descending)
+            if sort_by and sort_by in ['count', 'min', 'max', '95%-ile', 'sum', 'mean']:
+                if sort_by == '95%-ile':
+                    sort_key = 'percentile_95'
+                else:
+                    sort_key = sort_by
+                sorted_patterns = sorted(query_stats.keys(), key=lambda p: query_stats[p][sort_key], reverse=True)
+                click.echo(f"--------Sorted by {sort_by}--------")
+            else:
+                # Default sort by count
+                sorted_patterns = sorted(query_stats.keys(), key=lambda p: query_stats[p]['count'], reverse=True)
+            
+            for key in sorted_patterns:
+                stats = query_stats[key]
+                namespace = key[0]
+                operation = key[1]
+                pattern_str = stats['pattern']
+                
+                row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:<8}} | {{:<8}} | {{:<10}} | {{:<8}} | {{:<8}} | {{:<10}}"
+                click.echo(row_fmt.format(
+                    namespace,
+                    operation,
+                    pattern_str,
+                    stats['count'],
+                    f"{stats['min']:.1f}",
+                    f"{stats['max']:.1f}",
+                    f"{stats['percentile_95']:.1f}",
+                    f"{stats['sum']:.1f}",
+                    f"{stats['mean']:.1f}",
+                    "Yes" if stats['allowDiskUse'] else "No"
+                ))
+        else:
+            click.echo("No query patterns found in the log.")
         return
 
     # Default: summary mode

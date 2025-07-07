@@ -10,10 +10,13 @@ A fast, user-friendly MongoDB log analysis tool for extracting insights from Mon
 - **Replica Set Analysis**: Configuration and state transitions
 - **Connection Analysis**: Connection statistics with duration tracking
 - **Client/Driver Information**: Detailed client and driver analysis
+- **Query Pattern Analysis**: Query statistics and performance analysis with pattern recognition
 
 ### Advanced Features
 - **Connection Duration Statistics**: Average, minimum, and maximum connection durations
 - **Sorting Options**: Sort connections by opened/closed counts
+- **Query Performance Statistics**: Min, max, 95th percentile, sum, and mean execution times
+- **Query Pattern Recognition**: Groups similar queries by structure with normalized patterns
 - **Comparison Tools**: Compare specific hostnames/IPs side-by-side
 - **Clean Output Formatting**: Well-organized, aligned output for easy reading
 
@@ -51,6 +54,9 @@ python pepi.py --fetch /path/to/mongod.log --rs-state
 
 # Show client/driver information
 python pepi.py --fetch /path/to/mongod.log --clients
+
+# Show query pattern statistics and performance analysis
+python pepi.py --fetch /path/to/mongod.log --queries
 ```
 
 ### Connection Analysis
@@ -72,6 +78,29 @@ python pepi.py --fetch /path/to/mongod.log --connections --compare 127.0.0.1 --c
 
 # Combine multiple options
 python pepi.py --fetch /path/to/mongod.log --connections --stats --sort-by opened --compare 127.0.0.1 --compare 192.168.1.100
+
+### Query Analysis
+```bash
+# Basic query pattern statistics
+python pepi.py --fetch /path/to/mongod.log --queries
+
+# Sort queries by count (most frequent first)
+python pepi.py --fetch /path/to/mongod.log --queries --sort-by count
+
+# Sort queries by mean execution time (slowest first)
+python pepi.py --fetch /path/to/mongod.log --queries --sort-by mean
+
+# Sort queries by 95th percentile execution time
+python pepi.py --fetch /path/to/mongod.log --queries --sort-by 95%-ile
+
+# Sort queries by total execution time
+python pepi.py --fetch /path/to/mongod.log --queries --sort-by sum
+
+# Sort queries by minimum execution time
+python pepi.py --fetch /path/to/mongod.log --queries --sort-by min
+
+# Sort queries by maximum execution time
+python pepi.py --fetch /path/to/mongod.log --queries --sort-by max
 ```
 
 ## Output Examples
@@ -146,6 +175,19 @@ Timestamp: 2025-01-01T10:00:15.000Z
 }
 ```
 
+### Query Pattern Statistics
+```
+===== Query Pattern Statistics =====
+Namespace  | Operation | Pattern                                                | Count | Min(ms) | Max(ms) | 95%-ile(ms) | Sum(ms) | Mean(ms) | AllowDiskUse
+-------------------------------------------------------------------------------------------------------------------------------------------
+test.users | find      | {"age": {"$gt": "?"}}                                  | 7     | 41.0    | 52.0    | 48.0        | 320.0   | 45.7     | No
+test.users | find      | {"status": "?"}                                        | 7     | 28.0    | 35.0    | 33.0        | 218.0   | 31.1     | No
+test.users | aggregate | [$match,$group]                                        | 3     | 120.0   | 135.0   | 125.0       | 380.0   | 126.7    | Yes
+test.users | update    | [{"q": {"name": "?"}, "u": {"$set": {"status": "?"}}}] | 2     | 18.0    | 19.0    | 18.0        | 37.0    | 18.5     | No
+test.users | insert    | insert_keys:age,name                                   | 1     | 15.0    | 15.0    | 15.0        | 15.0    | 15.0     | No
+test.users | delete    | [{"limit": "?", "q": {"status": "?"}}]                 | 1     | 22.0    | 22.0    | 22.0        | 22.0    | 22.0     | No
+```
+
 ## Command Line Options
 
 ### Required Options
@@ -155,6 +197,7 @@ Timestamp: 2025-01-01T10:00:15.000Z
 - `--rs-conf`: Print replica set configuration(s)
 - `--rs-state`: Print replica set node status and transitions
 - `--clients`: Print client/driver information
+- `--queries`: Print query pattern statistics and performance analysis
 
 ### Connection Analysis
 - `--connections`: Print connection information and statistics
@@ -163,6 +206,9 @@ Timestamp: 2025-01-01T10:00:15.000Z
 - `--stats`: Include connection duration statistics
 - `--sort-by`: Sort by `opened` or `closed` count
 - `--compare`: Compare 2-3 specific hostnames/IPs
+
+#### Query Sub-options (use with `--queries`)
+- `--sort-by`: Sort by `count`, `min`, `max`, `95%-ile`, `sum`, or `mean`
 
 ## Features in Detail
 
@@ -186,6 +232,13 @@ Timestamp: 2025-01-01T10:00:15.000Z
 - Tracks state transitions per node
 - Shows current node status with timestamps
 
+### Query Pattern Analysis
+- Extracts query patterns from MongoDB command logs
+- Groups similar queries by structure (normalized patterns)
+- Calculates comprehensive performance statistics
+- Tracks disk usage flags for aggregation queries
+- Supports sorting by any performance metric
+
 ## Development
 
 ### Project Structure
@@ -197,7 +250,8 @@ pepi/
 ├── tests/              # Test files
 │   ├── README.md       # Test documentation
 │   ├── test_sort.log   # Test sorting functionality
-│   └── test_sort2.log  # Test comparison functionality
+│   ├── test_sort2.log  # Test comparison functionality
+│   └── test_queries.log # Test query pattern functionality
 └── venv/               # Virtual environment
 ```
 
@@ -233,6 +287,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Version History
 
+- **v0.0.1.5**: Added `--queries` flag with query pattern analysis and performance statistics
+- **v0.0.1.4**: Major improvements: sorting, comparison, and comprehensive documentation
 - **v0.0.1.3**: Added `--clients` flag with clean tree-like display format
 - **v0.0.1.2**: Added `--stats` flag for connection duration statistics
 - **v0.0.1.1**: Enhanced default summary with host information and node count
