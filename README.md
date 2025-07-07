@@ -13,6 +13,7 @@ A fast, user-friendly MongoDB log analysis tool for extracting insights from Mon
 - **Query Pattern Analysis**: Query statistics and performance analysis with pattern recognition
 
 ### Advanced Features
+- **Progress Bars**: Visual feedback during large file processing for all analysis modes
 - **Connection Duration Statistics**: Average, minimum, and maximum connection durations
 - **Sorting Options**: Sort connections by opened/closed counts
 - **Query Performance Statistics**: Min, max, 95th percentile, sum, and mean execution times
@@ -27,6 +28,14 @@ A fast, user-friendly MongoDB log analysis tool for extracting insights from Mon
    git clone https://github.com/jenunes/pepi.git
    cd pepi
    ```
+
+## Performance
+
+pepi is designed to handle large log files efficiently:
+- **Progress bars** provide visual feedback during processing
+- **Streaming processing** minimizes memory usage
+- **Optimized parsing** for large files (tested up to 2GB+)
+- **Early termination** support for long-running operations
 
 2. Create and activate a Python virtual environment (recommended):
    ```bash

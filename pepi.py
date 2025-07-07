@@ -4,6 +4,7 @@ import yaml
 from collections import defaultdict
 import statistics
 import re
+from tqdm import tqdm
 
 class CustomCommand(click.Command):
     def format_help(self, ctx, formatter):
@@ -77,8 +78,11 @@ def parse_connections(logfile):
     total_closed = 0
     connection_starts = {}  # Track connection start times by connection ID
     
+    # Count lines for progress bar
+    total_lines = count_lines(logfile)
+    
     with open(logfile, 'r') as f:
-        for line in f:
+        for line in tqdm(f, total=total_lines, desc="Parsing connections", unit="lines"):
             try:
                 entry = json.loads(line)
                 
@@ -144,8 +148,11 @@ def parse_replica_set_config(logfile):
     """Parse replica set configuration from MongoDB log file."""
     configs = []
     
+    # Count lines for progress bar
+    total_lines = count_lines(logfile)
+    
     with open(logfile, 'r') as f:
-        for line in f:
+        for line in tqdm(f, total=total_lines, desc="Parsing replica set config", unit="lines"):
             try:
                 entry = json.loads(line)
                 if (entry.get('msg') == 'New replica set config in use' and 
@@ -169,8 +176,11 @@ def parse_replica_set_state(logfile):
     current_host = None
     state_transitions = {}  # Track state transitions per host
     
+    # Count lines for progress bar
+    total_lines = count_lines(logfile)
+    
     with open(logfile, 'r') as f:
-        for line in f:
+        for line in tqdm(f, total=total_lines, desc="Parsing replica set state", unit="lines"):
             try:
                 entry = json.loads(line)
                 
@@ -230,8 +240,11 @@ def parse_clients(logfile):
     clients = {}  # Group by driver info
     connection_drivers = {}  # Track which connections belong to which driver
     
+    # Count lines for progress bar
+    total_lines = count_lines(logfile)
+    
     with open(logfile, 'r') as f:
-        for line in f:
+        for line in tqdm(f, total=total_lines, desc="Parsing clients", unit="lines"):
             try:
                 entry = json.loads(line)
                 
@@ -293,6 +306,14 @@ def parse_clients(logfile):
     
     return clients
 
+def count_lines(logfile):
+    """Count lines in file for progress bar."""
+    try:
+        with open(logfile, 'r') as f:
+            return sum(1 for _ in f)
+    except Exception:
+        return 0
+
 def extract_query_pattern(operation, command):
     """Extract a normalized query pattern string for grouping."""
     def normalize(obj):
@@ -344,8 +365,11 @@ def parse_queries(logfile):
     
     queries = defaultdict(default_query_data)
     
+    # Count lines for progress bar
+    total_lines = count_lines(logfile)
+    
     with open(logfile, 'r') as f:
-        for line in f:
+        for line in tqdm(f, total=total_lines, desc="Parsing queries", unit="lines"):
             try:
                 entry = json.loads(line)
                 
@@ -544,8 +568,9 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
     last_line = None
 
     # Parse log file for basic information
+    total_lines = count_lines(logfile)
     with open(logfile, 'r') as f:
-        for line in f:
+        for line in tqdm(f, total=total_lines, desc="Reading log file", unit="lines"):
             num_lines += 1
             if not start_date:
                 try:
