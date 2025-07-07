@@ -67,7 +67,66 @@ def save_to_cache(cache_key, data):
 
 class CustomCommand(click.Command):
     def format_help(self, ctx, formatter):
-        """Custom help formatter with visual hierarchy."""
+        """Custom help formatter with contextual help."""
+        # Check if this is a contextual help request
+        import sys
+        args = sys.argv
+        if '--help' in args:
+            # Find which option is being asked about
+            help_index = args.index('--help')
+            if help_index > 0:
+                option = args[help_index - 1]
+                self.show_contextual_help(option, formatter)
+                return
+        
+        # Default help format
+        self.show_full_help(formatter)
+    
+    def show_contextual_help(self, option, formatter):
+        """Show help for a specific option."""
+        if option == '--connections':
+            with formatter.section("Connection Analysis"):
+                formatter.write_text("--connections       Print connection information and statistics")
+                formatter.write_text("")
+                formatter.write_text("Connection Sub-options:")
+                formatter.write_text("  --stats          Include connection duration statistics")
+                formatter.write_text("  --sort-by        Sort by: opened | closed")
+                formatter.write_text("  --compare        Compare 2-3 specific hostnames/IPs")
+                formatter.write_text("")
+                formatter.write_text("Examples:")
+                formatter.write_text("  pepi.py --fetch logfile --connections")
+                formatter.write_text("  pepi.py --fetch logfile --connections --stats")
+                formatter.write_text("  pepi.py --fetch logfile --connections --sort-by opened")
+                formatter.write_text("  pepi.py --fetch logfile --connections --compare ip1 --compare ip2")
+                formatter.write_text("  pepi.py --fetch logfile --connections --stats --sort-by opened --compare ip1 --compare ip2")
+        
+        elif option == '--queries':
+            with formatter.section("Query Analysis"):
+                formatter.write_text("--queries           Print query pattern statistics and performance analysis")
+                formatter.write_text("")
+                formatter.write_text("Query Sub-options:")
+                formatter.write_text("  --sort-by        Sort by: count | min | max | 95%-ile | sum | mean")
+                formatter.write_text("  --report-full-patterns  Write complete patterns to file")
+                formatter.write_text("  --namespace      Filter by namespace (e.g., 'database.collection')")
+                formatter.write_text("  --operation      Filter by operation type (e.g., 'find', 'insert', 'update')")
+                formatter.write_text("  --report-histogram  Show execution time distribution histogram")
+                formatter.write_text("")
+                formatter.write_text("Examples:")
+                formatter.write_text("  pepi.py --fetch logfile --queries")
+                formatter.write_text("  pepi.py --fetch logfile --queries --sort-by count")
+                formatter.write_text("  pepi.py --fetch logfile --queries --sort-by mean")
+                formatter.write_text("  pepi.py --fetch logfile --queries --sort-by 95%-ile")
+                formatter.write_text("  pepi.py --fetch logfile --queries --report-full-patterns report.txt")
+                formatter.write_text("  pepi.py --fetch logfile --queries --namespace test.users")
+                formatter.write_text("  pepi.py --fetch logfile --queries --operation find")
+                formatter.write_text("  pepi.py --fetch logfile --queries --report-histogram")
+        
+        else:
+            formatter.write_text(f"Unknown option: {option}")
+            formatter.write_text("Use --help to see all available options.")
+    
+    def show_full_help(self, formatter):
+        """Show the full help menu."""
         # Write usage
         with formatter.section("Usage"):
             formatter.write_text("pepi.py --fetch <logfile> [OPTIONS]")
@@ -86,45 +145,17 @@ class CustomCommand(click.Command):
             formatter.write_text("--rs-state          Print replica set node status and transitions")
             formatter.write_text("--clients           Print client/driver information")
             formatter.write_text("--queries           Print query pattern statistics and performance analysis")
-        
-        # Write connection analysis (with sub-options)
-        with formatter.section("Connection Analysis"):
             formatter.write_text("--connections       Print connection information and statistics")
-            formatter.write_text("")
-            formatter.write_text("  Connection Sub-options (use with --connections):")
-            formatter.write_text("    --stats          Include connection duration statistics")
-            formatter.write_text("    --sort-by        Sort by: opened | closed")
-            formatter.write_text("    --compare        Compare 2-3 specific hostnames/IPs")
-        
-        # Write query analysis (with sub-options)
-        with formatter.section("Query Analysis"):
-            formatter.write_text("--queries           Print query pattern statistics and performance analysis")
-            formatter.write_text("")
-            formatter.write_text("  Query Sub-options (use with --queries):")
-            formatter.write_text("    --sort-by        Sort by: count | min | max | 95%-ile | sum | mean")
-            formatter.write_text("    --report-full-patterns  Write complete patterns to file")
-            formatter.write_text("    --namespace      Filter by namespace (e.g., 'database.collection')")
-            formatter.write_text("    --operation      Filter by operation type (e.g., 'find', 'insert', 'update')")
-            formatter.write_text("    --report-histogram  Show execution time distribution histogram")
-            formatter.write_text("")
-            formatter.write_text("  Examples:")
-            formatter.write_text("    pepi.py --fetch logfile --connections")
-            formatter.write_text("    pepi.py --fetch logfile --connections --stats")
-            formatter.write_text("    pepi.py --fetch logfile --connections --sort-by opened")
-            formatter.write_text("    pepi.py --fetch logfile --connections --compare ip1 --compare ip2")
-            formatter.write_text("    pepi.py --fetch logfile --connections --stats --sort-by opened --compare ip1 --compare ip2")
-            formatter.write_text("    pepi.py --fetch logfile --queries")
-            formatter.write_text("    pepi.py --fetch logfile --queries --sort-by count")
-            formatter.write_text("    pepi.py --fetch logfile --queries --sort-by mean")
-            formatter.write_text("    pepi.py --fetch logfile --queries --sort-by 95%-ile")
-            formatter.write_text("    pepi.py --fetch logfile --queries --report-full-patterns report.txt")
-            formatter.write_text("    pepi.py --fetch logfile --queries --namespace test.users")
-            formatter.write_text("    pepi.py --fetch logfile --queries --operation find")
-            formatter.write_text("    pepi.py --fetch logfile --queries --report-histogram")
         
         # Write default behavior
         with formatter.section("Default Behavior"):
             formatter.write_text("When no analysis mode is specified, shows MongoDB log summary and command line startup options.")
+        
+        # Write contextual help hint
+        with formatter.section("Contextual Help"):
+            formatter.write_text("Use --option --help to see detailed help for specific options:")
+            formatter.write_text("  --connections --help")
+            formatter.write_text("  --queries --help")
 
     def main(self, args=None, prog_name=None, complete_var=None, standalone_mode=True, **kwargs):
         try:
