@@ -105,6 +105,7 @@ The `--queries` flag analyzes query patterns and provides performance statistics
 - **Pattern Truncation**: By default, query patterns longer than 150 characters are truncated with "..." to keep terminal output readable
 - **Full Patterns**: Use `--report-full-patterns <file>` to write complete patterns to a file instead of printing to terminal
 - **Namespace Filtering**: Use `--namespace` to filter queries by specific database.collection
+- **Operation Filtering**: Use `--operation` to filter queries by operation type (find, insert, update, delete, aggregate)
 - **Sorting**: Use `--sort-by` with values like `count`, `mean`, `max`, `min`, `95%-ile`, or `sum`
 
 Example:
@@ -129,6 +130,15 @@ pepi --fetch mongodb.log --queries --namespace test.users --report-full-patterns
 
 # Filter by namespace, sort by mean, and generate full report
 pepi --fetch mongodb.log --queries --namespace test.users --sort-by mean --report-full-patterns slow_queries.txt
+
+# Filter by operation type
+pepi --fetch mongodb.log --queries --operation find
+
+# Filter by operation and namespace
+pepi --fetch mongodb.log --queries --operation find --namespace test.users
+
+# Filter by operation, sort by count, and generate report
+pepi --fetch mongodb.log --queries --operation aggregate --sort-by count --report-full-patterns aggregate_report.txt
 ```
 
 ### Connection Analysis

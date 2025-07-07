@@ -104,6 +104,7 @@ class CustomCommand(click.Command):
             formatter.write_text("    --sort-by        Sort by: count | min | max | 95%-ile | sum | mean")
             formatter.write_text("    --report-full-patterns  Write complete patterns to file")
             formatter.write_text("    --namespace      Filter by namespace (e.g., 'database.collection')")
+            formatter.write_text("    --operation      Filter by operation type (e.g., 'find', 'insert', 'update')")
             formatter.write_text("")
             formatter.write_text("  Examples:")
             formatter.write_text("    pepi.py --fetch logfile --connections")
@@ -117,6 +118,7 @@ class CustomCommand(click.Command):
             formatter.write_text("    pepi.py --fetch logfile --queries --sort-by 95%-ile")
             formatter.write_text("    pepi.py --fetch logfile --queries --report-full-patterns report.txt")
             formatter.write_text("    pepi.py --fetch logfile --queries --namespace test.users")
+            formatter.write_text("    pepi.py --fetch logfile --queries --operation find")
         
         # Write default behavior
         with formatter.section("Default Behavior"):
@@ -680,9 +682,11 @@ def calculate_connection_stats(connections_data):
               help='Write complete query patterns to file (requires output file path).')
 @click.option('--namespace', type=str, 
               help='Filter queries by namespace (e.g., "database.collection").')
+@click.option('--operation', type=str, 
+              help='Filter queries by operation type (e.g., "find", "insert", "update", "delete", "aggregate").')
 @click.option('--clear-cache', is_flag=True, 
               help='Clear all cached data and re-parse files.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, clear_cache):
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, clear_cache):
     """pepi: MongoDB log analysis tool."""
     
     # Check if logfile is provided
@@ -1045,12 +1049,23 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                 # Filter by namespace if specified
                 if namespace:
                     filtered_queries = {}
-                    for (ns, operation, pattern), stats_info in query_stats.items():
+                    for (ns, op, pattern), stats_info in query_stats.items():
                         if ns == namespace:
-                            filtered_queries[(ns, operation, pattern)] = stats_info
+                            filtered_queries[(ns, op, pattern)] = stats_info
                     query_stats = filtered_queries
                     if not query_stats:
                         f.write(f"No queries found for namespace: {namespace}\n")
+                        return
+                
+                # Filter by operation if specified
+                if operation:
+                    filtered_queries = {}
+                    for (ns, op, pattern), stats_info in query_stats.items():
+                        if op == operation:
+                            filtered_queries[(ns, op, pattern)] = stats_info
+                    query_stats = filtered_queries
+                    if not query_stats:
+                        f.write(f"No queries found for operation: {operation}\n")
                         return
                 
                 # Sort if requested
@@ -1181,12 +1196,23 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
         # Filter by namespace if specified
         if namespace:
             filtered_queries = {}
-            for (ns, operation, pattern), stats_info in query_stats.items():
+            for (ns, op, pattern), stats_info in query_stats.items():
                 if ns == namespace:
-                    filtered_queries[(ns, operation, pattern)] = stats_info
+                    filtered_queries[(ns, op, pattern)] = stats_info
             query_stats = filtered_queries
             if not query_stats:
                 click.echo(f"No queries found for namespace: {namespace}")
+                return
+        
+        # Filter by operation if specified
+        if operation:
+            filtered_queries = {}
+            for (ns, op, pattern), stats_info in query_stats.items():
+                if op == operation:
+                    filtered_queries[(ns, op, pattern)] = stats_info
+            query_stats = filtered_queries
+            if not query_stats:
+                click.echo(f"No queries found for operation: {operation}")
                 return
         
         # Sort if requested
