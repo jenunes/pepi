@@ -102,6 +102,7 @@ class CustomCommand(click.Command):
             formatter.write_text("")
             formatter.write_text("  Query Sub-options (use with --queries):")
             formatter.write_text("    --sort-by        Sort by: count | min | max | 95%-ile | sum | mean")
+            formatter.write_text("    --report-full-patterns  Write complete patterns to file")
             formatter.write_text("")
             formatter.write_text("  Examples:")
             formatter.write_text("    pepi.py --fetch logfile --connections")
@@ -113,6 +114,7 @@ class CustomCommand(click.Command):
             formatter.write_text("    pepi.py --fetch logfile --queries --sort-by count")
             formatter.write_text("    pepi.py --fetch logfile --queries --sort-by mean")
             formatter.write_text("    pepi.py --fetch logfile --queries --sort-by 95%-ile")
+            formatter.write_text("    pepi.py --fetch logfile --queries --report-full-patterns report.txt")
         
         # Write default behavior
         with formatter.section("Default Behavior"):
@@ -672,11 +674,11 @@ def calculate_connection_stats(connections_data):
               help='Print client/driver information and authentication details.')
 @click.option('--queries', is_flag=True, 
               help='Print query pattern statistics and performance analysis.')
-@click.option('--full-patterns', type=click.Path(), 
+@click.option('--report-full-patterns', type=click.Path(), 
               help='Write complete query patterns to file (requires output file path).')
 @click.option('--clear-cache', is_flag=True, 
               help='Clear all cached data and re-parse files.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, full_patterns, clear_cache):
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, clear_cache):
     """pepi: MongoDB log analysis tool."""
     
     # Check if logfile is provided
@@ -1030,8 +1032,8 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
         query_stats = calculate_query_stats(queries_data)
         
         # Handle full patterns output to file
-        if full_patterns:
-            with open(full_patterns, 'w') as f:
+        if report_full_patterns:
+            with open(report_full_patterns, 'w') as f:
                 f.write("===== Complete Query Pattern Statistics =====\n")
                 f.write(f"Log file: {logfile}\n")
                 f.write(f"Analysis date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
@@ -1055,15 +1057,63 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                 else:
                     sorted_queries = list(query_stats.items())
                 
-                # Write header
-                f.write("Namespace | Operation | Pattern | Count | Min(ms) | Max(ms) | 95%-ile(ms) | Sum(ms) | Mean(ms) | AllowDiskUse\n")
-                f.write("-" * 120 + "\n")
+                # Calculate column widths for file output
+                if sorted_queries:
+                    max_namespace_len = max(len(str(key[0])) for key in query_stats.keys())
+                    max_operation_len = max(len(str(key[1])) for key in query_stats.keys())
+                    max_pattern_len = max(len(pattern) for (_, _, pattern) in query_stats.keys())
+                    max_count_len = max(len(str(stats['count'])) for stats in query_stats.values())
+                    max_min_len = max(len(f"{stats['min']:.1f}") for stats in query_stats.values())
+                    max_max_len = max(len(f"{stats['max']:.1f}") for stats in query_stats.values())
+                    max_percentile_len = max(len(f"{stats['percentile_95']:.1f}") for stats in query_stats.values())
+                    max_sum_len = max(len(f"{stats['sum']:.1f}") for stats in query_stats.values())
+                    max_mean_len = max(len(f"{stats['mean']:.1f}") for stats in query_stats.values())
+                    
+                    # Ensure minimum widths for headers
+                    max_namespace_len = max(max_namespace_len, len("Namespace"))
+                    max_operation_len = max(max_operation_len, len("Operation"))
+                    max_pattern_len = max(max_pattern_len, len("Pattern"))
+                    max_count_len = max(max_count_len, len("Count"))
+                    max_min_len = max(max_min_len, len("Min(ms)"))
+                    max_max_len = max(max_max_len, len("Max(ms)"))
+                    max_percentile_len = max(max_percentile_len, len("95%-ile(ms)"))
+                    max_sum_len = max(max_sum_len, len("Sum(ms)"))
+                    max_mean_len = max(max_mean_len, len("Mean(ms)"))
+                else:
+                    # Default widths if no data
+                    max_namespace_len = len("Namespace")
+                    max_operation_len = len("Operation")
+                    max_pattern_len = len("Pattern")
+                    max_count_len = len("Count")
+                    max_min_len = len("Min(ms)")
+                    max_max_len = len("Max(ms)")
+                    max_percentile_len = len("95%-ile(ms)")
+                    max_sum_len = len("Sum(ms)")
+                    max_mean_len = len("Mean(ms)")
                 
-                # Write each query with full pattern
+                # Write header with proper alignment
+                header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<8}}"
+                f.write(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%-ile(ms)", "Sum(ms)", "Mean(ms)", "AllowDiskUse") + "\n")
+                f.write("-" * (max_namespace_len + max_operation_len + max_pattern_len + max_count_len + max_min_len + max_max_len + max_percentile_len + max_sum_len + max_mean_len + 32))  # 32 for separators, spaces, and AllowDiskUse column
+                f.write("\n")
+                
+                # Write each query with full pattern and proper alignment
                 for (namespace, operation, pattern), stats_info in sorted_queries:
-                    f.write(f"{namespace} | {operation} | {pattern} | {stats_info['count']} | {stats_info['min']:.1f} | {stats_info['max']:.1f} | {stats_info['percentile_95']:.1f} | {stats_info['sum']:.1f} | {stats_info['mean']:.1f} | {'Yes' if stats_info['allowDiskUse'] else 'No'}\n")
+                    row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<8}}"
+                    f.write(row_fmt.format(
+                        namespace,
+                        operation,
+                        pattern,
+                        stats_info['count'],
+                        f"{stats_info['min']:.1f}",
+                        f"{stats_info['max']:.1f}",
+                        f"{stats_info['percentile_95']:.1f}",
+                        f"{stats_info['sum']:.1f}",
+                        f"{stats_info['mean']:.1f}",
+                        'Yes' if stats_info['allowDiskUse'] else 'No'
+                    ) + "\n")
             
-            click.echo(f"Complete query patterns written to: {full_patterns}")
+            click.echo(f"Complete query patterns written to: {report_full_patterns}")
             return
         
         # Display MongoDB Log Summary
@@ -1132,19 +1182,68 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
         else:
             sorted_queries = list(query_stats.items())
         
-        # Display header
-        click.echo("Namespace | Operation | Pattern | Count | Min(ms) | Max(ms) | 95%-ile(ms) | Sum(ms) | Mean(ms)")
-        click.echo("-" * 120)
+        # Calculate column widths for proper alignment
+        if sorted_queries:
+            # Calculate max widths for each column
+            max_namespace_len = max(len(str(key[0])) for key in query_stats.keys())
+            max_operation_len = max(len(str(key[1])) for key in query_stats.keys())
+            max_pattern_len = max(len(pattern[:150] + "..." if len(pattern) > 150 else pattern) for (_, _, pattern) in query_stats.keys())
+            max_count_len = max(len(str(stats['count'])) for stats in query_stats.values())
+            max_min_len = max(len(f"{stats['min']:.1f}") for stats in query_stats.values())
+            max_max_len = max(len(f"{stats['max']:.1f}") for stats in query_stats.values())
+            max_percentile_len = max(len(f"{stats['percentile_95']:.1f}") for stats in query_stats.values())
+            max_sum_len = max(len(f"{stats['sum']:.1f}") for stats in query_stats.values())
+            max_mean_len = max(len(f"{stats['mean']:.1f}") for stats in query_stats.values())
+            
+            # Ensure minimum widths for headers
+            max_namespace_len = max(max_namespace_len, len("Namespace"))
+            max_operation_len = max(max_operation_len, len("Operation"))
+            max_pattern_len = max(max_pattern_len, len("Pattern"))
+            max_count_len = max(max_count_len, len("Count"))
+            max_min_len = max(max_min_len, len("Min(ms)"))
+            max_max_len = max(max_max_len, len("Max(ms)"))
+            max_percentile_len = max(max_percentile_len, len("95%-ile(ms)"))
+            max_sum_len = max(max_sum_len, len("Sum(ms)"))
+            max_mean_len = max(max_mean_len, len("Mean(ms)"))
+        else:
+            # Default widths if no data
+            max_namespace_len = len("Namespace")
+            max_operation_len = len("Operation")
+            max_pattern_len = len("Pattern")
+            max_count_len = len("Count")
+            max_min_len = len("Min(ms)")
+            max_max_len = len("Max(ms)")
+            max_percentile_len = len("95%-ile(ms)")
+            max_sum_len = len("Sum(ms)")
+            max_mean_len = len("Mean(ms)")
         
-        # Display each query with truncated pattern
+        # Display header with proper alignment
+        header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}}"
+        click.echo(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%-ile(ms)", "Sum(ms)", "Mean(ms)"))
+        click.echo("-" * (max_namespace_len + max_operation_len + max_pattern_len + max_count_len + max_min_len + max_max_len + max_percentile_len + max_sum_len + max_mean_len + 24))  # 24 for separators and spaces
+        
+        # Display each query with truncated pattern and proper alignment
         for (namespace, operation, pattern), stats_info in sorted_queries:
             # Truncate pattern to 150 characters
             display_pattern = pattern[:150] + "..." if len(pattern) > 150 else pattern
             
-            click.echo(f"{namespace} | {operation} | {display_pattern} | {stats_info['count']} | {stats_info['min']:.1f} | {stats_info['max']:.1f} | {stats_info['percentile_95']:.1f} | {stats_info['sum']:.1f} | {stats_info['mean']:.1f}")
+            row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}}"
+            click.echo(row_fmt.format(
+                namespace,
+                operation,
+                display_pattern,
+                stats_info['count'],
+                f"{stats_info['min']:.1f}",
+                f"{stats_info['max']:.1f}",
+                f"{stats_info['percentile_95']:.1f}",
+                f"{stats_info['sum']:.1f}",
+                f"{stats_info['mean']:.1f}"
+            ))
         
         if not query_stats:
             click.echo("No query patterns found in the log.")
+        else:
+            click.echo("\n💡 For the full pattern report, use --report-full-patterns <output-file>.")
         return
 
     # Default: summary mode
