@@ -76,8 +76,10 @@ class CustomCommand(click.Command):
             help_index = args.index('--help')
             if help_index > 0:
                 option = args[help_index - 1]
-                self.show_contextual_help(option, formatter)
-                return
+                # Only show contextual help for actual options (starting with --)
+                if option.startswith('--'):
+                    self.show_contextual_help(option, formatter)
+                    return
         
         # Default help format
         self.show_full_help(formatter)
