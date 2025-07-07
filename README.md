@@ -106,6 +106,7 @@ The `--queries` flag analyzes query patterns and provides performance statistics
 - **Full Patterns**: Use `--report-full-patterns <file>` to write complete patterns to a file instead of printing to terminal
 - **Namespace Filtering**: Use `--namespace` to filter queries by specific database.collection
 - **Operation Filtering**: Use `--operation` to filter queries by operation type (find, insert, update, delete, aggregate)
+- **Histogram**: Use `--report-histogram` to show execution time distribution
 - **Sorting**: Use `--sort-by` with values like `count`, `mean`, `max`, `min`, `95%-ile`, or `sum`
 
 Example:
@@ -139,6 +140,18 @@ pepi --fetch mongodb.log --queries --operation find --namespace test.users
 
 # Filter by operation, sort by count, and generate report
 pepi --fetch mongodb.log --queries --operation aggregate --sort-by count --report-full-patterns aggregate_report.txt
+
+# Show execution time distribution histogram
+pepi --fetch mongodb.log --queries --report-histogram
+
+# Show execution time distribution histogram
+pepi --fetch mongodb.log --queries --report-histogram
+
+# Filter by namespace and show histogram for that namespace
+pepi --fetch mongodb.log --queries --namespace test.users --report-histogram
+
+# Filter by namespace and operation, show histogram for that specific slice
+pepi --fetch mongodb.log --queries --namespace test.users --operation find --report-histogram
 ```
 
 ### Connection Analysis

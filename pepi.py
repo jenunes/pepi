@@ -105,6 +105,7 @@ class CustomCommand(click.Command):
             formatter.write_text("    --report-full-patterns  Write complete patterns to file")
             formatter.write_text("    --namespace      Filter by namespace (e.g., 'database.collection')")
             formatter.write_text("    --operation      Filter by operation type (e.g., 'find', 'insert', 'update')")
+            formatter.write_text("    --report-histogram  Show execution time distribution histogram")
             formatter.write_text("")
             formatter.write_text("  Examples:")
             formatter.write_text("    pepi.py --fetch logfile --connections")
@@ -119,6 +120,7 @@ class CustomCommand(click.Command):
             formatter.write_text("    pepi.py --fetch logfile --queries --report-full-patterns report.txt")
             formatter.write_text("    pepi.py --fetch logfile --queries --namespace test.users")
             formatter.write_text("    pepi.py --fetch logfile --queries --operation find")
+            formatter.write_text("    pepi.py --fetch logfile --queries --report-histogram")
         
         # Write default behavior
         with formatter.section("Default Behavior"):
@@ -545,6 +547,47 @@ def parse_queries(logfile):
     
     return queries
 
+def generate_histogram(durations, max_bars=50):
+    """Generate histogram of execution time distribution."""
+    if not durations:
+        return "No data available for histogram."
+    
+    # Define time buckets (in milliseconds)
+    buckets = [
+        (0, 1, "1ms"),
+        (1, 10, "10ms"),
+        (10, 100, "100ms"),
+        (100, 1000, "1s"),
+        (1000, 10000, "10s"),
+        (10000, float('inf'), "10s+")
+    ]
+    
+    # Count durations in each bucket
+    bucket_counts = {label: 0 for _, _, label in buckets}
+    
+    for duration in durations:
+        for min_val, max_val, label in buckets:
+            if min_val <= duration < max_val:
+                bucket_counts[label] += 1
+                break
+    
+    # Find the maximum count for scaling
+    max_count = max(bucket_counts.values()) if bucket_counts.values() else 1
+    
+    # Generate histogram
+    histogram_lines = ["# Execution time distribution"]
+    
+    for _, _, label in buckets:
+        count = bucket_counts[label]
+        if count > 0:
+            # Scale the bar length
+            bar_length = int((count / max_count) * max_bars) if max_count > 0 else 0
+            bar = "#" * bar_length
+            histogram_lines.append(f"{label:>6}  {bar} ({count})")
+    
+    return "\n".join(histogram_lines)
+
+
 def calculate_query_stats(queries_data):
     """Calculate query statistics including percentiles, grouped by pattern."""
     stats = {}
@@ -574,7 +617,8 @@ def calculate_query_stats(queries_data):
             'mean': mean_duration,
             'percentile_95': percentile_95,
             'allowDiskUse': query_info['allowDiskUse'],
-            'pattern': query_info['pattern']
+            'pattern': query_info['pattern'],
+            'durations': query_info['durations']
         }
     
     return stats
@@ -684,9 +728,11 @@ def calculate_connection_stats(connections_data):
               help='Filter queries by namespace (e.g., "database.collection").')
 @click.option('--operation', type=str, 
               help='Filter queries by operation type (e.g., "find", "insert", "update", "delete", "aggregate").')
+@click.option('--report-histogram', is_flag=True, 
+              help='Show histogram of execution time distribution.')
 @click.option('--clear-cache', is_flag=True, 
               help='Clear all cached data and re-parse files.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, clear_cache):
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache):
     """pepi: MongoDB log analysis tool."""
     
     # Check if logfile is provided
@@ -1295,6 +1341,17 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
         if not query_stats:
             click.echo("No query patterns found in the log.")
         else:
+            # Show histogram for overall execution time distribution
+            if report_histogram:
+                # Collect all durations for the filtered data
+                all_durations = []
+                for stats_info in query_stats.values():
+                    all_durations.extend(stats_info['durations'])
+                
+                if all_durations:
+                    click.echo("\n# Execution time distribution")
+                    click.echo(generate_histogram(all_durations))
+            
             click.echo("\n💡 For the full pattern report, use --report-full-patterns <output-file>.")
         return
 
