@@ -196,9 +196,9 @@ def parse_connections(logfile):
             except Exception:
                 pass
     
-    # Save to cache
+    # Save to cache - convert defaultdict to dict for pickling
     cache_data = {
-        'connections': connections,
+        'connections': dict(connections),
         'total_opened': total_opened,
         'total_closed': total_closed
     }
@@ -519,8 +519,8 @@ def parse_queries(logfile):
             except Exception:
                 pass
     
-    # Save to cache
-    cache_data = {'queries': queries}
+    # Save to cache - convert defaultdict to dict for pickling
+    cache_data = {'queries': dict(queries)}
     save_to_cache(cache_key, cache_data)
     
     return queries
