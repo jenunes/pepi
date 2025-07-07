@@ -103,6 +103,7 @@ class CustomCommand(click.Command):
             formatter.write_text("  Query Sub-options (use with --queries):")
             formatter.write_text("    --sort-by        Sort by: count | min | max | 95%-ile | sum | mean")
             formatter.write_text("    --report-full-patterns  Write complete patterns to file")
+            formatter.write_text("    --namespace      Filter by namespace (e.g., 'database.collection')")
             formatter.write_text("")
             formatter.write_text("  Examples:")
             formatter.write_text("    pepi.py --fetch logfile --connections")
@@ -115,6 +116,7 @@ class CustomCommand(click.Command):
             formatter.write_text("    pepi.py --fetch logfile --queries --sort-by mean")
             formatter.write_text("    pepi.py --fetch logfile --queries --sort-by 95%-ile")
             formatter.write_text("    pepi.py --fetch logfile --queries --report-full-patterns report.txt")
+            formatter.write_text("    pepi.py --fetch logfile --queries --namespace test.users")
         
         # Write default behavior
         with formatter.section("Default Behavior"):
@@ -676,9 +678,11 @@ def calculate_connection_stats(connections_data):
               help='Print query pattern statistics and performance analysis.')
 @click.option('--report-full-patterns', type=click.Path(), 
               help='Write complete query patterns to file (requires output file path).')
+@click.option('--namespace', type=str, 
+              help='Filter queries by namespace (e.g., "database.collection").')
 @click.option('--clear-cache', is_flag=True, 
               help='Clear all cached data and re-parse files.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, clear_cache):
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, clear_cache):
     """pepi: MongoDB log analysis tool."""
     
     # Check if logfile is provided
@@ -1038,6 +1042,17 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                 f.write(f"Log file: {logfile}\n")
                 f.write(f"Analysis date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
                 
+                # Filter by namespace if specified
+                if namespace:
+                    filtered_queries = {}
+                    for (ns, operation, pattern), stats_info in query_stats.items():
+                        if ns == namespace:
+                            filtered_queries[(ns, operation, pattern)] = stats_info
+                    query_stats = filtered_queries
+                    if not query_stats:
+                        f.write(f"No queries found for namespace: {namespace}\n")
+                        return
+                
                 # Sort if requested
                 if sort_by:
                     if sort_by == 'count':
@@ -1162,6 +1177,17 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
         
         # Display query pattern statistics
         click.echo("\n===== Query Pattern Statistics =====")
+        
+        # Filter by namespace if specified
+        if namespace:
+            filtered_queries = {}
+            for (ns, operation, pattern), stats_info in query_stats.items():
+                if ns == namespace:
+                    filtered_queries[(ns, operation, pattern)] = stats_info
+            query_stats = filtered_queries
+            if not query_stats:
+                click.echo(f"No queries found for namespace: {namespace}")
+                return
         
         # Sort if requested
         if sort_by:
