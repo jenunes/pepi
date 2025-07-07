@@ -5,6 +5,53 @@ from collections import defaultdict
 import statistics
 import re
 from tqdm import tqdm
+import hashlib
+import os
+import pickle
+from pathlib import Path
+
+# Cache management
+CACHE_DIR = Path.home() / '.pepi_cache'
+CACHE_DIR.mkdir(exist_ok=True)
+
+def get_file_hash(filepath):
+    """Calculate SHA256 hash of file for cache invalidation."""
+    hash_sha256 = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_sha256.update(chunk)
+    return hash_sha256.hexdigest()
+
+def get_cache_key(filepath, analysis_type):
+    """Generate cache key for specific analysis type."""
+    file_hash = get_file_hash(filepath)
+    return f"{file_hash}_{analysis_type}"
+
+def get_cache_file(cache_key):
+    """Get cache file path for given key."""
+    return CACHE_DIR / f"{cache_key}.pkl"
+
+def load_from_cache(cache_key):
+    """Load cached results if available and valid."""
+    cache_file = get_cache_file(cache_key)
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)
+        except Exception:
+            # If cache is corrupted, remove it
+            cache_file.unlink(missing_ok=True)
+    return None
+
+def save_to_cache(cache_key, data):
+    """Save results to cache."""
+    cache_file = get_cache_file(cache_key)
+    try:
+        with open(cache_file, 'wb') as f:
+            pickle.dump(data, f)
+    except Exception:
+        # If cache write fails, continue without caching
+        pass
 
 class CustomCommand(click.Command):
     def format_help(self, ctx, formatter):
@@ -70,6 +117,13 @@ class CustomCommand(click.Command):
 
 def parse_connections(logfile):
     """Parse connection information from MongoDB log file."""
+    # Check cache first
+    cache_key = get_cache_key(logfile, 'connections')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached connection data...")
+        return cached_result['connections'], cached_result['total_opened'], cached_result['total_closed']
+    
     def default_connection_data():
         return {'opened': 0, 'closed': 0, 'durations': []}
     
@@ -142,10 +196,25 @@ def parse_connections(logfile):
             except Exception:
                 pass
     
+    # Save to cache
+    cache_data = {
+        'connections': connections,
+        'total_opened': total_opened,
+        'total_closed': total_closed
+    }
+    save_to_cache(cache_key, cache_data)
+    
     return connections, total_opened, total_closed
 
 def parse_replica_set_config(logfile):
     """Parse replica set configuration from MongoDB log file."""
+    # Check cache first
+    cache_key = get_cache_key(logfile, 'rs_config')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached replica set config data...")
+        return cached_result['configs']
+    
     configs = []
     
     # Count lines for progress bar
@@ -166,10 +235,21 @@ def parse_replica_set_config(logfile):
             except Exception:
                 pass
     
+    # Save to cache
+    cache_data = {'configs': configs}
+    save_to_cache(cache_key, cache_data)
+    
     return configs
 
 def parse_replica_set_state(logfile):
     """Parse replica set state transitions and current node status from MongoDB log file."""
+    # Check cache first
+    cache_key = get_cache_key(logfile, 'rs_state')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached replica set state data...")
+        return cached_result['states'], cached_result['node_status']
+    
     states = []
     node_status = {}
     replica_set_config = None
@@ -233,10 +313,24 @@ def parse_replica_set_state(logfile):
             except Exception:
                 pass
     
+    # Save to cache
+    cache_data = {
+        'states': states,
+        'node_status': node_status
+    }
+    save_to_cache(cache_key, cache_data)
+    
     return states, node_status
 
 def parse_clients(logfile):
     """Parse client/driver information from MongoDB log file."""
+    # Check cache first
+    cache_key = get_cache_key(logfile, 'clients')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached client data...")
+        return cached_result['clients']
+    
     clients = {}  # Group by driver info
     connection_drivers = {}  # Track which connections belong to which driver
     
@@ -304,6 +398,10 @@ def parse_clients(logfile):
             except Exception:
                 pass
     
+    # Save to cache
+    cache_data = {'clients': clients}
+    save_to_cache(cache_key, cache_data)
+    
     return clients
 
 def count_lines(logfile):
@@ -354,6 +452,13 @@ def extract_query_pattern(operation, command):
 
 def parse_queries(logfile):
     """Parse query patterns and statistics from MongoDB log file, grouped by pattern."""
+    # Check cache first
+    cache_key = get_cache_key(logfile, 'queries')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached query data...")
+        return cached_result['queries']
+    
     def default_query_data():
         return {
             'count': 0,
@@ -413,6 +518,10 @@ def parse_queries(logfile):
                     
             except Exception:
                 pass
+    
+    # Save to cache
+    cache_data = {'queries': queries}
+    save_to_cache(cache_key, cache_data)
     
     return queries
 
@@ -549,12 +658,25 @@ def calculate_connection_stats(connections_data):
               help='Print client/driver information and authentication details.')
 @click.option('--queries', is_flag=True, 
               help='Print query pattern statistics and performance analysis.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries):
+@click.option('--clear-cache', is_flag=True, 
+              help='Clear all cached data and re-parse files.')
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, clear_cache):
     """pepi: MongoDB log analysis tool."""
     
     # Check if logfile is provided
     if not logfile:
         click.echo("Pepi didn't find anything to fetch")
+        return
+    
+    # Clear cache if requested
+    if clear_cache:
+        cache_files = list(CACHE_DIR.glob('*.pkl'))
+        if cache_files:
+            for cache_file in cache_files:
+                cache_file.unlink()
+            click.echo(f"Cleared {len(cache_files)} cached files.")
+        else:
+            click.echo("No cached files to clear.")
         return
     
     # Initialize variables for all sections
@@ -567,54 +689,79 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
     cmd_options = None
     last_line = None
 
-    # Parse log file for basic information
-    total_lines = count_lines(logfile)
-    with open(logfile, 'r') as f:
-        for line in tqdm(f, total=total_lines, desc="Reading log file", unit="lines"):
-            num_lines += 1
-            if not start_date:
-                try:
-                    entry = json.loads(line)
-                    start_date = entry.get('t', {}).get('$date')
-                except Exception:
-                    pass
-            # Check for OS and kernel version
-            if not os_version or not kernel_version:
-                try:
-                    entry = json.loads(line)
-                    if entry.get('msg') == 'Operating System':
-                        os_version = entry.get('attr', {}).get('os', {}).get('name')
-                        kernel_version = entry.get('attr', {}).get('os', {}).get('version')
-                except Exception:
-                    pass
-            # Check for DB version
-            if not db_version:
-                try:
-                    entry = json.loads(line)
-                    if entry.get('msg') == 'Build Info':
-                        db_version = entry.get('attr', {}).get('buildInfo', {}).get('version')
-                except Exception:
-                    pass
-            # Check for command line options
-            if not cmd_options:
-                try:
-                    entry = json.loads(line)
-                    if (
-                        entry.get('msg') == 'Options set by command line' and
-                        entry.get('ctx') == 'initandlisten'
-                    ):
-                        cmd_options = entry.get('attr', {}).get('options')
-                except Exception:
-                    pass
-            last_line = line
+    # Check cache for basic log information
+    cache_key = get_cache_key(logfile, 'basic_info')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached basic log information...")
+        start_date = cached_result['start_date']
+        end_date = cached_result['end_date']
+        num_lines = cached_result['num_lines']
+        os_version = cached_result['os_version']
+        kernel_version = cached_result['kernel_version']
+        db_version = cached_result['db_version']
+        cmd_options = cached_result['cmd_options']
+    else:
+                # Parse log file for basic information
+        total_lines = count_lines(logfile)
+        with open(logfile, 'r') as f:
+            for line in tqdm(f, total=total_lines, desc="Reading log file", unit="lines"):
+                num_lines += 1
+                if not start_date:
+                    try:
+                        entry = json.loads(line)
+                        start_date = entry.get('t', {}).get('$date')
+                    except Exception:
+                        pass
+                # Check for OS and kernel version
+                if not os_version or not kernel_version:
+                    try:
+                        entry = json.loads(line)
+                        if entry.get('msg') == 'Operating System':
+                            os_version = entry.get('attr', {}).get('os', {}).get('name')
+                            kernel_version = entry.get('attr', {}).get('os', {}).get('version')
+                    except Exception:
+                        pass
+                # Check for DB version
+                if not db_version:
+                    try:
+                        entry = json.loads(line)
+                        if entry.get('msg') == 'Build Info':
+                            db_version = entry.get('attr', {}).get('buildInfo', {}).get('version')
+                    except Exception:
+                        pass
+                # Check for command line options
+                if not cmd_options:
+                    try:
+                        entry = json.loads(line)
+                        if (
+                            entry.get('msg') == 'Options set by command line' and
+                            entry.get('ctx') == 'initandlisten'
+                        ):
+                            cmd_options = entry.get('attr', {}).get('options')
+                    except Exception:
+                        pass
+                last_line = line
 
-    # Get end date from last line
-    if last_line:
-        try:
-            entry = json.loads(last_line)
-            end_date = entry.get('t', {}).get('$date')
-        except Exception:
-            pass
+        # Get end date from last line
+        if last_line:
+            try:
+                entry = json.loads(last_line)
+                end_date = entry.get('t', {}).get('$date')
+            except Exception:
+                pass
+        
+        # Save to cache
+        cache_data = {
+            'start_date': start_date,
+            'end_date': end_date,
+            'num_lines': num_lines,
+            'os_version': os_version,
+            'kernel_version': kernel_version,
+            'db_version': db_version,
+            'cmd_options': cmd_options
+        }
+        save_to_cache(cache_key, cache_data)
 
     if rs_conf:
         click.echo("===== Replica Set Configuration =====")
