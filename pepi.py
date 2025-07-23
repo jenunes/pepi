@@ -107,7 +107,7 @@ class CustomCommand(click.Command):
                 formatter.write_text("--queries           Print query pattern statistics and performance analysis")
                 formatter.write_text("")
                 formatter.write_text("Query Sub-options:")
-                formatter.write_text("  --sort-by        Sort by: count | min | max | 95%-ile | sum | mean")
+                formatter.write_text("  --sort-by        Sort by: count | min | max | 95% | sum | mean")
                 formatter.write_text("  --report-full-patterns  Write complete patterns to file")
                 formatter.write_text("  --namespace      Filter by namespace (e.g., 'database.collection')")
                 formatter.write_text("  --operation      Filter by operation type (e.g., 'find', 'insert', 'update')")
@@ -117,7 +117,7 @@ class CustomCommand(click.Command):
                 formatter.write_text("  pepi.py --fetch logfile --queries")
                 formatter.write_text("  pepi.py --fetch logfile --queries --sort-by count")
                 formatter.write_text("  pepi.py --fetch logfile --queries --sort-by mean")
-                formatter.write_text("  pepi.py --fetch logfile --queries --sort-by 95%-ile")
+                formatter.write_text("  pepi.py --fetch logfile --queries --sort-by 95%")
                 formatter.write_text("  pepi.py --fetch logfile --queries --report-full-patterns report.txt")
                 formatter.write_text("  pepi.py --fetch logfile --queries --namespace test.users")
                 formatter.write_text("  pepi.py --fetch logfile --queries --operation find")
@@ -523,7 +523,17 @@ def parse_queries(logfile):
     cached_result = load_from_cache(cache_key)
     if cached_result:
         click.echo("Using cached query data...")
-        return cached_result['queries']
+        # Convert lists back to sets for consistency
+        queries = cached_result['queries']
+        for key, value in queries.items():
+            if isinstance(value.get('operations'), list):
+                value['operations'] = set(value['operations'])
+            if isinstance(value.get('indexes'), list):
+                value['indexes'] = set(value['indexes'])
+            # Handle case where old cache doesn't have indexes field
+            if 'indexes' not in value:
+                value['indexes'] = set()
+        return queries
     
     def default_query_data():
         return {
@@ -531,7 +541,8 @@ def parse_queries(logfile):
             'durations': [],
             'allowDiskUse': False,
             'operations': set(),
-            'pattern': None
+            'pattern': None,
+            'indexes': set()
         }
     
     queries = defaultdict(default_query_data)
@@ -566,16 +577,32 @@ def parse_queries(logfile):
                     duration_ms = attr.get('durationMillis', 0)
                     # Extract allowDiskUse flag
                     allow_disk_use = command.get('allowDiskUse', False)
+                    # Extract index information from planSummary
+                    plan_summary = attr.get('planSummary', '')
+                    index_used = 'COLLSCAN' if plan_summary == 'COLLSCAN' else plan_summary
+                    if not index_used:
+                        index_used = 'N/A'
                     # Update query statistics
                     queries[group_key]['count'] += 1
                     queries[group_key]['durations'].append(duration_ms)
                     queries[group_key]['operations'].add(operation)
                     queries[group_key]['allowDiskUse'] = queries[group_key]['allowDiskUse'] or allow_disk_use
                     queries[group_key]['pattern'] = pattern
+                    queries[group_key]['indexes'].add(index_used)
             except Exception:
                 pass
-    # Save to cache - convert defaultdict to dict for pickling
-    cache_data = {'queries': dict(queries)}
+    # Save to cache - convert defaultdict to dict and sets to lists for pickling
+    queries_dict = {}
+    for key, value in queries.items():
+        queries_dict[key] = {
+            'count': value['count'],
+            'durations': value['durations'],
+            'allowDiskUse': value['allowDiskUse'],
+            'operations': list(value['operations']),
+            'pattern': value['pattern'],
+            'indexes': list(value['indexes'])
+        }
+    cache_data = {'queries': queries_dict}
     save_to_cache(cache_key, cache_data)
     
     return queries
@@ -651,7 +678,8 @@ def calculate_query_stats(queries_data):
             'percentile_95': percentile_95,
             'allowDiskUse': query_info['allowDiskUse'],
             'pattern': query_info['pattern'],
-            'durations': query_info['durations']
+            'durations': query_info['durations'],
+            'indexes': query_info['indexes']
         }
     
     return stats
@@ -747,7 +775,7 @@ def calculate_connection_stats(connections_data):
               help='Print connection information and statistics.')
 @click.option('--stats', is_flag=True, 
               help='Include connection duration statistics (use with --connections).')
-@click.option('--sort-by', type=click.Choice(['opened', 'closed', 'count', 'min', 'max', '95%-ile', 'sum', 'mean']), 
+@click.option('--sort-by', type=click.Choice(['opened', 'closed', 'count', 'min', 'max', '95%', 'sum', 'mean']), 
               help='Sort by specified metric (use with --connections or --queries).')
 @click.option('--compare', multiple=True, 
               help='Compare 2-3 specific hostnames/IPs (use with --connections).')
@@ -1155,7 +1183,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                         sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['min'], reverse=True)
                     elif sort_by == 'max':
                         sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['max'], reverse=True)
-                    elif sort_by == '95%-ile':
+                    elif sort_by == '95%':
                         sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['percentile_95'], reverse=True)
                     elif sort_by == 'sum':
                         sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['sum'], reverse=True)
@@ -1177,6 +1205,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                     max_percentile_len = max(len(f"{stats['percentile_95']:.1f}") for stats in query_stats.values())
                     max_sum_len = max(len(f"{stats['sum']:.1f}") for stats in query_stats.values())
                     max_mean_len = max(len(f"{stats['mean']:.1f}") for stats in query_stats.values())
+                    max_index_len = max(len(', '.join(sorted(stats['indexes']))) for stats in query_stats.values())
                     
                     # Ensure minimum widths for headers
                     max_namespace_len = max(max_namespace_len, len("Namespace"))
@@ -1185,9 +1214,10 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                     max_count_len = max(max_count_len, len("Count"))
                     max_min_len = max(max_min_len, len("Min(ms)"))
                     max_max_len = max(max_max_len, len("Max(ms)"))
-                    max_percentile_len = max(max_percentile_len, len("95%-ile(ms)"))
+                    max_percentile_len = max(max_percentile_len, len("95%(ms)"))
                     max_sum_len = max(max_sum_len, len("Sum(ms)"))
                     max_mean_len = max(max_mean_len, len("Mean(ms)"))
+                    max_index_len = max(max_index_len, len("Index"))
                 else:
                     # Default widths if no data
                     max_namespace_len = len("Namespace")
@@ -1196,19 +1226,21 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                     max_count_len = len("Count")
                     max_min_len = len("Min(ms)")
                     max_max_len = len("Max(ms)")
-                    max_percentile_len = len("95%-ile(ms)")
+                    max_percentile_len = len("95%(ms)")
                     max_sum_len = len("Sum(ms)")
                     max_mean_len = len("Mean(ms)")
+                    max_index_len = len("Index")
                 
                 # Write header with proper alignment
-                header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<8}}"
-                f.write(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%-ile(ms)", "Sum(ms)", "Mean(ms)", "AllowDiskUse") + "\n")
-                f.write("-" * (max_namespace_len + max_operation_len + max_pattern_len + max_count_len + max_min_len + max_max_len + max_percentile_len + max_sum_len + max_mean_len + 32))  # 32 for separators, spaces, and AllowDiskUse column
+                header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<8}} | {{:<{max_index_len}}}"
+                f.write(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%(ms)", "Sum(ms)", "Mean(ms)", "AllowDiskUse", "Index") + "\n")
+                f.write("-" * (max_namespace_len + max_operation_len + max_pattern_len + max_count_len + max_min_len + max_max_len + max_percentile_len + max_sum_len + max_mean_len + max_index_len + 35))  # 35 for separators, spaces, and AllowDiskUse column
                 f.write("\n")
                 
                 # Write each query with full pattern and proper alignment
                 for (namespace, operation, pattern), stats_info in sorted_queries:
-                    row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<8}}"
+                    indexes_display = ', '.join(sorted(stats_info['indexes'])) if stats_info['indexes'] else 'N/A'
+                    row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<8}} | {{:<{max_index_len}}}"
                     f.write(row_fmt.format(
                         namespace,
                         operation,
@@ -1219,7 +1251,8 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                         f"{stats_info['percentile_95']:.1f}",
                         f"{stats_info['sum']:.1f}",
                         f"{stats_info['mean']:.1f}",
-                        'Yes' if stats_info['allowDiskUse'] else 'No'
+                        'Yes' if stats_info['allowDiskUse'] else 'No',
+                        indexes_display
                     ) + "\n")
             
             click.echo(f"Complete query patterns written to: {report_full_patterns}")
@@ -1302,7 +1335,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                 sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['min'], reverse=True)
             elif sort_by == 'max':
                 sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['max'], reverse=True)
-            elif sort_by == '95%-ile':
+            elif sort_by == '95%':
                 sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['percentile_95'], reverse=True)
             elif sort_by == 'sum':
                 sorted_queries = sorted(query_stats.items(), key=lambda x: x[1]['sum'], reverse=True)
@@ -1325,6 +1358,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
             max_percentile_len = max(len(f"{stats['percentile_95']:.1f}") for stats in query_stats.values())
             max_sum_len = max(len(f"{stats['sum']:.1f}") for stats in query_stats.values())
             max_mean_len = max(len(f"{stats['mean']:.1f}") for stats in query_stats.values())
+            max_index_len = max(len(', '.join(sorted(stats['indexes']))) for stats in query_stats.values())
             
             # Ensure minimum widths for headers
             max_namespace_len = max(max_namespace_len, len("Namespace"))
@@ -1333,9 +1367,10 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
             max_count_len = max(max_count_len, len("Count"))
             max_min_len = max(max_min_len, len("Min(ms)"))
             max_max_len = max(max_max_len, len("Max(ms)"))
-            max_percentile_len = max(max_percentile_len, len("95%-ile(ms)"))
+            max_percentile_len = max(max_percentile_len, len("95%(ms)"))
             max_sum_len = max(max_sum_len, len("Sum(ms)"))
             max_mean_len = max(max_mean_len, len("Mean(ms)"))
+            max_index_len = max(max_index_len, len("Index"))
         else:
             # Default widths if no data
             max_namespace_len = len("Namespace")
@@ -1344,21 +1379,24 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
             max_count_len = len("Count")
             max_min_len = len("Min(ms)")
             max_max_len = len("Max(ms)")
-            max_percentile_len = len("95%-ile(ms)")
+            max_percentile_len = len("95%(ms)")
             max_sum_len = len("Sum(ms)")
             max_mean_len = len("Mean(ms)")
+            max_index_len = len("Index")
         
         # Display header with proper alignment
-        header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}}"
-        click.echo(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%-ile(ms)", "Sum(ms)", "Mean(ms)"))
-        click.echo("-" * (max_namespace_len + max_operation_len + max_pattern_len + max_count_len + max_min_len + max_max_len + max_percentile_len + max_sum_len + max_mean_len + 24))  # 24 for separators and spaces
+        header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<{max_index_len}}}"
+        click.echo(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%(ms)", "Sum(ms)", "Mean(ms)", "Index"))
+        click.echo("-" * (max_namespace_len + max_operation_len + max_pattern_len + max_count_len + max_min_len + max_max_len + max_percentile_len + max_sum_len + max_mean_len + max_index_len + 27))  # 27 for separators and spaces
         
         # Display each query with truncated pattern and proper alignment
         for (namespace, operation, pattern), stats_info in sorted_queries:
             # Truncate pattern to 150 characters
             display_pattern = pattern[:150] + "..." if len(pattern) > 150 else pattern
+            # Format indexes for display
+            indexes_display = ', '.join(sorted(stats_info['indexes'])) if stats_info['indexes'] else 'N/A'
             
-            row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}}"
+            row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<{max_index_len}}}"
             click.echo(row_fmt.format(
                 namespace,
                 operation,
@@ -1368,7 +1406,8 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                 f"{stats_info['max']:.1f}",
                 f"{stats_info['percentile_95']:.1f}",
                 f"{stats_info['sum']:.1f}",
-                f"{stats_info['mean']:.1f}"
+                f"{stats_info['mean']:.1f}",
+                indexes_display
             ))
         
         if not query_stats:

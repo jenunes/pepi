@@ -47,15 +47,27 @@ pepi uses an automatic cache system to speed up repeated analysis of large log f
 
 You can always force a re-parse and clear the cache with the `--clear-cache` flag.
 
-2. Create and activate a Python virtual environment (recommended):
+2. **Option A: Install globally (recommended)**
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   pip install -e .
+   ```
+   After installation, you can run `pepi` from anywhere on your system:
+   ```bash
+   pepi --fetch /path/to/mongod.log
+   pepi --fetch /path/to/mongod.log --connections
    ```
 
-3. Install dependencies:
+3. **Option B: Use with virtual environment**
    ```bash
+   # Create and activate a Python virtual environment
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   
+   # Install dependencies
    pip install -r requirements.txt
+   
+   # Run the tool
+   python pepi.py --fetch /path/to/mongod.log
    ```
 
 ## Usage
@@ -63,45 +75,50 @@ You can always force a re-parse and clear the cache with the `--clear-cache` fla
 ### Basic Usage
 ```bash
 # Show MongoDB log summary and command line startup
-python pepi.py --fetch /path/to/mongod.log
+pepi --fetch /path/to/mongod.log
 
 # Show replica set configuration
-python pepi.py --fetch /path/to/mongod.log --rs-conf
+pepi --fetch /path/to/mongod.log --rs-conf
 
 # Show replica set node status and transitions
-python pepi.py --fetch /path/to/mongod.log --rs-state
+pepi --fetch /path/to/mongod.log --rs-state
 
 # Show client/driver information
-python pepi.py --fetch /path/to/mongod.log --clients
+pepi --fetch /path/to/mongod.log --clients
 
 # Show query pattern statistics and performance analysis
-python pepi.py --fetch /path/to/mongod.log --queries
+pepi --fetch /path/to/mongod.log --queries
 ```
 
 ### Connection Analysis
 ```bash
 # Basic connection information
-python pepi.py --fetch /path/to/mongod.log --connections
+pepi --fetch /path/to/mongod.log --connections
 
 # Connection information with duration statistics
-python pepi.py --fetch /path/to/mongod.log --connections --stats
+pepi --fetch /path/to/mongod.log --connections --stats
 
 # Sort connections by opened count (descending)
-python pepi.py --fetch /path/to/mongod.log --connections --sort-by opened
+pepi --fetch /path/to/mongod.log --connections --sort-by opened
 
 # Sort connections by closed count (descending)
-python pepi.py --fetch /path/to/mongod.log --connections --sort-by closed
+pepi --fetch /path/to/mongod.log --connections --sort-by closed
 
 # Compare specific hostnames/IPs (2-3 required)
-python pepi.py --fetch /path/to/mongod.log --connections --compare 127.0.0.1 --compare 192.168.1.100
+pepi --fetch /path/to/mongod.log --connections --compare 127.0.0.1 --compare 192.168.1.100
 
 # Combine multiple options
-python pepi.py --fetch /path/to/mongod.log --connections --stats --sort-by opened --compare 127.0.0.1 --compare 192.168.1.100
+pepi --fetch /path/to/mongod.log --connections --stats --sort-by opened --compare 127.0.0.1 --compare 192.168.1.100
+```
 
 ### Query Analysis
 
 The `--queries` flag analyzes query patterns and provides performance statistics:
 
+- **Index Information**: Shows which indexes are used by each query pattern (extracted from `planSummary`)
+  - `COLLSCAN` indicates a collection scan (no index used)
+  - Index names like `age_1`, `status_1` show specific indexes used
+  - `N/A` for operations that don't use indexes (like inserts)
 - **Pattern Truncation**: By default, query patterns longer than 150 characters are truncated with "..." to keep terminal output readable
 - **Full Patterns**: Use `--report-full-patterns <file>` to write complete patterns to a file instead of printing to terminal
 - **Namespace Filtering**: Use `--namespace` to filter queries by specific database.collection
@@ -109,7 +126,7 @@ The `--queries` flag analyzes query patterns and provides performance statistics
 - **Histogram**: Use `--report-histogram` to show overall execution time distribution for the filtered data
   - Time ranges use mathematical notation: `[a,b)` means "a to less than b"
   - Example: `[10,100)ms` = 10ms to less than 100ms
-- **Sorting**: Use `--sort-by` with values like `count`, `mean`, `max`, `min`, `95%-ile`, or `sum`
+- **Sorting**: Use `--sort-by` with values like `count`, `mean`, `max`, `min`, `95%`, or `sum`
 
 Example:
 ```bash
@@ -156,28 +173,28 @@ pepi --fetch mongodb.log --queries --namespace test.users --report-histogram
 pepi --fetch mongodb.log --queries --namespace test.users --operation find --report-histogram
 ```
 
-### Connection Analysis
+### Query Analysis Examples
 ```bash
-# Basic query pattern statistics
-python pepi.py --fetch /path/to/mongod.log --queries
+# Basic query pattern statistics (includes index information)
+pepi --fetch /path/to/mongod.log --queries
 
 # Sort queries by count (most frequent first)
-python pepi.py --fetch /path/to/mongod.log --queries --sort-by count
+pepi --fetch /path/to/mongod.log --queries --sort-by count
 
 # Sort queries by mean execution time (slowest first)
-python pepi.py --fetch /path/to/mongod.log --queries --sort-by mean
+pepi --fetch /path/to/mongod.log --queries --sort-by mean
 
 # Sort queries by 95th percentile execution time
-python pepi.py --fetch /path/to/mongod.log --queries --sort-by 95%-ile
+pepi --fetch /path/to/mongod.log --queries --sort-by 95%
 
 # Sort queries by total execution time
-python pepi.py --fetch /path/to/mongod.log --queries --sort-by sum
+pepi --fetch /path/to/mongod.log --queries --sort-by sum
 
 # Sort queries by minimum execution time
-python pepi.py --fetch /path/to/mongod.log --queries --sort-by min
+pepi --fetch /path/to/mongod.log --queries --sort-by min
 
 # Sort queries by maximum execution time
-python pepi.py --fetch /path/to/mongod.log --queries --sort-by max
+pepi --fetch /path/to/mongod.log --queries --sort-by max
 ```
 
 ## Output Examples
@@ -255,14 +272,13 @@ Timestamp: 2025-01-01T10:00:15.000Z
 ### Query Pattern Statistics
 ```
 ===== Query Pattern Statistics =====
-Namespace  | Operation | Pattern                                                | Count | Min(ms) | Max(ms) | 95%-ile(ms) | Sum(ms) | Mean(ms) | AllowDiskUse
--------------------------------------------------------------------------------------------------------------------------------------------
-test.users | find      | {"age": {"$gt": "?"}}                                  | 7     | 41.0    | 52.0    | 48.0        | 320.0   | 45.7     | No
-test.users | find      | {"status": "?"}                                        | 7     | 28.0    | 35.0    | 33.0        | 218.0   | 31.1     | No
-test.users | aggregate | [$match,$group]                                        | 3     | 120.0   | 135.0   | 125.0       | 380.0   | 126.7    | Yes
-test.users | update    | [{"q": {"name": "?"}, "u": {"$set": {"status": "?"}}}] | 2     | 18.0    | 19.0    | 18.0        | 37.0    | 18.5     | No
-test.users | insert    | insert_keys:age,name                                   | 1     | 15.0    | 15.0    | 15.0        | 15.0    | 15.0     | No
-test.users | delete    | [{"limit": "?", "q": {"status": "?"}}]                 | 1     | 22.0    | 22.0    | 22.0        | 22.0    | 22.0     | No
+Namespace  | Operation | Pattern                                                | Count | Min(ms) | Max(ms) | 95%(ms) | Sum(ms) | Mean(ms) | Index
+test.users | find      | {"age": {"$gt": "?"}}                                  | 7     | 41.0    | 52.0    | 48.0    | 320.0   | 45.7     | age_1
+test.users | find      | {"status": "?"}                                        | 7     | 28.0    | 35.0    | 33.0    | 218.0   | 31.1     | status_1
+test.users | aggregate | [$match,$group]                                        | 3     | 120.0   | 135.0   | 125.0   | 380.0   | 126.7    | COLLSCAN
+test.users | update    | [{"q": {"name": "?"}, "u": {"$set": {"status": "?"}}}] | 2     | 18.0    | 19.0    | 18.0    | 37.0    | 18.5     | name_1
+test.users | insert    | insert_keys:age,name                                   | 1     | 15.0    | 15.0    | 15.0    | 15.0    | 15.0     | N/A
+test.users | delete    | [{"limit": "?", "q": {"status": "?"}}]                 | 1     | 22.0    | 22.0    | 22.0    | 22.0    | 22.0     | status_1
 ```
 
 ## Command Line Options
@@ -287,7 +303,7 @@ test.users | delete    | [{"limit": "?", "q": {"status": "?"}}]                 
 - `--compare`: Compare 2-3 specific hostnames/IPs
 
 #### Query Sub-options (use with `--queries`)
-- `--sort-by`: Sort by `count`, `min`, `max`, `95%-ile`, `sum`, or `mean`
+- `--sort-by`: Sort by `count`, `min`, `max`, `95%`, `sum`, or `mean`
 
 ## Features in Detail
 
@@ -366,6 +382,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Version History
 
+- **v0.0.1.6**: Added index information column to query analysis showing which indexes are used
 - **v0.0.1.5**: Added `--queries` flag with query pattern analysis and performance statistics
 - **v0.0.1.4**: Major improvements: sorting, comparison, and comprehensive documentation
 - **v0.0.1.3**: Added `--clients` flag with clean tree-like display format
