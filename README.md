@@ -382,7 +382,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Version History
 
-- **v0.0.1.6**: Added index information column to query analysis showing which indexes are used
+- **v0.0.1.7**: Added index information column to query analysis showing which indexes are used
 - **v0.0.1.5**: Added `--queries` flag with query pattern analysis and performance statistics
 - **v0.0.1.4**: Major improvements: sorting, comparison, and comprehensive documentation
 - **v0.0.1.3**: Added `--clients` flag with clean tree-like display format
