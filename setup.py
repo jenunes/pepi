@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="pepi",
-    version="0.0.1.7",
+    version="0.0.1.8",
     description="A fast, user-friendly MongoDB log analysis tool",
     author="Your Name",
     author_email="your.email@example.com",
