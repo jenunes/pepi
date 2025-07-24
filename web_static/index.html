@@ -99,7 +99,10 @@
                     <div class="analysis-header">
                         <h2><i class="fas fa-search"></i> Query Analysis</h2>
                         <div class="query-controls">
-                            <input type="text" id="namespaceFilter" placeholder="Filter by namespace...">
+                            <input type="text" id="namespaceFilter" 
+                                   placeholder="e.g., test.*, *log*, mydb*" 
+                                   title="Use wildcards: test.* (prefix), *log* (contains), *Cache (suffix), or exact names"
+                                   style="min-width: 200px;">
                             <select id="operationFilter">
                                 <option value="">All operations</option>
                                 <option value="find">find</option>

@@ -66,6 +66,30 @@ def save_to_cache(cache_key, data):
         # If cache write fails, continue without caching
         pass
 
+def matches_namespace_pattern(namespace, pattern):
+    """Check if namespace matches pattern (supports wildcards like 'db.*', '*log*', 'test*' or exact match)."""
+    if not pattern:
+        return True
+    
+    # Convert user-friendly wildcards to regex
+    # Replace * with .* for wildcard matching
+    # Escape special regex characters except * and .
+    if '*' in pattern or pattern.endswith('.*'):
+        # Convert shell-like wildcards to regex
+        regex_pattern = pattern.replace('.', r'\.')  # Escape dots first
+        regex_pattern = regex_pattern.replace(r'\.*', '.*')  # Restore .* wildcards  
+        regex_pattern = regex_pattern.replace('*', '.*')  # Convert remaining * to .*
+        regex_pattern = f'^{regex_pattern}$'  # Anchor to match full string
+        
+        try:
+            return bool(re.match(regex_pattern, namespace))
+        except re.error:
+            # If conversion fails, fall back to exact match
+            return namespace == pattern
+    else:
+        # Exact match for patterns without wildcards
+        return namespace == pattern
+
 class CustomCommand(click.Command):
     def format_help(self, ctx, formatter):
         """Custom help formatter with contextual help."""
@@ -110,7 +134,7 @@ class CustomCommand(click.Command):
                 formatter.write_text("Query Sub-options:")
                 formatter.write_text("  --sort-by        Sort by: count | min | max | 95% | sum | mean")
                 formatter.write_text("  --report-full-patterns  Write complete patterns to file")
-                formatter.write_text("  --namespace      Filter by namespace (e.g., 'database.collection')")
+                formatter.write_text("  --namespace      Filter by namespace pattern (e.g., 'test.*', '*log*', 'mydb*')")
                 formatter.write_text("  --operation      Filter by operation type (e.g., 'find', 'insert', 'update')")
                 formatter.write_text("  --report-histogram  Show execution time distribution histogram")
                 formatter.write_text("")
@@ -120,7 +144,7 @@ class CustomCommand(click.Command):
                 formatter.write_text("  pepi.py --fetch logfile --queries --sort-by mean")
                 formatter.write_text("  pepi.py --fetch logfile --queries --sort-by 95%")
                 formatter.write_text("  pepi.py --fetch logfile --queries --report-full-patterns report.txt")
-                formatter.write_text("  pepi.py --fetch logfile --queries --namespace test.users")
+                formatter.write_text("  pepi.py --fetch logfile --queries --namespace '*log*'")
                 formatter.write_text("  pepi.py --fetch logfile --queries --operation find")
                 formatter.write_text("  pepi.py --fetch logfile --queries --report-histogram")
         
@@ -329,13 +353,25 @@ def parse_replica_set_config(logfile):
         for line in tqdm(f, total=total_lines, desc="Parsing replica set config", unit="lines"):
             try:
                 entry = json.loads(line)
+                config = None
+                
+                # Pattern 1: Standard replica set config change
                 if (entry.get('msg') == 'New replica set config in use' and 
                     entry.get('c') == 'REPL' and
                     entry.get('attr', {}).get('config')):
                     config = entry['attr']['config']
+                
+                # Pattern 2: Node startup with replica set membership
+                elif (entry.get('msg') == 'Node is a member of a replica set' and 
+                      entry.get('c') == 'CONTROL' and
+                      entry.get('attr', {}).get('config')):
+                    config = entry['attr']['config']
+                
+                if config:
                     configs.append({
                         'timestamp': entry.get('t', {}).get('$date'),
-                        'config': config
+                        'config': config,
+                        'message_type': entry.get('msg')
                     })
             except Exception:
                 pass
@@ -1053,7 +1089,7 @@ def launch_web_ui(logfile=None):
 @click.option('--report-full-patterns', type=click.Path(), 
               help='Write complete query patterns to file (requires output file path).')
 @click.option('--namespace', type=str, 
-              help='Filter queries by namespace (e.g., "database.collection").')
+              help='Filter queries by namespace pattern (e.g., "database.collection", "test.*", "*log*", "mydb*").')
 @click.option('--operation', type=str, 
               help='Filter queries by operation type (e.g., "find", "insert", "update", "delete", "aggregate").')
 @click.option('--report-histogram', is_flag=True, 
@@ -1270,6 +1306,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
             # Show only the latest configuration
             latest_config = configs[-1]
             click.echo(f"Timestamp: {latest_config['timestamp']}")
+            click.echo(f"Source: {latest_config.get('message_type', 'Unknown')}")
             click.echo("-" * 50)
             json_str = json.dumps(latest_config['config'], indent=2, sort_keys=False)
             click.echo(json_str)
@@ -1524,7 +1561,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                 if namespace:
                     filtered_queries = {}
                     for (ns, op, pattern), stats_info in query_stats.items():
-                        if ns == namespace:
+                        if matches_namespace_pattern(ns, namespace):
                             filtered_queries[(ns, op, pattern)] = stats_info
                     query_stats = filtered_queries
                     if not query_stats:
@@ -1676,7 +1713,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
         if namespace:
             filtered_queries = {}
             for (ns, op, pattern), stats_info in query_stats.items():
-                if ns == namespace:
+                if matches_namespace_pattern(ns, namespace):
                     filtered_queries[(ns, op, pattern)] = stats_info
             query_stats = filtered_queries
             if not query_stats:

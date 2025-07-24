@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +8,7 @@ import tempfile
 import os
 import json
 import asyncio
+import re
 from pathlib import Path
 import shutil
 
@@ -15,7 +16,7 @@ import shutil
 from pepi import (
     parse_connections, parse_replica_set_config, parse_replica_set_state,
     parse_clients, parse_queries, calculate_query_stats, calculate_connection_stats,
-    count_lines, get_date_range, trim_log_file
+    count_lines, get_date_range, trim_log_file, matches_namespace_pattern
 )
 
 app = FastAPI(title="Pepi MongoDB Log Analyzer", version="1.0.0")
@@ -212,7 +213,7 @@ async def analyze_connections(file_id: str):
         raise HTTPException(status_code=500, detail=f"Connection analysis failed: {str(e)}")
 
 @app.post("/api/analyze/{file_id}/queries")
-async def analyze_queries(file_id: str, namespace: Optional[str] = None, operation: Optional[str] = None):
+async def analyze_queries(file_id: str, namespace: Optional[str] = Query(None), operation: Optional[str] = Query(None)):
     """Analyze query patterns and performance."""
     if file_id not in upload_store:
         raise HTTPException(status_code=404, detail="File not found")
@@ -225,7 +226,7 @@ async def analyze_queries(file_id: str, namespace: Optional[str] = None, operati
         
         # Apply filters if specified
         if namespace:
-            query_stats = {k: v for k, v in query_stats.items() if k[0] == namespace}
+            query_stats = {k: v for k, v in query_stats.items() if matches_namespace_pattern(k[0], namespace)}
         if operation:
             query_stats = {k: v for k, v in query_stats.items() if k[1] == operation}
         
