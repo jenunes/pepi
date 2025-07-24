@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pepi - MongoDB Log Analyzer</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1><i class="fas fa-chart-line"></i> Pepi MongoDB Log Analyzer</h1>
+                <p>Analyze MongoDB logs with powerful insights and visualizations</p>
+            </div>
+        </header>
+
+        <!-- File Upload Section -->
+        <section class="upload-section">
+            <div class="upload-area" id="uploadArea">
+                <div class="upload-content">
+                    <i class="fas fa-cloud-upload-alt"></i>
+                    <h3>Upload MongoDB Log File</h3>
+                    <p>Drag & drop your .log, .txt, or .json file here or click to browse</p>
+                    <input type="file" id="fileInput" accept=".log,.txt,.json" style="display: none;">
+                    <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+                        <i class="fas fa-folder-open"></i> Browse Files
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Progress Bar -->
+            <div class="progress-container" id="progressContainer" style="display: none;">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <p id="progressText">Uploading...</p>
+            </div>
+        </section>
+
+        <!-- File List -->
+        <section class="files-section" id="filesSection" style="display: none;">
+            <h2><i class="fas fa-files"></i> Uploaded Files</h2>
+            <div class="files-list" id="filesList"></div>
+        </section>
+
+        <!-- Analysis Dashboard -->
+        <div class="dashboard" id="dashboard" style="display: none;">
+            <!-- Navigation Tabs -->
+            <nav class="tabs">
+                <button class="tab-btn active" data-tab="basic"><i class="fas fa-info-circle"></i> Basic Info</button>
+                <button class="tab-btn" data-tab="connections"><i class="fas fa-network-wired"></i> Connections</button>
+                <button class="tab-btn" data-tab="queries"><i class="fas fa-search"></i> Queries</button>
+                <button class="tab-btn" data-tab="replica-set"><i class="fas fa-server"></i> Replica Set</button>
+                <button class="tab-btn" data-tab="clients"><i class="fas fa-users"></i> Clients</button>
+                <button class="tab-btn" data-tab="trim"><i class="fas fa-cut"></i> Trim Log</button>
+            </nav>
+
+            <!-- Tab Content -->
+            <div class="tab-content">
+                <!-- Basic Info Tab -->
+                <div class="tab-pane active" id="basic">
+                    <div class="info-grid" id="basicInfo">
+                        <div class="info-card">
+                            <h3><i class="fas fa-file"></i> File Information</h3>
+                            <div class="info-details" id="fileInfo">
+                                <p>Select a file to view information</p>
+                            </div>
+                        </div>
+                        <div class="info-card">
+                            <h3><i class="fas fa-server"></i> MongoDB Information</h3>
+                            <div class="info-details" id="mongoInfo">
+                                <p>No data available</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Connections Tab -->
+                <div class="tab-pane" id="connections">
+                    <div class="analysis-header">
+                        <h2><i class="fas fa-network-wired"></i> Connection Analysis</h2>
+                        <button class="btn btn-primary" onclick="analyzeConnections()">
+                            <i class="fas fa-play"></i> Analyze Connections
+                        </button>
+                    </div>
+                    <div class="stats-grid" id="connectionStats"></div>
+                    <div class="chart-container">
+                        <canvas id="connectionsChart"></canvas>
+                    </div>
+                    <div class="table-container" id="connectionsTable"></div>
+                </div>
+
+                <!-- Queries Tab -->
+                <div class="tab-pane" id="queries">
+                    <div class="analysis-header">
+                        <h2><i class="fas fa-search"></i> Query Analysis</h2>
+                        <div class="query-controls">
+                            <input type="text" id="namespaceFilter" placeholder="Filter by namespace...">
+                            <select id="operationFilter">
+                                <option value="">All operations</option>
+                                <option value="find">find</option>
+                                <option value="insert">insert</option>
+                                <option value="update">update</option>
+                                <option value="delete">delete</option>
+                                <option value="aggregate">aggregate</option>
+                            </select>
+                            <button class="btn btn-primary" onclick="analyzeQueries()">
+                                <i class="fas fa-play"></i> Analyze Queries
+                            </button>
+                        </div>
+                    </div>
+                    <div class="stats-grid" id="queryStats"></div>
+                    <div class="chart-container">
+                        <canvas id="queriesChart"></canvas>
+                    </div>
+                    <div class="table-container" id="queriesTable"></div>
+                </div>
+
+                <!-- Replica Set Tab -->
+                <div class="tab-pane" id="replica-set">
+                    <div class="analysis-header">
+                        <h2><i class="fas fa-server"></i> Replica Set Analysis</h2>
+                        <button class="btn btn-primary" onclick="analyzeReplicaSet()">
+                            <i class="fas fa-play"></i> Analyze Replica Set
+                        </button>
+                    </div>
+                    <div id="replicaSetContent"></div>
+                </div>
+
+                <!-- Clients Tab -->
+                <div class="tab-pane" id="clients">
+                    <div class="analysis-header">
+                        <h2><i class="fas fa-users"></i> Client Analysis</h2>
+                        <button class="btn btn-primary" onclick="analyzeClients()">
+                            <i class="fas fa-play"></i> Analyze Clients
+                        </button>
+                    </div>
+                    <div id="clientsContent"></div>
+                </div>
+
+                <!-- Trim Tab -->
+                <div class="tab-pane" id="trim">
+                    <div class="trim-container">
+                        <h2><i class="fas fa-cut"></i> Trim Log File</h2>
+                        <p>Extract a specific time range from your log file</p>
+                        
+                        <div class="trim-form">
+                            <div class="form-group">
+                                <label for="fromDate">From Date/Time:</label>
+                                <input type="text" id="fromDate" placeholder="DD/MM/YYYY HH:MM:SS">
+                                <small>Format: DD/MM/YYYY HH:MM:SS (time parts optional)</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="untilDate">Until Date/Time:</label>
+                                <input type="text" id="untilDate" placeholder="DD/MM/YYYY HH:MM:SS">
+                                <small>Format: DD/MM/YYYY HH:MM:SS (time parts optional)</small>
+                            </div>
+                            
+                            <button class="btn btn-primary" onclick="trimLogFile()">
+                                <i class="fas fa-cut"></i> Trim Log File
+                            </button>
+                        </div>
+                        
+                        <div id="trimResult" class="trim-result"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Overlay -->
+        <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+            <div class="loading-content">
+                <div class="spinner"></div>
+                <p id="loadingText">Processing...</p>
+            </div>
+        </div>
+
+        <!-- Toast Notifications -->
+        <div class="toast-container" id="toastContainer"></div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html> 

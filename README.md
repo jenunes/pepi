@@ -12,6 +12,15 @@ A fast, user-friendly MongoDB log analysis tool for extracting insights from Mon
 - **Client/Driver Information**: Detailed client and driver analysis
 - **Query Pattern Analysis**: Query statistics and performance analysis with pattern recognition
 
+### Web Interface
+- **Interactive Dashboard**: Modern web UI with charts, tables, and visualizations
+- **Drag & Drop Upload**: Easy file upload with progress tracking
+- **Real-time Analysis**: Live progress updates during log processing
+- **Interactive Charts**: Visual representations of connections and query performance
+- **Advanced Filtering**: Filter queries by namespace, operation type, and more
+- **Log Trimming**: Extract specific time ranges with intuitive date selection
+- **File Management**: Download, delete, and manage multiple log files
+
 ### Advanced Features
 - **Progress Bars**: Visual feedback during large file processing for all analysis modes
 - **Connection Duration Statistics**: Average, minimum, and maximum connection durations
@@ -76,6 +85,12 @@ You can always force a re-parse and clear the cache with the `--clear-cache` fla
 ```bash
 # Show MongoDB log summary and command line startup
 pepi --fetch /path/to/mongod.log
+
+# Launch interactive web interface (no file)
+pepi --web-ui
+
+# Launch web interface with pre-loaded file
+pepi --fetch /path/to/mongod.log --web-ui
 
 # Show replica set configuration
 pepi --fetch /path/to/mongod.log --rs-conf
@@ -380,8 +395,29 @@ python pepi.py --fetch tests/test_sort2.log --connections --stats --compare 127.
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
+### Web Interface Usage
+```bash
+# Launch web interface without a file
+pepi --web-ui
+
+# Launch web interface with a specific file pre-loaded
+pepi --fetch /path/to/mongod.log --web-ui
+
+# Get detailed help for web interface
+pepi --web-ui --help
+```
+
+**Features:**
+- **Modern Dashboard**: Professional web interface at http://localhost:8000
+- **Auto Browser Launch**: Automatically opens in your default browser
+- **File Pre-loading**: Files specified with `--fetch` are automatically loaded and ready for analysis
+- **Full Feature Set**: All CLI functionality available through intuitive web interface
+- **Interactive Charts**: Visual charts for connection patterns and query performance
+- **Real-time Processing**: Live progress updates during analysis
+
 ## Version History
 
+- **v0.0.1.8**: Added integrated web interface with --web-ui flag for modern dashboard experience
 - **v0.0.1.7**: Added index information column to query analysis showing which indexes are used
 - **v0.0.1.5**: Added `--queries` flag with query pattern analysis and performance statistics
 - **v0.0.1.4**: Major improvements: sorting, comparison, and comprehensive documentation

@@ -1,3 +1,6 @@
 click
 PyYAML
 tqdm
+fastapi
+uvicorn
+python-multipart

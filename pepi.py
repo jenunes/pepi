@@ -10,6 +10,7 @@ import os
 import pickle
 from pathlib import Path
 import time
+from datetime import datetime, date
 
 # Cache management
 CACHE_DIR = Path.home() / '.pepi_cache'
@@ -123,6 +124,49 @@ class CustomCommand(click.Command):
                 formatter.write_text("  pepi.py --fetch logfile --queries --operation find")
                 formatter.write_text("  pepi.py --fetch logfile --queries --report-histogram")
         
+        elif option == '--trim':
+            with formatter.section("Log File Trimming"):
+                formatter.write_text("--trim              Trim log file by date/time range")
+                formatter.write_text("")
+                formatter.write_text("Trim Options:")
+                formatter.write_text("  --from DATE      Start date/time (format: DD/MM/YYYY HH:MM:SS:MS)")
+                formatter.write_text("  --until DATE     End date/time (format: DD/MM/YYYY HH:MM:SS:MS)")
+                formatter.write_text("")
+                formatter.write_text("Flexible Format Examples:")
+                formatter.write_text("  '25/12/2023'                    # Whole day")
+                formatter.write_text("  '25/12/2023 14:30'              # From 14:30:00")
+                formatter.write_text("  '25/12/2023 14:30:45'           # From 14:30:45")
+                formatter.write_text("  '25/12/2023 14:30:45:123'       # From 14:30:45.123")
+                formatter.write_text("")
+                formatter.write_text("Smart Defaults:")
+                formatter.write_text("  - If only date provided: assumes whole day (00:00:00 to 23:59:59)")
+                formatter.write_text("  - If --from and --until are equal: full period of that timeframe")
+                formatter.write_text("  - Missing time parts default to 0 (start) or maximum (end)")
+                formatter.write_text("")
+                formatter.write_text("Examples:")
+                formatter.write_text("  pepi.py --fetch logfile --trim --from '25/12/2023'")
+                formatter.write_text("  pepi.py --fetch logfile --trim --from '25/12/2023' --until '26/12/2023'")
+                formatter.write_text("  pepi.py --fetch logfile --trim --from '25/12/2023 14:00' --until '25/12/2023 16:00'")
+                formatter.write_text("  pepi.py --fetch logfile --trim --from '25/12/2023 14:30:45' --until '25/12/2023 14:30:45'")
+        
+        elif option == '--web-ui':
+            with formatter.section("Web Interface"):
+                formatter.write_text("--web-ui            Launch interactive web dashboard")
+                formatter.write_text("")
+                formatter.write_text("Features:")
+                formatter.write_text("  - Drag & drop file upload")
+                formatter.write_text("  - Interactive charts and visualizations")
+                formatter.write_text("  - Real-time analysis with progress tracking")
+                formatter.write_text("  - Query filtering and performance analysis")
+                formatter.write_text("  - Log trimming with date range selection")
+                formatter.write_text("  - File management (download, delete)")
+                formatter.write_text("")
+                formatter.write_text("Usage:")
+                formatter.write_text("  pepi.py --web-ui                     # Launch with no file")
+                formatter.write_text("  pepi.py --fetch logfile --web-ui     # Launch with pre-loaded file")
+                formatter.write_text("")
+                formatter.write_text("The web interface will open in your default browser at http://localhost:8000")
+        
         else:
             formatter.write_text(f"Unknown option: {option}")
             formatter.write_text("Use --help to see all available options.")
@@ -149,6 +193,12 @@ class CustomCommand(click.Command):
             formatter.write_text("--queries           Print query pattern statistics and performance analysis")
             formatter.write_text("--connections       Print connection information and statistics")
         
+        # Write log file operations
+        with formatter.section("Log File Operations"):
+            formatter.write_text("--trim              Trim log file by date/time range (use with --from and --until)")
+            formatter.write_text("--web-ui            Launch web interface with specified log file pre-loaded")
+            formatter.write_text("--clear-cache       Clear all cached data and re-parse files")
+        
         # Write default behavior
         with formatter.section("Default Behavior"):
             formatter.write_text("When no analysis mode is specified, shows MongoDB log summary and command line startup options.")
@@ -158,6 +208,8 @@ class CustomCommand(click.Command):
             formatter.write_text("Use --option --help to see detailed help for specific options:")
             formatter.write_text("  --connections --help")
             formatter.write_text("  --queries --help")
+            formatter.write_text("  --trim --help")
+            formatter.write_text("  --web-ui --help")
 
     def main(self, args=None, prog_name=None, complete_var=None, standalone_mode=True, **kwargs):
         try:
@@ -764,6 +816,221 @@ def calculate_connection_stats(connections_data):
     
     return overall_stats, ip_stats
 
+def parse_flexible_datetime(date_str):
+    """Parse flexible date/time string with smart defaults."""
+    if not date_str:
+        return None
+    
+    # Remove any extra whitespace
+    date_str = date_str.strip()
+    
+    # Split by space to separate date and time parts
+    parts = date_str.split(' ')
+    date_part = parts[0] if parts else ''
+    time_part = parts[1] if len(parts) > 1 else ''
+    
+    # Parse date part (DD/MM/YYYY)
+    date_components = date_part.split('/')
+    if len(date_components) != 3:
+        raise ValueError(f"Invalid date format: {date_part}. Expected DD/MM/YYYY")
+    
+    try:
+        day = int(date_components[0])
+        month = int(date_components[1]) 
+        year = int(date_components[2])
+    except ValueError:
+        raise ValueError(f"Invalid date components: {date_part}")
+    
+    # Parse time part (HH:MM:SS:MS) with defaults
+    hour = minute = second = microsecond = 0
+    
+    if time_part:
+        time_components = time_part.split(':')
+        try:
+            if len(time_components) >= 1:
+                hour = int(time_components[0])
+            if len(time_components) >= 2:
+                minute = int(time_components[1])
+            if len(time_components) >= 3:
+                second = int(time_components[2])
+            if len(time_components) >= 4:
+                microsecond = int(time_components[3]) * 1000  # Convert MS to microseconds
+        except ValueError:
+            raise ValueError(f"Invalid time components: {time_part}")
+    
+    return datetime(year, month, day, hour, minute, second, microsecond)
+
+def get_date_range(from_str, until_str):
+    """Get start and end datetime objects from flexible input strings."""
+    start_dt = end_dt = None
+    
+    if from_str:
+        start_dt = parse_flexible_datetime(from_str)
+        
+        # If from and until are the same, assume from start to end of that period
+        if until_str and from_str == until_str:
+            # If only date provided, assume whole day
+            if ' ' not in from_str:
+                start_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_dt = start_dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            # If time provided, assume from start to end of that minute/second/etc
+            else:
+                end_dt = start_dt.replace(second=59, microsecond=999000)
+        else:
+            # If only date provided in from_str, start from beginning of day
+            if ' ' not in from_str:
+                start_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    if until_str and from_str != until_str:
+        end_dt = parse_flexible_datetime(until_str)
+        # If only date provided in until_str, end at end of day
+        if ' ' not in until_str:
+            end_dt = end_dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+    
+    return start_dt, end_dt
+
+def trim_log_file(logfile, start_dt, end_dt):
+    """Trim log file by date/time range and return filtered lines."""
+    filtered_lines = []
+    skipped_lines = 0
+    total_lines = 0
+    
+    # Count total lines first
+    total_file_lines = count_lines(logfile)
+    
+    with open(logfile, 'r') as f:
+        for line in tqdm(f, total=total_file_lines, desc="Trimming log file", unit="lines"):
+            total_lines += 1
+            try:
+                # Try to parse as JSON to get timestamp
+                entry = json.loads(line)
+                timestamp_str = entry.get('t', {}).get('$date')
+                
+                if timestamp_str:
+                    # Parse MongoDB timestamp format
+                    try:
+                        # Handle both formats: with and without timezone
+                        if timestamp_str.endswith('Z'):
+                            log_dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                        elif '+' in timestamp_str or '-' in timestamp_str[-6:]:
+                            log_dt = datetime.fromisoformat(timestamp_str)
+                        else:
+                            log_dt = datetime.fromisoformat(timestamp_str)
+                        
+                        # Remove timezone info for comparison (assume local time)
+                        log_dt = log_dt.replace(tzinfo=None)
+                        
+                        # Check if within range
+                        include_line = True
+                        if start_dt and log_dt < start_dt:
+                            include_line = False
+                        if end_dt and log_dt > end_dt:
+                            include_line = False
+                        
+                        if include_line:
+                            filtered_lines.append(line)
+                        else:
+                            skipped_lines += 1
+                    except Exception:
+                        # If timestamp parsing fails, include the line
+                        filtered_lines.append(line)
+                else:
+                    # If no timestamp, include the line
+                    filtered_lines.append(line)
+                    
+            except Exception:
+                # If JSON parsing fails, include the line
+                filtered_lines.append(line)
+    
+    return filtered_lines, total_lines, skipped_lines
+
+def launch_web_ui(logfile=None):
+    """Launch the web interface with optional pre-loaded file."""
+    import subprocess
+    import sys
+    import time
+    import webbrowser
+    import threading
+    import os
+    from pathlib import Path
+    
+    # Check if web_api.py exists
+    web_api_path = Path(__file__).parent / "web_api.py"
+    if not web_api_path.exists():
+        click.echo("❌ Web interface not found. web_api.py is missing.")
+        click.echo("   Make sure web_api.py is in the same directory as pepi.py")
+        return
+    
+    # Check if web_static directory exists
+    web_static_path = Path(__file__).parent / "web_static"
+    if not web_static_path.exists():
+        click.echo("❌ Web interface not found. web_static directory is missing.")
+        click.echo("   Make sure web_static/ directory with HTML/CSS/JS files exists")
+        return
+    
+    click.echo("🚀 Starting Pepi Web Interface...")
+    
+    # Prepare environment variables for the web server
+    env = os.environ.copy()
+    if logfile:
+        env['PEPI_PRELOAD_FILE'] = str(Path(logfile).absolute())
+        click.echo(f"📁 Pre-loading file: {logfile}")
+    
+    try:
+        # Start the web server in a subprocess
+        process = subprocess.Popen(
+            [sys.executable, str(web_api_path)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        # Give the server a moment to start
+        time.sleep(2)
+        
+        # Check if the process is still running
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            click.echo("❌ Failed to start web server:")
+            if stderr:
+                click.echo(stderr)
+            return
+        
+        # Open browser
+        url = "http://localhost:8000"
+        click.echo(f"📊 Dashboard available at: {url}")
+        click.echo("📋 API docs available at: http://localhost:8000/docs")
+        
+        # Open browser in a separate thread to avoid blocking
+        def open_browser():
+            time.sleep(1)  # Wait a bit more for server to be ready
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass  # Silently fail if browser can't be opened
+        
+        threading.Thread(target=open_browser, daemon=True).start()
+        
+        click.echo("\n💡 Press Ctrl+C to stop the web server")
+        
+        # Wait for user to stop the server
+        try:
+            process.wait()
+        except KeyboardInterrupt:
+            click.echo("\n🛑 Stopping web server...")
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            click.echo("✅ Web server stopped")
+            
+    except Exception as e:
+        click.echo(f"❌ Error starting web interface: {str(e)}")
+        if 'process' in locals() and process.poll() is None:
+            process.terminate()
+
 @click.command(cls=CustomCommand)
 @click.option('--fetch', '-f', 'logfile', type=click.Path(exists=True), 
               help='MongoDB log file to analyze.')
@@ -793,12 +1060,25 @@ def calculate_connection_stats(connections_data):
               help='Show histogram of execution time distribution.')
 @click.option('--clear-cache', is_flag=True, 
               help='Clear all cached data and re-parse files.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache):
+@click.option('--trim', is_flag=True,
+              help='Trim log file by date/time range (use with --from and --until).')
+@click.option('--from', 'from_date', type=str,
+              help='Start date/time for trimming (format: DD/MM/YYYY HH:MM:SS:MS or partial).')
+@click.option('--until', 'until_date', type=str,
+              help='End date/time for trimming (format: DD/MM/YYYY HH:MM:SS:MS or partial).')
+@click.option('--web-ui', is_flag=True,
+              help='Launch web interface with the specified log file pre-loaded.')
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache, trim, from_date, until_date, web_ui):
     """pepi: MongoDB log analysis tool."""
     
     # Check if logfile is provided
-    if not logfile:
+    if not logfile and not web_ui:
         click.echo("Pepi didn't find anything to fetch")
+        return
+    
+    # Launch web UI if requested
+    if web_ui:
+        launch_web_ui(logfile)
         return
     
     # Clear cache if requested
@@ -811,6 +1091,93 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
         else:
             click.echo("No cached files to clear.")
         return
+    
+    # Handle trim functionality
+    if trim:
+        if not from_date and not until_date:
+            click.echo("Error: --trim requires at least --from or --until to be specified.")
+            return
+        
+        try:
+            start_dt, end_dt = get_date_range(from_date, until_date)
+            
+            click.echo("===== Log File Trimming =====")
+            click.echo(f"Original file: {logfile}")
+            if start_dt:
+                click.echo(f"From: {start_dt.strftime('%d/%m/%Y %H:%M:%S')}")
+            if end_dt:
+                click.echo(f"Until: {end_dt.strftime('%d/%m/%Y %H:%M:%S')}")
+            click.echo()
+            
+            # Trim the log file
+            filtered_lines, total_lines, skipped_lines = trim_log_file(logfile, start_dt, end_dt)
+            
+            click.echo(f"\nTrimming completed:")
+            click.echo(f"Total lines processed: {total_lines:,}")
+            click.echo(f"Lines included: {len(filtered_lines):,}")
+            click.echo(f"Lines skipped: {skipped_lines:,}")
+            
+            if not filtered_lines:
+                click.echo("No lines found in the specified date range.")
+                return
+            
+            # Ask user if they want to save the trimmed file
+            save_file = click.confirm("Save trimmed log to file?", default=True)
+            
+            if save_file:
+                # Generate default filename
+                base_name = Path(logfile).stem
+                extension = Path(logfile).suffix
+                
+                # Format date range for filename
+                date_suffix = ""
+                if start_dt and end_dt:
+                    if start_dt.date() == end_dt.date():
+                        date_suffix = f"_{start_dt.strftime('%Y%m%d')}"
+                    else:
+                        date_suffix = f"_{start_dt.strftime('%Y%m%d')}-{end_dt.strftime('%Y%m%d')}"
+                elif start_dt:
+                    date_suffix = f"_from_{start_dt.strftime('%Y%m%d')}"
+                elif end_dt:
+                    date_suffix = f"_until_{end_dt.strftime('%Y%m%d')}"
+                
+                default_filename = f"{base_name}_trimmed{date_suffix}{extension}"
+                
+                # Get filename from user
+                output_file = click.prompt("Output filename", default=default_filename)
+                
+                # Ensure we don't overwrite the original file
+                if output_file == logfile:
+                    output_file = f"{base_name}_trimmed{extension}"
+                    click.echo(f"Cannot overwrite original file. Using: {output_file}")
+                
+                # Write the trimmed file
+                try:
+                    with open(output_file, 'w') as f:
+                        for line in tqdm(filtered_lines, desc="Writing trimmed file", unit="lines"):
+                            f.write(line)
+                    
+                    click.echo(f"\n✅ Trimmed log saved as: {output_file}")
+                    click.echo(f"Size: {len(filtered_lines):,} lines")
+                    
+                except Exception as e:
+                    click.echo(f"❌ Error saving file: {str(e)}")
+                    return
+                    
+            return
+        
+        except ValueError as e:
+            click.echo(f"Error parsing date/time: {str(e)}")
+            click.echo("Expected format: DD/MM/YYYY HH:MM:SS:MS (time parts are optional)")
+            click.echo("Examples:")
+            click.echo("  --from '25/12/2023'")
+            click.echo("  --from '25/12/2023 14:30'")
+            click.echo("  --from '25/12/2023 14:30:45'")
+            click.echo("  --from '25/12/2023 14:30:45:123'")
+            return
+        except Exception as e:
+            click.echo(f"Error during trimming: {str(e)}")
+            return
     
     # Initialize variables for all sections
     start_date = None
