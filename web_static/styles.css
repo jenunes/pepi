@@ -337,6 +337,7 @@ body {
     border-radius: 10px;
     padding: 20px;
     overflow-x: auto;
+    transition: opacity 0.15s ease;
 }
 
 .data-table {
@@ -363,6 +364,50 @@ body {
 
 .data-table tr:hover {
     background: #f8f9fa;
+}
+
+/* Sortable Table Headers */
+.sortable-header {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+}
+
+.sort-icon {
+    margin-left: 8px;
+    opacity: 0.7;
+    font-size: 0.9rem;
+    font-family: monospace;
+    transition: opacity 0.2s ease;
+}
+
+.sortable-header:hover .sort-icon,
+.sortable-header.active .sort-icon {
+    opacity: 1;
+}
+
+/* Table Header */
+.table-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    padding: 10px 0;
+}
+
+.table-header h4 {
+    margin: 0;
+    color: #333;
+    font-size: 1.1rem;
+}
+
+.sort-info {
+    color: #666;
+    font-size: 0.9rem;
+}
+
+.sort-info strong {
+    color: #667eea;
 }
 
 /* Buttons */
@@ -598,6 +643,61 @@ body {
     font-size: 0.9rem;
     overflow-x: auto;
     margin: 10px 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    line-height: 1.4;
+}
+
+pre.code-block {
+    margin: 0;
+    white-space: pre;
+    overflow-x: auto;
+}
+
+/* JSON Container and Copy Button */
+.json-container {
+    position: relative;
+    margin: 10px 0;
+}
+
+.json-block {
+    margin-bottom: 10px;
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid #4a5568;
+}
+
+.btn-copy {
+    font-size: 0.85rem;
+    padding: 8px 12px;
+    margin-top: 5px;
+}
+
+.btn-copy:hover {
+    background: #e2e8f0;
+    color: #2d3748;
+}
+
+/* JSON Syntax Highlighting */
+.json-key {
+    color: #79b8ff;
+    font-weight: 500;
+}
+
+.json-string {
+    color: #9ecbff;
+}
+
+.json-number {
+    color: #79d4fd;
+}
+
+.json-boolean {
+    color: #ffab70;
+}
+
+.json-null {
+    color: #f97583;
 }
 
 .pattern-text {

@@ -307,6 +307,17 @@ function displayConnectionsData(data) {
     const statsGrid = document.getElementById('connectionStats');
     const tableContainer = document.getElementById('connectionsTable');
     
+    // Store data globally for sorting
+    window.currentConnectionData = Object.entries(data.connections).map(([ip, conn]) => ({
+        ip: ip,
+        opened: conn.opened,
+        closed: conn.closed,
+        balance: conn.opened - conn.closed,
+        avg_duration: data.ip_stats && data.ip_stats[ip] ? data.ip_stats[ip].avg : null,
+        min_duration: data.ip_stats && data.ip_stats[ip] ? data.ip_stats[ip].min : null,
+        max_duration: data.ip_stats && data.ip_stats[ip] ? data.ip_stats[ip].max : null
+    }));
+    
     // Display stats
     statsGrid.innerHTML = `
         <div class="stat-card">
@@ -328,38 +339,79 @@ function displayConnectionsData(data) {
         </div>` : ''}
     `;
     
-    // Create connections chart
+    // Create connections chart (always use top 10 by opened)
     createConnectionsChart(data.connections);
     
-    // Create connections table
+    // Sort the connections data
+    const sortedConnections = sortConnectionsData(window.currentConnectionData, currentConnectionSort.column, currentConnectionSort.direction);
+    
+    // Create table headers
+    const tableHeaders = [
+        { key: 'ip', label: 'IP Address' },
+        { key: 'opened', label: 'Opened' },
+        { key: 'closed', label: 'Closed' },
+        { key: 'balance', label: 'Balance' }
+    ];
+    
+    if (data.overall_stats) {
+        tableHeaders.push(
+            { key: 'avg_duration', label: 'Avg Duration' },
+            { key: 'min_duration', label: 'Min Duration' },
+            { key: 'max_duration', label: 'Max Duration' }
+        );
+    }
+    
+    const headerHtml = tableHeaders.map(header => {
+        const isActive = currentConnectionSort.column === header.key;
+        const direction = isActive ? currentConnectionSort.direction : '';
+        const arrow = direction === 'asc' ? '▲' : direction === 'desc' ? '▼' : '';
+        
+        const tooltip = isActive 
+            ? `Currently sorted by ${header.label} (${direction === 'asc' ? 'ascending' : 'descending'}). Click to ${direction === 'asc' ? 'descend' : 'ascend'}.`
+            : `Click to sort by ${header.label}`;
+            
+        return `
+            <th class="sortable-header ${isActive ? 'active' : ''}" 
+                onclick="sortConnectionsTable('${header.key}')" 
+                title="${tooltip}">
+                ${header.label}
+                <span class="sort-icon">${arrow}</span>
+            </th>
+        `;
+    }).join('');
+    
+    // Create table header
+    const tableHeader = document.createElement('div');
+    tableHeader.className = 'table-header';
+    tableHeader.innerHTML = `
+        <h4>Connection Details</h4>
+        <span class="sort-info">Sorted by ${getConnectionColumnDisplayName(currentConnectionSort.column)} 
+        (${currentConnectionSort.direction === 'asc' ? 'ascending' : 'descending'})</span>
+    `;
+    
+    // Create table
     const table = document.createElement('table');
     table.className = 'data-table';
     
-    const headers = ['IP Address', 'Opened', 'Closed', 'Balance'];
-    if (data.overall_stats) {
-        headers.push('Avg Duration', 'Min Duration', 'Max Duration');
-    }
-    
     table.innerHTML = `
         <thead>
-            <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
+            <tr>${headerHtml}</tr>
         </thead>
         <tbody>
-            ${Object.entries(data.connections).map(([ip, conn]) => {
+            ${sortedConnections.map(conn => {
                 let row = `
                     <tr>
-                        <td>${ip}</td>
+                        <td>${conn.ip}</td>
                         <td>${conn.opened}</td>
                         <td>${conn.closed}</td>
-                        <td>${conn.opened - conn.closed}</td>
+                        <td>${conn.balance}</td>
                 `;
                 
-                if (data.ip_stats && data.ip_stats[ip]) {
-                    const stats = data.ip_stats[ip];
+                if (data.overall_stats) {
                     row += `
-                        <td>${stats.avg.toFixed(1)}s</td>
-                        <td>${stats.min.toFixed(1)}s</td>
-                        <td>${stats.max.toFixed(1)}s</td>
+                        <td>${conn.avg_duration ? conn.avg_duration.toFixed(1) + 's' : 'N/A'}</td>
+                        <td>${conn.min_duration ? conn.min_duration.toFixed(1) + 's' : 'N/A'}</td>
+                        <td>${conn.max_duration ? conn.max_duration.toFixed(1) + 's' : 'N/A'}</td>
                     `;
                 }
                 
@@ -370,6 +422,7 @@ function displayConnectionsData(data) {
     `;
     
     tableContainer.innerHTML = '';
+    tableContainer.appendChild(tableHeader);
     tableContainer.appendChild(table);
 }
 
@@ -454,9 +507,24 @@ async function analyzeQueries() {
     }
 }
 
+// Global variable to track current sort
+let currentQuerySort = {
+    column: 'count',
+    direction: 'desc'
+};
+
+// Global variable to track connections sort
+let currentConnectionSort = {
+    column: 'opened',
+    direction: 'desc'
+};
+
 function displayQueriesData(data) {
     const statsGrid = document.getElementById('queryStats');
     const tableContainer = document.getElementById('queriesTable');
+    
+    // Store data globally for sorting
+    window.currentQueryData = data.queries;
     
     // Calculate stats
     const totalQueries = data.queries.reduce((sum, q) => sum + q.count, 0);
@@ -491,26 +559,61 @@ function displayQueriesData(data) {
     // Create queries chart
     createQueriesChart(data.queries);
     
+    // Sort data
+    const sortedQueries = sortQueriesData(data.queries, currentQuerySort.column, currentQuerySort.direction);
+    
+    // Add table header with sort info
+    const tableHeader = document.createElement('div');
+    tableHeader.className = 'table-header';
+    tableHeader.innerHTML = `
+        <h4>Query Patterns (${data.queries.length} patterns)</h4>
+        <small class="sort-info">
+            Sorted by <strong>${getColumnDisplayName(currentQuerySort.column)}</strong> 
+            (${currentQuerySort.direction === 'asc' ? 'ascending' : 'descending'})
+        </small>
+    `;
+    
     // Create queries table
     const table = document.createElement('table');
     table.className = 'data-table';
     
+    const tableHeaders = [
+        { key: 'namespace', label: 'Namespace' },
+        { key: 'operation', label: 'Operation' },
+        { key: 'pattern', label: 'Pattern' },
+        { key: 'count', label: 'Count' },
+        { key: 'min_ms', label: 'Min (ms)' },
+        { key: 'max_ms', label: 'Max (ms)' },
+        { key: 'mean_ms', label: 'Mean (ms)' },
+        { key: 'percentile_95_ms', label: '95% (ms)' },
+        { key: 'indexes', label: 'Index' }
+    ];
+    
+    const headerHtml = tableHeaders.map(header => {
+        const isActive = currentQuerySort.column === header.key;
+        const direction = isActive ? currentQuerySort.direction : '';
+        const arrow = direction === 'asc' ? '▲' : direction === 'desc' ? '▼' : '';
+        
+        const tooltip = isActive 
+            ? `Currently sorted by ${header.label} (${direction === 'asc' ? 'ascending' : 'descending'}). Click to ${direction === 'asc' ? 'descend' : 'ascend'}.`
+            : `Click to sort by ${header.label}`;
+            
+        return `
+            <th class="sortable-header ${isActive ? 'active' : ''}" 
+                onclick="sortQueriesTable('${header.key}')" 
+                title="${tooltip}">
+                ${header.label}
+                <span class="sort-icon">${arrow}</span>
+            </th>
+        `;
+    }).join('');
+    
     table.innerHTML = `
         <thead>
-            <tr>
-                <th>Namespace</th>
-                <th>Operation</th>
-                <th>Pattern</th>
-                <th>Count</th>
-                <th>Min (ms)</th>
-                <th>Max (ms)</th>
-                <th>Mean (ms)</th>
-                <th>95% (ms)</th>
-                <th>Index</th>
-            </tr>
+            <tr>${headerHtml}</tr>
         </thead>
         <tbody>
-            ${data.queries.map(query => `
+            ${sortedQueries.map(query => `
                 <tr>
                     <td>${query.namespace}</td>
                     <td>${query.operation}</td>
@@ -527,7 +630,23 @@ function displayQueriesData(data) {
     `;
     
     tableContainer.innerHTML = '';
+    tableContainer.appendChild(tableHeader);
     tableContainer.appendChild(table);
+}
+
+function getColumnDisplayName(column) {
+    const columnNames = {
+        'namespace': 'Namespace',
+        'operation': 'Operation', 
+        'pattern': 'Pattern',
+        'count': 'Count',
+        'min_ms': 'Min (ms)',
+        'max_ms': 'Max (ms)',
+        'mean_ms': 'Mean (ms)',
+        'percentile_95_ms': '95% (ms)',
+        'indexes': 'Index'
+    };
+    return columnNames[column] || column;
 }
 
 function createQueriesChart(queries) {
@@ -538,7 +657,7 @@ function createQueriesChart(queries) {
         charts.queries.destroy();
     }
     
-    // Get top 10 queries by count
+    // Get top 10 queries by count (always show most frequent in chart regardless of table sort)
     const topQueries = queries
         .sort((a, b) => b.count - a.count)
         .slice(0, 10);
@@ -622,6 +741,209 @@ function truncateText(text, maxLength) {
     return text.substring(0, maxLength) + '...';
 }
 
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function copyToClipboard(text) {
+    // Unescape the HTML entities first
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = text;
+    const cleanText = textarea.value;
+    
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(cleanText).then(() => {
+            showToast('success', 'JSON copied to clipboard!');
+        }).catch(() => {
+            fallbackCopyTextToClipboard(cleanText);
+        });
+    } else {
+        fallbackCopyTextToClipboard(cleanText);
+    }
+}
+
+function fallbackCopyTextToClipboard(text) {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-999999px';
+    textArea.style.top = '-999999px';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    
+    try {
+        const successful = document.execCommand('copy');
+        if (successful) {
+            showToast('success', 'JSON copied to clipboard!');
+        } else {
+            showToast('error', 'Failed to copy JSON');
+        }
+    } catch (err) {
+        showToast('error', 'Failed to copy JSON');
+    }
+    
+    document.body.removeChild(textArea);
+}
+
+function highlightJson(json) {
+    // Simple JSON syntax highlighting
+    return json
+        .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+            let cls = 'json-number';
+            if (/^"/.test(match)) {
+                if (/:$/.test(match)) {
+                    cls = 'json-key';
+                } else {
+                    cls = 'json-string';
+                }
+            } else if (/true|false/.test(match)) {
+                cls = 'json-boolean';
+            } else if (/null/.test(match)) {
+                cls = 'json-null';
+            }
+            return '<span class="' + cls + '">' + escapeHtml(match) + '</span>';
+        });
+}
+
+function sortQueriesData(queries, column, direction) {
+    const sortedQueries = [...queries].sort((a, b) => {
+        let aVal, bVal;
+        
+        switch (column) {
+            case 'namespace':
+            case 'operation':
+            case 'pattern':
+                aVal = a[column].toString().toLowerCase();
+                bVal = b[column].toString().toLowerCase();
+                break;
+            case 'indexes':
+                aVal = a[column].join(', ').toLowerCase();
+                bVal = b[column].join(', ').toLowerCase();
+                break;
+            default:
+                // Numeric columns
+                aVal = parseFloat(a[column]) || 0;
+                bVal = parseFloat(b[column]) || 0;
+                break;
+        }
+        
+        if (aVal < bVal) return direction === 'asc' ? -1 : 1;
+        if (aVal > bVal) return direction === 'asc' ? 1 : -1;
+        return 0;
+    });
+    
+    return sortedQueries;
+}
+
+function sortQueriesTable(column) {
+    // Toggle direction if clicking the same column, otherwise default to desc for numbers, asc for strings
+    if (currentQuerySort.column === column) {
+        currentQuerySort.direction = currentQuerySort.direction === 'asc' ? 'desc' : 'asc';
+    } else {
+        currentQuerySort.column = column;
+        // Default to descending for numeric columns, ascending for text
+        const numericColumns = ['count', 'min_ms', 'max_ms', 'mean_ms', 'percentile_95_ms'];
+        currentQuerySort.direction = numericColumns.includes(column) ? 'desc' : 'asc';
+    }
+    
+    // Add visual feedback
+    const tableContainer = document.getElementById('queriesTable');
+    tableContainer.style.opacity = '0.7';
+    
+    // Re-render the table with current data
+    if (window.currentQueryData) {
+        displayQueriesData({ queries: window.currentQueryData });
+        
+        // Restore opacity after a brief delay
+        setTimeout(() => {
+            tableContainer.style.opacity = '1';
+        }, 150);
+    }
+}
+
+// Connections sorting functions
+function sortConnectionsData(connections, column, direction) {
+    return connections.slice().sort((a, b) => {
+        let aVal, bVal;
+        
+        switch (column) {
+            case 'ip':
+                aVal = a[column].toLowerCase();
+                bVal = b[column].toLowerCase();
+                break;
+            default:
+                // Numeric columns (opened, closed, balance, durations)
+                aVal = parseFloat(a[column]) || 0;
+                bVal = parseFloat(b[column]) || 0;
+                break;
+        }
+        
+        if (aVal < bVal) return direction === 'asc' ? -1 : 1;
+        if (aVal > bVal) return direction === 'asc' ? 1 : -1;
+        return 0;
+    });
+}
+
+function sortConnectionsTable(column) {
+    // Toggle direction if clicking the same column, otherwise default to desc for numbers, asc for strings
+    if (currentConnectionSort.column === column) {
+        currentConnectionSort.direction = currentConnectionSort.direction === 'asc' ? 'desc' : 'asc';
+    } else {
+        currentConnectionSort.column = column;
+        // Default to descending for numeric columns, ascending for text
+        const numericColumns = ['opened', 'closed', 'balance', 'avg_duration', 'min_duration', 'max_duration'];
+        currentConnectionSort.direction = numericColumns.includes(column) ? 'desc' : 'asc';
+    }
+    
+    // Add visual feedback
+    const tableContainer = document.getElementById('connectionsTable');
+    tableContainer.style.opacity = '0.7';
+    
+    // Re-render the table with current data
+    if (window.currentConnectionData) {
+        displayConnectionsData({ 
+            connections: window.currentConnectionData.reduce((acc, conn) => {
+                acc[conn.ip] = { opened: conn.opened, closed: conn.closed };
+                return acc;
+            }, {}),
+            total_opened: window.currentConnectionData.reduce((sum, conn) => sum + conn.opened, 0),
+            total_closed: window.currentConnectionData.reduce((sum, conn) => sum + conn.closed, 0),
+            overall_stats: window.currentConnectionData.some(conn => conn.avg_duration !== null) ? { avg: 0 } : null,
+            ip_stats: window.currentConnectionData.reduce((acc, conn) => {
+                if (conn.avg_duration !== null) {
+                    acc[conn.ip] = { 
+                        avg: conn.avg_duration, 
+                        min: conn.min_duration, 
+                        max: conn.max_duration 
+                    };
+                }
+                return acc;
+            }, {})
+        });
+        
+        // Restore opacity after a brief delay
+        setTimeout(() => {
+            tableContainer.style.opacity = '1';
+        }, 150);
+    }
+}
+
+function getConnectionColumnDisplayName(column) {
+    const columnNames = {
+        'ip': 'IP Address',
+        'opened': 'Opened',
+        'closed': 'Closed',
+        'balance': 'Balance',
+        'avg_duration': 'Avg Duration',
+        'min_duration': 'Min Duration',
+        'max_duration': 'Max Duration'
+    };
+    return columnNames[column] || column;
+}
+
 async function analyzeReplicaSet() {
     if (!currentFileId) return;
     
@@ -665,11 +987,18 @@ function displayReplicaSetData(data) {
     // Configuration
     if (data.configs.length > 0) {
         const latestConfig = data.configs[data.configs.length - 1];
+        const formattedConfig = JSON.stringify(latestConfig.config, null, 2);
+        const highlightedJson = highlightJson(formattedConfig);
         html += `
             <div class="info-card">
                 <h3><i class="fas fa-cog"></i> Replica Set Configuration</h3>
                 <p><strong>Timestamp:</strong> ${latestConfig.timestamp}</p>
-                <div class="code-block">${JSON.stringify(latestConfig.config, null, 2)}</div>
+                <div class="json-container">
+                    <pre class="code-block json-block">${highlightedJson}</pre>
+                    <button class="btn btn-secondary btn-copy" onclick="copyToClipboard('${escapeHtml(formattedConfig).replace(/'/g, "\\'")}')">
+                        <i class="fas fa-copy"></i> Copy JSON
+                    </button>
+                </div>
             </div>
         `;
     }
