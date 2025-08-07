@@ -2,16 +2,23 @@ from setuptools import setup, find_packages
 
 setup(
     name="pepi",
-    version="0.0.1.8",
+    version="0.0.2",
     description="A fast, user-friendly MongoDB log analysis tool",
     author="Your Name",
     author_email="your.email@example.com",
     url="https://github.com/jenunes/pepi",
-    py_modules=["pepi"],
+    packages=find_packages(),
+    package_data={
+        "pepi": ["web_static/*", "web_static/**/*"],
+    },
+    include_package_data=True,
     install_requires=[
         "click",
         "PyYAML", 
         "tqdm",
+        "fastapi",
+        "uvicorn",
+        "python-multipart",
     ],
     entry_points={
         "console_scripts": [

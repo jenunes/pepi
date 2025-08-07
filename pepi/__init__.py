@@ -977,9 +977,9 @@ def launch_web_ui(logfile=None):
         click.echo(f"📁 Pre-loading file: {logfile}")
     
     try:
-        # Start the web server in a subprocess
+        # Start the web server in a subprocess using module execution
         process = subprocess.Popen(
-            [sys.executable, str(web_api_path)],
+            [sys.executable, "-m", "pepi.web_api"],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

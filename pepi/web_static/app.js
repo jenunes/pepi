@@ -1,6 +1,7 @@
 // Global state
 let currentFileId = null;
 let charts = {};
+let currentSort = { table: null, column: null, direction: 'asc' };
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
@@ -371,6 +372,9 @@ function displayConnectionsData(data) {
     
     tableContainer.innerHTML = '';
     tableContainer.appendChild(table);
+    
+    // Make table sortable
+    makeSortable(table, 'connections');
 }
 
 function createConnectionsChart(connections) {
@@ -510,11 +514,21 @@ function displayQueriesData(data) {
             </tr>
         </thead>
         <tbody>
-            ${data.queries.map(query => `
+            ${data.queries.map((query, index) => `
                 <tr>
                     <td>${query.namespace}</td>
                     <td>${query.operation}</td>
-                    <td><span class="pattern-text">${truncateText(query.pattern, 50)}</span></td>
+                    <td>
+                        <span class="pattern-text pattern-clickable" 
+                              title="Click to view query examples" 
+                              data-namespace="${query.namespace}" 
+                              data-operation="${query.operation}" 
+                              data-pattern="${encodeURIComponent(query.pattern)}" 
+                              data-row-index="${index}"
+                              onclick="showQueryExamplesFromElement(this)">
+                            ${truncateText(query.pattern, 50)}
+                        </span>
+                    </td>
                     <td>${query.count}</td>
                     <td>${query.min_ms.toFixed(1)}</td>
                     <td>${query.max_ms.toFixed(1)}</td>
@@ -528,6 +542,9 @@ function displayQueriesData(data) {
     
     tableContainer.innerHTML = '';
     tableContainer.appendChild(table);
+    
+    // Make table sortable
+    makeSortable(table, 'queries');
 }
 
 function createQueriesChart(queries) {
@@ -665,11 +682,17 @@ function displayReplicaSetData(data) {
     // Configuration
     if (data.configs.length > 0) {
         const latestConfig = data.configs[data.configs.length - 1];
+        const configId = 'config-' + Date.now();
         html += `
             <div class="info-card">
                 <h3><i class="fas fa-cog"></i> Replica Set Configuration</h3>
                 <p><strong>Timestamp:</strong> ${latestConfig.timestamp}</p>
-                <div class="code-block">${JSON.stringify(latestConfig.config, null, 2)}</div>
+                <div class="json-viewer" id="${configId}">
+                    <button class="json-copy-btn" onclick="copyJsonToClipboard('${configId}')">
+                        <i class="fas fa-copy"></i> Copy
+                    </button>
+                    <pre>${syntaxHighlightJson(latestConfig.config)}</pre>
+                </div>
             </div>
         `;
     }
@@ -839,4 +862,276 @@ function showToast(type, message) {
             toast.parentNode.removeChild(toast);
         }
     }, 5000);
+}
+
+// Table sorting functionality
+function sortTable(table, columnIndex, tableName) {
+    const tbody = table.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const headers = table.querySelectorAll('th');
+    
+    // Determine sort direction
+    let direction = 'asc';
+    if (currentSort.table === tableName && currentSort.column === columnIndex) {
+        direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+    }
+    
+    // Update sort state
+    currentSort = { table: tableName, column: columnIndex, direction: direction };
+    
+    // Clear previous sort indicators
+    headers.forEach(header => {
+        header.classList.remove('sort-asc', 'sort-desc');
+    });
+    
+    // Add sort indicator to current column
+    const currentHeader = headers[columnIndex];
+    currentHeader.classList.add(direction === 'asc' ? 'sort-asc' : 'sort-desc');
+    
+    // Sort rows
+    rows.sort((a, b) => {
+        const aValue = getCellValue(a, columnIndex);
+        const bValue = getCellValue(b, columnIndex);
+        
+        // Handle numeric values
+        const aNum = parseFloat(aValue.replace(/[^\d.-]/g, ''));
+        const bNum = parseFloat(bValue.replace(/[^\d.-]/g, ''));
+        
+        if (!isNaN(aNum) && !isNaN(bNum)) {
+            return direction === 'asc' ? aNum - bNum : bNum - aNum;
+        }
+        
+        // Handle string values
+        return direction === 'asc' 
+            ? aValue.localeCompare(bValue)
+            : bValue.localeCompare(aValue);
+    });
+    
+    // Re-append sorted rows
+    rows.forEach(row => tbody.appendChild(row));
+}
+
+function getCellValue(row, columnIndex) {
+    const cell = row.cells[columnIndex];
+    return cell ? cell.textContent.trim() : '';
+}
+
+function makeSortable(table, tableName) {
+    const headers = table.querySelectorAll('th');
+    headers.forEach((header, index) => {
+        header.classList.add('sortable');
+        header.addEventListener('click', () => {
+            sortTable(table, index, tableName);
+        });
+    });
+}
+
+// JSON syntax highlighting and utilities
+function syntaxHighlightJson(obj) {
+    const jsonString = JSON.stringify(obj, null, 2);
+    
+    return jsonString
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+            let cls = 'json-number';
+            if (/^"/.test(match)) {
+                if (/:$/.test(match)) {
+                    cls = 'json-key';
+                } else {
+                    cls = 'json-string';
+                }
+            } else if (/true|false/.test(match)) {
+                cls = 'json-boolean';
+            } else if (/null/.test(match)) {
+                cls = 'json-null';
+            }
+            return '<span class="' + cls + '">' + match + '</span>';
+        });
+}
+
+function copyJsonToClipboard(elementId) {
+    const element = document.getElementById(elementId);
+    const pre = element.querySelector('pre');
+    
+    if (pre) {
+        // Get the text content without HTML tags
+        const text = pre.textContent || pre.innerText;
+        
+        // Use modern clipboard API if available
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('success', 'Configuration copied to clipboard!');
+            }).catch(() => {
+                fallbackCopyToClipboard(text);
+            });
+        } else {
+            fallbackCopyToClipboard(text);
+        }
+    }
+}
+
+function fallbackCopyToClipboard(text) {
+    // Fallback method for older browsers
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    textArea.style.top = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    
+    try {
+        document.execCommand('copy');
+        showToast('success', 'Configuration copied to clipboard!');
+    } catch (err) {
+        showToast('error', 'Failed to copy to clipboard');
+    }
+    
+    document.body.removeChild(textArea);
+}
+
+// Query examples functionality
+function showQueryExamplesFromElement(element) {
+    const namespace = element.dataset.namespace;
+    const operation = element.dataset.operation;
+    const encodedPattern = element.dataset.pattern;
+    const rowIndex = parseInt(element.dataset.rowIndex);
+    
+    showQueryExamples(namespace, operation, encodedPattern, rowIndex);
+}
+
+async function showQueryExamples(namespace, operation, encodedPattern, rowIndex) {
+    if (!currentFileId) return;
+    
+    const pattern = decodeURIComponent(encodedPattern);
+    
+    showLoading('Loading query examples...');
+    
+    try {
+        const response = await fetch(`/api/analyze/${currentFileId}/query-examples`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                namespace: namespace,
+                operation: operation,
+                pattern: pattern
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+            displayQueryExamples(result.data, rowIndex);
+        } else {
+            showToast('error', 'Failed to load query examples');
+        }
+    } catch (error) {
+        showToast('error', `Failed to load query examples: ${error.message}`);
+    } finally {
+        hideLoading();
+    }
+}
+
+function displayQueryExamples(data, rowIndex) {
+    // Remove any existing examples
+    const existingExamples = document.querySelector('.query-examples');
+    if (existingExamples) {
+        existingExamples.remove();
+    }
+    
+    // Find the table and insert after the clicked row
+    const table = document.querySelector('#queriesTable table');
+    const rows = table.querySelectorAll('tbody tr');
+    const targetRow = rows[rowIndex];
+    
+    if (!targetRow) return;
+    
+    // Create examples container
+    const examplesContainer = document.createElement('div');
+    examplesContainer.className = 'query-examples';
+    examplesContainer.style.position = 'relative';
+    
+    let examplesHtml = `
+        <button class="close-examples" onclick="closeQueryExamples()">
+            <i class="fas fa-times"></i> Close
+        </button>
+        <h4>
+            <i class="fas fa-code"></i> 
+            Query Examples for ${data.namespace}.${data.operation}
+        </h4>
+    `;
+    
+    if (data.examples.length === 0) {
+        examplesHtml += '<p>No query examples found for this pattern.</p>';
+    } else {
+        data.examples.forEach((example, index) => {
+            const timestamp = new Date(example.timestamp).toLocaleString();
+            // Parse the full log entry from raw log line
+            let fullLogEntry = {};
+            try {
+                fullLogEntry = JSON.parse(example.raw_log_line);
+            } catch (e) {
+                fullLogEntry = { error: "Could not parse log entry", raw: example.raw_log_line };
+            }
+            
+            examplesHtml += `
+                <div class="query-example">
+                    <div class="query-example-header">
+                        <strong>Example ${index + 1}</strong>
+                        <div class="query-example-meta">
+                            <span><i class="fas fa-clock"></i> ${timestamp}</span>
+                            <span><i class="fas fa-stopwatch"></i> ${example.duration_ms}ms</span>
+                            <span><i class="fas fa-search"></i> ${example.plan_summary}</span>
+                        </div>
+                    </div>
+                    <div class="query-example-command">
+                        <div class="json-viewer json-viewer-compact">
+                            <button class="json-copy-btn" onclick="copyQueryExample(${index})">
+                                <i class="fas fa-copy"></i> Copy
+                            </button>
+                            <pre id="example-${index}">${syntaxHighlightJson(fullLogEntry)}</pre>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+    }
+    
+    examplesContainer.innerHTML = examplesHtml;
+    
+    // Insert after the table
+    const tableContainer = document.getElementById('queriesTable');
+    tableContainer.appendChild(examplesContainer);
+    
+    // Scroll to examples
+    examplesContainer.scrollIntoView({ behavior: 'smooth' });
+}
+
+function closeQueryExamples() {
+    const examples = document.querySelector('.query-examples');
+    if (examples) {
+        examples.remove();
+    }
+}
+
+function copyQueryExample(exampleIndex) {
+    const element = document.getElementById(`example-${exampleIndex}`);
+    if (element) {
+        const text = element.textContent || element.innerText;
+        
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('success', 'Query copied to clipboard!');
+            }).catch(() => {
+                fallbackCopyToClipboard(text);
+            });
+        } else {
+            fallbackCopyToClipboard(text);
+        }
+    }
 } 

@@ -12,7 +12,7 @@ from pathlib import Path
 import shutil
 
 # Import our existing pepi functions
-from pepi import (
+from . import (
     parse_connections, parse_replica_set_config, parse_replica_set_state,
     parse_clients, parse_queries, calculate_query_stats, calculate_connection_stats,
     count_lines, get_date_range, trim_log_file
@@ -50,14 +50,24 @@ class TrimRequest(BaseModel):
     from_date: Optional[str] = None
     until_date: Optional[str] = None
 
+class QueryExamplesRequest(BaseModel):
+    namespace: str
+    operation: str
+    pattern: str
+
 # Serve static files
-app.mount("/static", StaticFiles(directory="web_static"), name="static")
+# Get the directory where this script is located
+script_dir = Path(__file__).parent
+web_static_dir = script_dir / "web_static"
+
+app.mount("/static", StaticFiles(directory=str(web_static_dir)), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the main dashboard page."""
     try:
-        with open("web_static/index.html", "r") as f:
+        index_file = web_static_dir / "index.html"
+        with open(index_file, "r") as f:
             return f.read()
     except FileNotFoundError:
         return HTMLResponse("<h1>Web interface not found. Please create web_static/index.html</h1>")
@@ -256,6 +266,71 @@ async def analyze_queries(file_id: str, namespace: Optional[str] = None, operati
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query analysis failed: {str(e)}")
 
+@app.post("/api/analyze/{file_id}/query-examples")
+async def get_query_examples(file_id: str, request: QueryExamplesRequest):
+    """Get actual query examples for a specific pattern."""
+    if file_id not in upload_store:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    file_path = upload_store[file_id]['path']
+    namespace = request.namespace
+    operation = request.operation
+    pattern = request.pattern
+    
+    try:
+        examples = []
+        with open(file_path, 'r') as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    if (entry.get('c') == 'COMMAND' and 
+                        entry.get('msg') in ('command', 'Slow query') and
+                        entry.get('attr')):
+                        attr = entry['attr']
+                        
+                        # Check if this matches our pattern
+                        ns = attr.get('ns', '')
+                        command = attr.get('command', {})
+                        if not command or ns != namespace:
+                            continue
+                            
+                        op = list(command.keys())[0] if command else 'unknown'
+                        if op != operation:
+                            continue
+                            
+                        from . import extract_query_pattern
+                        query_pattern = extract_query_pattern(op, command)
+                        if query_pattern != pattern:
+                            continue
+                            
+                        # This is a match - add the example
+                        examples.append({
+                            'timestamp': entry.get('t', {}).get('$date', ''),
+                            'duration_ms': attr.get('durationMillis', 0),
+                            'command': command,
+                            'plan_summary': attr.get('planSummary', 'N/A'),
+                            'raw_log_line': line.strip()  # Store the original log line
+                        })
+                        
+                        # Limit to 5 examples
+                        if len(examples) >= 5:
+                            break
+                            
+                except Exception:
+                    continue
+        
+        return AnalysisResult(
+            status="success",
+            data={
+                "examples": examples,
+                "namespace": namespace,
+                "operation": operation,
+                "pattern": pattern
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get query examples: {str(e)}")
+
 @app.post("/api/analyze/{file_id}/replica-set")
 async def analyze_replica_set(file_id: str):
     """Analyze replica set configuration and state."""
@@ -416,7 +491,7 @@ def preload_file():
 async def startup_event():
     """Run startup tasks."""
     # Create web_static directory if it doesn't exist
-    os.makedirs("web_static", exist_ok=True)
+    os.makedirs(web_static_dir, exist_ok=True)
     
     # Pre-load file if specified
     preload_file()
