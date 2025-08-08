@@ -10,6 +10,8 @@ import json
 import asyncio
 from pathlib import Path
 import shutil
+import socket
+from contextlib import asynccontextmanager
 
 # Import our existing pepi functions
 from . import (
@@ -18,7 +20,25 @@ from . import (
     count_lines, get_date_range, trim_log_file
 )
 
-app = FastAPI(title="Pepi MongoDB Log Analyzer", version="1.0.0")
+# Get the directory where this script is located
+script_dir = Path(__file__).parent
+web_static_dir = script_dir / "web_static"
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown events for the FastAPI app."""
+    # Startup
+    # Create web_static directory if it doesn't exist
+    os.makedirs(web_static_dir, exist_ok=True)
+    
+    # Pre-load file if specified
+    preload_file()
+    
+    yield
+    
+    # Shutdown (nothing to do for now)
+
+app = FastAPI(title="Pepi MongoDB Log Analyzer", version="1.0.0", lifespan=lifespan)
 
 # Enable CORS for development
 app.add_middleware(
@@ -56,9 +76,6 @@ class QueryExamplesRequest(BaseModel):
     pattern: str
 
 # Serve static files
-# Get the directory where this script is located
-script_dir = Path(__file__).parent
-web_static_dir = script_dir / "web_static"
 
 app.mount("/static", StaticFiles(directory=str(web_static_dir)), name="static")
 
@@ -137,7 +154,7 @@ async def analyze_basic_info(file_id: str):
     try:
         # Parse basic information from first and last lines
         start_date = end_date = None
-        os_version = kernel_version = db_version = None
+        os_version = kernel_version = db_version = cmd_options = None
         
         with open(file_path, 'r') as f:
             lines = f.readlines()
@@ -158,7 +175,7 @@ async def analyze_basic_info(file_id: str):
             except:
                 pass
         
-        # Scan for version info (limit to first 1000 lines for performance)
+        # Scan for version info and startup options (limit to first 1000 lines for performance)
         for line in lines[:1000]:
             try:
                 entry = json.loads(line)
@@ -168,6 +185,8 @@ async def analyze_basic_info(file_id: str):
                     kernel_version = os_info.get('version')
                 elif entry.get('msg') == 'Build Info':
                     db_version = entry.get('attr', {}).get('buildInfo', {}).get('version')
+                elif entry.get('msg') == 'Options set by command line':
+                    cmd_options = entry.get('attr', {}).get('options')
             except:
                 continue
         
@@ -181,7 +200,8 @@ async def analyze_basic_info(file_id: str):
                 "end_date": end_date,
                 "os_version": os_version,
                 "kernel_version": kernel_version,
-                "db_version": db_version
+                "db_version": db_version,
+                "startup_options": cmd_options
             }
         )
     except Exception as e:
@@ -487,20 +507,96 @@ def preload_file():
             print(f"❌ Failed to pre-load file {preload_path}: {str(e)}")
     return None
 
-@app.on_event("startup")
-async def startup_event():
-    """Run startup tasks."""
-    # Create web_static directory if it doesn't exist
-    os.makedirs(web_static_dir, exist_ok=True)
+
+
+def find_available_port(start_port=8000):
+    """Find an available port for pepi web-ui, allowing max 3 instances."""
+    import subprocess
+    import psutil
     
-    # Pre-load file if specified
-    preload_file()
+    # Define the allowed ports for pepi (max 3 instances)
+    allowed_ports = [8000, 8001, 8002]
+    
+    try:
+        # Find existing pepi processes and their ports
+        pepi_processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if proc.info['cmdline'] and any('pepi.web_api' in cmd for cmd in proc.info['cmdline']):
+                    # Get the port this process is using
+                    for conn in proc.connections():
+                        if conn.status == 'LISTEN' and conn.laddr.ip in ['0.0.0.0', '127.0.0.1']:
+                            pepi_processes.append({
+                                'pid': proc.info['pid'],
+                                'port': conn.laddr.port,
+                                'cmdline': ' '.join(proc.info['cmdline'])
+                            })
+                            break
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        
+        # Show existing pepi processes
+        if pepi_processes:
+            print(f"📋 Found {len(pepi_processes)} existing pepi web-ui process(es):")
+            for proc in pepi_processes:
+                print(f"   • PID {proc['pid']} on port {proc['port']}")
+        
+        # Check if we've reached the limit
+        if len(pepi_processes) >= 3:
+            print("❌ Maximum of 3 pepi web-ui instances already running.")
+            print("   Please stop one of the existing instances before starting a new one.")
+            raise RuntimeError("Maximum pepi instances reached (3)")
+        
+        # Find the first available port from our allowed list
+        used_ports = [proc['port'] for proc in pepi_processes if proc['port'] in allowed_ports]
+        
+        for port in allowed_ports:
+            if port not in used_ports:
+                # Double-check the port is actually available by trying to bind
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        s.bind(('0.0.0.0', port))
+                        print(f"🎯 Selected port {port} for this instance")
+                        return port
+                except OSError as e:
+                    # Only warn if it's actually in use (not TIME_WAIT)
+                    if "Address already in use" in str(e):
+                        print(f"⚠️  Port {port} is in use, trying next...")
+                    else:
+                        print(f"⚠️  Port {port} unavailable ({e}), trying next...")
+                    continue
+        
+        raise RuntimeError("No available ports in range 8000-8002")
+        
+    except ImportError:
+        # Fallback if psutil is not available
+        print("⚠️  psutil not available, using basic port detection...")
+        for port in allowed_ports:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s.bind(('0.0.0.0', port))
+                    return port
+            except OSError:
+                continue
+        raise RuntimeError("No available ports in range 8000-8002")
 
 if __name__ == "__main__":
     import uvicorn
     
     print("🚀 Starting Pepi Web Interface...")
-    print("📊 Dashboard will be available at: http://localhost:8000")
-    print("📋 API docs available at: http://localhost:8000/docs")
     
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    # Find an available port
+    try:
+        port = find_available_port(8000)
+        
+        # Write the port to a temporary file so the main process can read it
+        import tempfile
+        port_file = tempfile.gettempdir() + f"/pepi_port_{os.getpid()}.txt"
+        with open(port_file, 'w') as f:
+            f.write(str(port))
+        
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    except RuntimeError as e:
+        print(f"❌ Failed to start server: {e}") 

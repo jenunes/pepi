@@ -743,11 +743,17 @@ def reconstruct_command_line(options):
     
     cmd_parts = ['mongod']
     
+    # Config file
+    if 'config' in options:
+        cmd_parts.append(f'--config {options["config"]}')
+    
     # Network options
     if 'net' in options:
         net_opts = options['net']
         if 'port' in net_opts:
             cmd_parts.append(f'--port {net_opts["port"]}')
+        if 'bindIp' in net_opts:
+            cmd_parts.append(f'--bind_ip {net_opts["bindIp"]}')
     
     # Process management
     if 'processManagement' in options:
@@ -758,7 +764,9 @@ def reconstruct_command_line(options):
     # Replication
     if 'replication' in options:
         repl_opts = options['replication']
-        if 'replSet' in repl_opts:
+        if 'replSetName' in repl_opts:
+            cmd_parts.append(f'--replSet {repl_opts["replSetName"]}')
+        elif 'replSet' in repl_opts:
             cmd_parts.append(f'--replSet {repl_opts["replSet"]}')
     
     # Security
@@ -766,6 +774,8 @@ def reconstruct_command_line(options):
         sec_opts = options['security']
         if 'keyFile' in sec_opts:
             cmd_parts.append(f'--keyFile {sec_opts["keyFile"]}')
+        if sec_opts.get('authorization') == 'enabled':
+            cmd_parts.append('--auth')
     
     # Storage
     if 'storage' in options:
@@ -949,8 +959,6 @@ def launch_web_ui(logfile=None):
     import subprocess
     import sys
     import time
-    import webbrowser
-    import threading
     import os
     from pathlib import Path
     
@@ -978,40 +986,65 @@ def launch_web_ui(logfile=None):
     
     try:
         # Start the web server in a subprocess using module execution
+        # Don't capture stdout/stderr so the port detection messages show up
         process = subprocess.Popen(
             [sys.executable, "-m", "pepi.web_api"],
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             text=True
         )
         
         # Give the server a moment to start
-        time.sleep(2)
+        time.sleep(3)
         
         # Check if the process is still running
         if process.poll() is not None:
-            stdout, stderr = process.communicate()
-            click.echo("❌ Failed to start web server:")
-            if stderr:
-                click.echo(stderr)
+            click.echo("❌ Failed to start web server")
             return
         
-        # Open browser
-        url = "http://localhost:8000"
-        click.echo(f"📊 Dashboard available at: {url}")
-        click.echo("📋 API docs available at: http://localhost:8000/docs")
+        # The web server will have printed its own URL messages
+        # We just need to print the control message
+        click.echo()
         
-        # Open browser in a separate thread to avoid blocking
-        def open_browser():
-            time.sleep(1)  # Wait a bit more for server to be ready
-            try:
-                webbrowser.open(url)
-            except Exception:
-                pass  # Silently fail if browser can't be opened
+        # Try to read the port from the file written by the web server
+        server_port = 8000  # default fallback
+        port_file = None
+        try:
+            import tempfile
+            import psutil
+            
+            # Give a bit more time for the subprocess to write the port file
+            time.sleep(1)
+            
+            # Find our web_api subprocess
+            for child in psutil.Process(process.pid).children():
+                if any('pepi.web_api' in arg for arg in child.cmdline()):
+                    port_file = tempfile.gettempdir() + f"/pepi_port_{child.pid}.txt"
+                    break
+            
+            if port_file and os.path.exists(port_file):
+                with open(port_file, 'r') as f:
+                    server_port = int(f.read().strip())
+            else:
+                # Fallback to process detection - find the NEWEST pepi process
+                newest_proc = None
+                newest_time = 0
+                for proc in psutil.process_iter(['pid', 'cmdline', 'create_time']):
+                    if proc.info['cmdline'] and any('pepi.web_api' in cmd for cmd in proc.info['cmdline']):
+                        if proc.info['create_time'] > newest_time:
+                            newest_time = proc.info['create_time']
+                            newest_proc = proc
+                
+                if newest_proc:
+                    for conn in newest_proc.connections():
+                        if conn.status == 'LISTEN' and conn.laddr.ip in ['0.0.0.0', '127.0.0.1']:
+                            server_port = conn.laddr.port
+                            break
+        except Exception as e:
+            pass  # Use default port if detection fails
         
-        threading.Thread(target=open_browser, daemon=True).start()
-        
+        # Display clickable link instead of auto-opening browser
+        click.echo(f"\n🌐 \033[4mhttp://localhost:{server_port}\033[0m ← click here")
+        click.echo(f"📋 \033[4mhttp://localhost:{server_port}/docs\033[0m ← API docs")
         click.echo("\n💡 Press Ctrl+C to stop the web server")
         
         # Wait for user to stop the server
@@ -1024,6 +1057,14 @@ def launch_web_ui(logfile=None):
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+            
+            # Clean up port file
+            if 'port_file' in locals() and port_file and os.path.exists(port_file):
+                try:
+                    os.remove(port_file)
+                except:
+                    pass
+            
             click.echo("✅ Web server stopped")
             
     except Exception as e:
@@ -1068,8 +1109,17 @@ def launch_web_ui(logfile=None):
               help='End date/time for trimming (format: DD/MM/YYYY HH:MM:SS:MS or partial).')
 @click.option('--web-ui', is_flag=True,
               help='Launch web interface with the specified log file pre-loaded.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache, trim, from_date, until_date, web_ui):
+@click.option('--version', is_flag=True,
+              help='Show version information and exit.')
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache, trim, from_date, until_date, web_ui, version):
     """pepi: MongoDB log analysis tool."""
+    
+    # Handle version flag
+    if version:
+        click.echo("pepi version 0.0.2.1")
+        click.echo("MongoDB log analysis tool")
+        click.echo("https://github.com/jenunes/pepi")
+        return
     
     # Check if logfile is provided
     if not logfile and not web_ui:
@@ -1234,10 +1284,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                 if not cmd_options:
                     try:
                         entry = json.loads(line)
-                        if (
-                            entry.get('msg') == 'Options set by command line' and
-                            entry.get('ctx') == 'initandlisten'
-                        ):
+                        if entry.get('msg') == 'Options set by command line':
                             cmd_options = entry.get('attr', {}).get('options')
                     except Exception:
                         pass
@@ -1829,8 +1876,12 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
     ])
     # Add ReplicaSet Name if available
     repl_name = None
-    if cmd_options and 'replication' in cmd_options and 'replSet' in cmd_options['replication']:
-        repl_name = cmd_options['replication']['replSet']
+    if cmd_options and 'replication' in cmd_options:
+        repl_opts = cmd_options['replication']
+        if 'replSetName' in repl_opts:
+            repl_name = repl_opts['replSetName']
+        elif 'replSet' in repl_opts:
+            repl_name = repl_opts['replSet']
     if repl_name:
         labels.append(("ReplicaSet Name", repl_name))
     # Add number of nodes if replica set config is available

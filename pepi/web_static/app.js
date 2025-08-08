@@ -276,10 +276,23 @@ function displayBasicInfo(data) {
         <p><strong>End Date:</strong> ${data.end_date || 'N/A'}</p>
     `;
     
+    const startupOptionsHtml = data.startup_options ? 
+        `<div class="json-viewer">
+            <div class="json-copy-btn" onclick="copyJsonToClipboard('startupOptionsJson')">
+                <i class="fas fa-copy"></i> Copy
+            </div>
+            <pre id="startupOptionsJson">${syntaxHighlightJson(data.startup_options)}</pre>
+        </div>` : 
+        '<p><em>No startup options found</em></p>';
+    
     mongoInfo.innerHTML = `
         <p><strong>MongoDB Version:</strong> ${data.db_version || 'N/A'}</p>
         <p><strong>OS Version:</strong> ${data.os_version || 'N/A'}</p>
         <p><strong>Kernel Version:</strong> ${data.kernel_version || 'N/A'}</p>
+        <div style="margin-top: 15px;">
+            <strong>Startup Configuration:</strong>
+            ${startupOptionsHtml}
+        </div>
     `;
 }
 

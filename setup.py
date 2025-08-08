@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="pepi",
-    version="0.0.2",
+    version="0.0.2.1",
     description="A fast, user-friendly MongoDB log analysis tool",
     author="Your Name",
     author_email="your.email@example.com",
@@ -19,6 +19,7 @@ setup(
         "fastapi",
         "uvicorn",
         "python-multipart",
+        "psutil",
     ],
     entry_points={
         "console_scripts": [
