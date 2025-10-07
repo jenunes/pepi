@@ -479,6 +479,7 @@ function displayQueriesData(data) {
     const totalQueries = data.queries.reduce((sum, q) => sum + q.count, 0);
     const avgExecutionTime = data.queries.reduce((sum, q) => sum + q.mean_ms, 0) / data.queries.length;
     const slowestQuery = Math.max(...data.queries.map(q => q.max_ms));
+    const collscans = data.queries.filter(q => q.indexes && q.indexes.includes('COLLSCAN')).length;
     
     // Display stats
     statsGrid.innerHTML = `
@@ -497,6 +498,10 @@ function displayQueriesData(data) {
         <div class="stat-card">
             <h3>${slowestQuery.toFixed(1)}ms</h3>
             <p>Slowest Query</p>
+        </div>
+        <div class="stat-card">
+            <h3>${collscans}</h3>
+            <p>Collection Scans</p>
         </div>
     `;
     
@@ -518,6 +523,7 @@ function displayQueriesData(data) {
                 <th>Max (ms)</th>
                 <th>Mean (ms)</th>
                 <th>95% (ms)</th>
+                <th>Index</th>
             </tr>
         </thead>
         <tbody>
@@ -541,6 +547,7 @@ function displayQueriesData(data) {
                     <td>${query.max_ms.toFixed(1)}</td>
                     <td>${query.mean_ms.toFixed(1)}</td>
                     <td>${query.percentile_95_ms.toFixed(1)}</td>
+                    <td>${formatIndexes(query.indexes)}</td>
                 </tr>
             `).join('')}
         </tbody>
@@ -627,6 +634,17 @@ function createQueriesChart(queries) {
             }
         }
     });
+}
+
+function formatIndexes(indexes) {
+    if (!indexes || indexes.length === 0) {
+        return '<span class="index-badge">N/A</span>';
+    }
+    
+    return indexes.map(index => {
+        const className = index === 'COLLSCAN' ? 'index-badge collscan' : 'index-badge';
+        return `<span class="${className}">${index}</span>`;
+    }).join(' ');
 }
 
 function truncateText(text, maxLength) {
@@ -1261,6 +1279,11 @@ function createSlowQueriesPlot(slowQueries) {
             customdata.plan_summary
         );
     });
+    
+    // Add zoom sync event
+    document.getElementById('slowQueriesPlot').on('plotly_relayout', function(eventData) {
+        syncTimeSeriesZoom('slowQueriesPlot', eventData);
+    });
 }
 
 function createConnectionsPlot(connections) {
@@ -1306,6 +1329,11 @@ function createConnectionsPlot(connections) {
     };
     
     Plotly.newPlot('connectionsPlot', [trace], layout, config);
+    
+    // Add zoom sync event
+    document.getElementById('connectionsPlot').on('plotly_relayout', function(eventData) {
+        syncTimeSeriesZoom('connectionsPlot', eventData);
+    });
 }
 
 function createErrorsPlot(errors) {
@@ -1364,6 +1392,63 @@ function createErrorsPlot(errors) {
     };
     
     Plotly.newPlot('errorsPlot', traces, layout, config);
+    
+    // Add zoom sync event
+    document.getElementById('errorsPlot').on('plotly_relayout', function(eventData) {
+        syncTimeSeriesZoom('errorsPlot', eventData);
+    });
+}
+
+// Global flag to prevent infinite zoom sync loops
+let isZoomSyncing = false;
+
+function syncTimeSeriesZoom(sourceId, eventData) {
+    // Prevent infinite loop when syncing
+    if (isZoomSyncing) return;
+    
+    // Only sync on zoom/pan events (when xaxis.range is defined)
+    if (!eventData['xaxis.range[0]'] && !eventData['xaxis.range']) return;
+    
+    isZoomSyncing = true;
+    
+    // Get the new x-axis range
+    let xRange;
+    if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
+        xRange = [eventData['xaxis.range[0]'], eventData['xaxis.range[1]']];
+    } else if (eventData['xaxis.range']) {
+        xRange = eventData['xaxis.range'];
+    } else if (eventData.xaxis && eventData.xaxis.range) {
+        xRange = eventData.xaxis.range;
+    } else {
+        isZoomSyncing = false;
+        return;
+    }
+    
+    // Update all plots except the source
+    const plotIds = ['slowQueriesPlot', 'connectionsPlot', 'errorsPlot'];
+    
+    plotIds.forEach(plotId => {
+        if (plotId !== sourceId) {
+            const plotElement = document.getElementById(plotId);
+            if (plotElement && plotElement.data) {
+                Plotly.relayout(plotId, {
+                    'xaxis.range': xRange
+                }).then(() => {
+                    // Allow new zoom events after a small delay
+                    setTimeout(() => {
+                        isZoomSyncing = false;
+                    }, 100);
+                }).catch(() => {
+                    isZoomSyncing = false;
+                });
+            }
+        }
+    });
+    
+    // Reset flag after a delay as fallback
+    setTimeout(() => {
+        isZoomSyncing = false;
+    }, 200);
 }
 
 function displayQueryDetails(timestamp, duration, namespace, command, planSummary) {

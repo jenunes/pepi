@@ -132,6 +132,10 @@ pepi --fetch /path/to/mongod.log --connections --stats --sort-by opened --compar
 
 The `--queries` flag analyzes query patterns and provides performance statistics:
 
+- **Index Information**: Shows which indexes are used by each query pattern (extracted from `planSummary`)
+  - `COLLSCAN` indicates a collection scan (no index used)
+  - Index names like `age_1`, `status_1` show specific indexes used
+  - `N/A` for operations that don't use indexes (like inserts)
 - **Pattern Truncation**: By default, query patterns longer than 150 characters are truncated with "..." to keep terminal output readable
 - **Full Patterns**: Use `--report-full-patterns <file>` to write complete patterns to a file instead of printing to terminal
 - **Namespace Filtering**: Use `--namespace` to filter queries by specific database.collection
@@ -285,13 +289,13 @@ Timestamp: 2025-01-01T10:00:15.000Z
 ### Query Pattern Statistics
 ```
 ===== Query Pattern Statistics =====
-Namespace  | Operation | Pattern                                                | Count | Min(ms) | Max(ms) | 95%(ms) | Sum(ms) | Mean(ms)
-test.users | find      | {"age": {"$gt": "?"}}                                  | 7     | 41.0    | 52.0    | 48.0    | 320.0   | 45.7
-test.users | find      | {"status": "?"}                                        | 7     | 28.0    | 35.0    | 33.0    | 218.0   | 31.1
-test.users | aggregate | [$match,$group]                                        | 3     | 120.0   | 135.0   | 125.0   | 380.0   | 126.7
-test.users | update    | [{"q": {"name": "?"}, "u": {"$set": {"status": "?"}}}] | 2     | 18.0    | 19.0    | 18.0    | 37.0    | 18.5
-test.users | insert    | insert_keys:age,name                                   | 1     | 15.0    | 15.0    | 15.0    | 15.0    | 15.0
-test.users | delete    | [{"limit": "?", "q": {"status": "?"}}]                 | 1     | 22.0    | 22.0    | 22.0    | 22.0    | 22.0
+Namespace  | Operation | Pattern                                                | Count | Min(ms) | Max(ms) | 95%(ms) | Sum(ms) | Mean(ms) | Index
+test.users | find      | {"age": {"$gt": "?"}}                                  | 7     | 41.0    | 52.0    | 48.0    | 320.0   | 45.7     | age_1
+test.users | find      | {"status": "?"}                                        | 7     | 28.0    | 35.0    | 33.0    | 218.0   | 31.1     | status_1
+test.users | aggregate | [$match,$group]                                        | 3     | 120.0   | 135.0   | 125.0   | 380.0   | 126.7    | COLLSCAN
+test.users | update    | [{"q": {"name": "?"}, "u": {"$set": {"status": "?"}}}] | 2     | 18.0    | 19.0    | 18.0    | 37.0    | 18.5     | name_1
+test.users | insert    | insert_keys:age,name                                   | 1     | 15.0    | 15.0    | 15.0    | 15.0    | 15.0     | N/A
+test.users | delete    | [{"limit": "?", "q": {"status": "?"}}]                 | 1     | 22.0    | 22.0    | 22.0    | 22.0    | 22.0     | status_1
 ```
 
 ## Command Line Options
