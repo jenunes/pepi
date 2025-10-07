@@ -1192,7 +1192,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
     
     # Handle version flag
     if version:
-        click.echo("pepi version 0.0.2.2")
+        click.echo("pepi version 0.0.2.3")
         click.echo("MongoDB log analysis tool")
         click.echo("https://github.com/jenunes/pepi")
         return
@@ -1695,7 +1695,6 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                     max_percentile_len = max(len(f"{stats['percentile_95']:.1f}") for stats in query_stats.values())
                     max_sum_len = max(len(f"{stats['sum']:.1f}") for stats in query_stats.values())
                     max_mean_len = max(len(f"{stats['mean']:.1f}") for stats in query_stats.values())
-                    max_index_len = max(len(', '.join(sorted(stats['indexes']))) for stats in query_stats.values())
                     
                     # Ensure minimum widths for headers
                     max_namespace_len = max(max_namespace_len, len("Namespace"))
@@ -1707,7 +1706,6 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                     max_percentile_len = max(max_percentile_len, len("95%(ms)"))
                     max_sum_len = max(max_sum_len, len("Sum(ms)"))
                     max_mean_len = max(max_mean_len, len("Mean(ms)"))
-                    max_index_len = max(max_index_len, len("Index"))
                 else:
                     # Default widths if no data
                     max_namespace_len = len("Namespace")
@@ -1719,18 +1717,16 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                     max_percentile_len = len("95%(ms)")
                     max_sum_len = len("Sum(ms)")
                     max_mean_len = len("Mean(ms)")
-                    max_index_len = len("Index")
                 
                 # Write header with proper alignment
-                header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<8}} | {{:<{max_index_len}}}"
-                f.write(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%(ms)", "Sum(ms)", "Mean(ms)", "AllowDiskUse", "Index") + "\n")
-                f.write("-" * (max_namespace_len + max_operation_len + max_pattern_len + max_count_len + max_min_len + max_max_len + max_percentile_len + max_sum_len + max_mean_len + max_index_len + 35))  # 35 for separators, spaces, and AllowDiskUse column
+                header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<8}}"
+                f.write(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%(ms)", "Sum(ms)", "Mean(ms)", "AllowDiskUse") + "\n")
+                f.write("-" * (max_namespace_len + max_operation_len + max_pattern_len + max_count_len + max_min_len + max_max_len + max_percentile_len + max_sum_len + max_mean_len + 32))  # 32 for separators, spaces, and AllowDiskUse column
                 f.write("\n")
                 
                 # Write each query with full pattern and proper alignment
                 for (namespace, operation, pattern), stats_info in sorted_queries:
-                    indexes_display = ', '.join(sorted(stats_info['indexes'])) if stats_info['indexes'] else 'N/A'
-                    row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<8}} | {{:<{max_index_len}}}"
+                    row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<8}}"
                     f.write(row_fmt.format(
                         namespace,
                         operation,
@@ -1741,8 +1737,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                         f"{stats_info['percentile_95']:.1f}",
                         f"{stats_info['sum']:.1f}",
                         f"{stats_info['mean']:.1f}",
-                        'Yes' if stats_info['allowDiskUse'] else 'No',
-                        indexes_display
+                        'Yes' if stats_info['allowDiskUse'] else 'No'
                     ) + "\n")
             
             click.echo(f"Complete query patterns written to: {report_full_patterns}")
@@ -1848,7 +1843,6 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
             max_percentile_len = max(len(f"{stats['percentile_95']:.1f}") for stats in query_stats.values())
             max_sum_len = max(len(f"{stats['sum']:.1f}") for stats in query_stats.values())
             max_mean_len = max(len(f"{stats['mean']:.1f}") for stats in query_stats.values())
-            max_index_len = max(len(', '.join(sorted(stats['indexes']))) for stats in query_stats.values())
             
             # Ensure minimum widths for headers
             max_namespace_len = max(max_namespace_len, len("Namespace"))
@@ -1860,7 +1854,6 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
             max_percentile_len = max(max_percentile_len, len("95%(ms)"))
             max_sum_len = max(max_sum_len, len("Sum(ms)"))
             max_mean_len = max(max_mean_len, len("Mean(ms)"))
-            max_index_len = max(max_index_len, len("Index"))
         else:
             # Default widths if no data
             max_namespace_len = len("Namespace")
@@ -1872,21 +1865,18 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
             max_percentile_len = len("95%(ms)")
             max_sum_len = len("Sum(ms)")
             max_mean_len = len("Mean(ms)")
-            max_index_len = len("Index")
         
         # Display header with proper alignment
-        header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<{max_index_len}}}"
-        click.echo(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%(ms)", "Sum(ms)", "Mean(ms)", "Index"))
-        click.echo("-" * (max_namespace_len + max_operation_len + max_pattern_len + max_count_len + max_min_len + max_max_len + max_percentile_len + max_sum_len + max_mean_len + max_index_len + 27))  # 27 for separators and spaces
+        header_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}}"
+        click.echo(header_fmt.format("Namespace", "Operation", "Pattern", "Count", "Min(ms)", "Max(ms)", "95%(ms)", "Sum(ms)", "Mean(ms)"))
+        click.echo("-" * (max_namespace_len + max_operation_len + max_pattern_len + max_count_len + max_min_len + max_max_len + max_percentile_len + max_sum_len + max_mean_len + 24))  # 24 for separators and spaces
         
         # Display each query with truncated pattern and proper alignment
         for (namespace, operation, pattern), stats_info in sorted_queries:
             # Truncate pattern to 150 characters
             display_pattern = pattern[:150] + "..." if len(pattern) > 150 else pattern
-            # Format indexes for display
-            indexes_display = ', '.join(sorted(stats_info['indexes'])) if stats_info['indexes'] else 'N/A'
             
-            row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}} | {{:<{max_index_len}}}"
+            row_fmt = f"{{:<{max_namespace_len}}} | {{:<{max_operation_len}}} | {{:<{max_pattern_len}}} | {{:>{max_count_len}}} | {{:>{max_min_len}}} | {{:>{max_max_len}}} | {{:>{max_percentile_len}}} | {{:>{max_sum_len}}} | {{:>{max_mean_len}}}"
             click.echo(row_fmt.format(
                 namespace,
                 operation,
@@ -1896,8 +1886,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
                 f"{stats_info['max']:.1f}",
                 f"{stats_info['percentile_95']:.1f}",
                 f"{stats_info['sum']:.1f}",
-                f"{stats_info['mean']:.1f}",
-                indexes_display
+                f"{stats_info['mean']:.1f}"
             ))
         
         if not query_stats:

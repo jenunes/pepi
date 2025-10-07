@@ -272,8 +272,7 @@ async def analyze_queries(file_id: str, namespace: Optional[str] = None, operati
                 "mean_ms": stats['mean'],
                 "percentile_95_ms": stats['percentile_95'],
                 "sum_ms": stats['sum'],
-                "allow_disk_use": stats['allowDiskUse'],
-                "indexes": list(stats['indexes']) if isinstance(stats['indexes'], set) else stats['indexes']
+                "allow_disk_use": stats['allowDiskUse']
             })
         
         return AnalysisResult(

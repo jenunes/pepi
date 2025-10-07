@@ -479,7 +479,6 @@ function displayQueriesData(data) {
     const totalQueries = data.queries.reduce((sum, q) => sum + q.count, 0);
     const avgExecutionTime = data.queries.reduce((sum, q) => sum + q.mean_ms, 0) / data.queries.length;
     const slowestQuery = Math.max(...data.queries.map(q => q.max_ms));
-    const collscans = data.queries.filter(q => q.indexes.includes('COLLSCAN')).length;
     
     // Display stats
     statsGrid.innerHTML = `
@@ -498,10 +497,6 @@ function displayQueriesData(data) {
         <div class="stat-card">
             <h3>${slowestQuery.toFixed(1)}ms</h3>
             <p>Slowest Query</p>
-        </div>
-        <div class="stat-card">
-            <h3>${collscans}</h3>
-            <p>Collection Scans</p>
         </div>
     `;
     
@@ -523,7 +518,6 @@ function displayQueriesData(data) {
                 <th>Max (ms)</th>
                 <th>Mean (ms)</th>
                 <th>95% (ms)</th>
-                <th>Index</th>
             </tr>
         </thead>
         <tbody>
@@ -547,7 +541,6 @@ function displayQueriesData(data) {
                     <td>${query.max_ms.toFixed(1)}</td>
                     <td>${query.mean_ms.toFixed(1)}</td>
                     <td>${query.percentile_95_ms.toFixed(1)}</td>
-                    <td>${formatIndexes(query.indexes)}</td>
                 </tr>
             `).join('')}
         </tbody>
@@ -634,17 +627,6 @@ function createQueriesChart(queries) {
             }
         }
     });
-}
-
-function formatIndexes(indexes) {
-    if (!indexes || indexes.length === 0) {
-        return '<span class="index-badge">N/A</span>';
-    }
-    
-    return indexes.map(index => {
-        const className = index === 'COLLSCAN' ? 'index-badge collscan' : 'index-badge';
-        return `<span class="${className}">${index}</span>`;
-    }).join(' ');
 }
 
 function truncateText(text, maxLength) {

@@ -831,21 +831,6 @@ body {
     box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
 }
 
-/* Index badges */
-.index-badge {
-    background: #e3f2fd;
-    color: #1976d2;
-    padding: 2px 8px;
-    border-radius: 12px;
-    font-size: 0.8rem;
-    font-weight: 500;
-}
-
-.index-badge.collscan {
-    background: #ffebee;
-    color: #d32f2f;
-}
-
 /* Query Examples Display */
 .query-examples {
     margin-top: 20px;
