@@ -471,7 +471,14 @@ async function analyzeQueries() {
     }
 }
 
+// Global storage for queries data (for context menu)
+let currentQueriesData = null;
+let selectedQueryIndex = null;
+
 function displayQueriesData(data) {
+    // Store queries data globally
+    currentQueriesData = data;
+    
     const statsGrid = document.getElementById('queryStats');
     const tableContainer = document.getElementById('queriesTable');
     
@@ -528,7 +535,7 @@ function displayQueriesData(data) {
         </thead>
         <tbody>
             ${data.queries.map((query, index) => `
-                <tr>
+                <tr data-query-index="${index}">
                     <td>${query.namespace}</td>
                     <td>${query.operation}</td>
                     <td>
@@ -1021,6 +1028,8 @@ async function showQueryExamples(namespace, operation, encodedPattern, rowIndex)
     
     const pattern = decodeURIComponent(encodedPattern);
     
+    console.log('🔍 Requesting query examples:', { namespace, operation, pattern });
+    
     showLoading('Loading query examples...');
     
     try {
@@ -1038,6 +1047,8 @@ async function showQueryExamples(namespace, operation, encodedPattern, rowIndex)
         
         const result = await response.json();
         
+        console.log('📊 Query examples result:', result);
+        
         if (result.status === 'success') {
             displayQueryExamples(result.data, rowIndex);
         } else {
@@ -1050,7 +1061,22 @@ async function showQueryExamples(namespace, operation, encodedPattern, rowIndex)
     }
 }
 
+// Store current query info for AI recommendations
+let currentQueryForAI = null;
+let currentQueryExamples = null;
+
 function displayQueryExamples(data, rowIndex) {
+    // Store query info and examples for AI button
+    if (currentQueriesData && currentQueriesData.queries[rowIndex]) {
+        currentQueryForAI = {
+            ...currentQueriesData.queries[rowIndex],
+            rowIndex: rowIndex
+        };
+    }
+    
+    // Store the actual query examples
+    currentQueryExamples = data;
+    
     // Remove any existing examples
     const existingExamples = document.querySelector('.query-examples');
     if (existingExamples) {
@@ -1070,13 +1096,20 @@ function displayQueryExamples(data, rowIndex) {
     examplesContainer.style.position = 'relative';
     
     let examplesHtml = `
-        <button class="close-examples" onclick="closeQueryExamples()">
-            <i class="fas fa-times"></i> Close
-        </button>
-        <h4>
-            <i class="fas fa-code"></i> 
-            Query Examples for ${data.namespace}.${data.operation}
-        </h4>
+        <div class="examples-header">
+            <h4>
+                <i class="fas fa-code"></i> 
+                Query Examples for ${data.namespace}.${data.operation}
+            </h4>
+            <div class="examples-actions">
+                <button class="btn btn-ai" onclick="getIndexRecommendationForQuery(${rowIndex})">
+                    <i class="fas fa-magic"></i> Get AI Index Recommendation
+                </button>
+                <button class="close-examples" onclick="closeQueryExamples()">
+                    <i class="fas fa-times"></i> Close
+                </button>
+            </div>
+        </div>
     `;
     
     if (data.examples.length === 0) {
@@ -1400,55 +1433,67 @@ function createErrorsPlot(errors) {
 }
 
 // Global flag to prevent infinite zoom sync loops
-let isZoomSyncing = false;
+let isTimeSeriesSyncing = false;
 
 function syncTimeSeriesZoom(sourceId, eventData) {
     // Prevent infinite loop when syncing
-    if (isZoomSyncing) return;
+    if (isTimeSeriesSyncing) return;
     
-    // Only sync on zoom/pan events (when xaxis.range is defined)
-    if (!eventData['xaxis.range[0]'] && !eventData['xaxis.range']) return;
+    // Check if this is a relevant event (zoom, pan, autoscale, reset)
+    const hasXRange = eventData['xaxis.range[0]'] || eventData['xaxis.range'] || 
+                      (eventData.xaxis && eventData.xaxis.range);
+    const hasAutoScale = eventData['xaxis.autorange'];
     
-    isZoomSyncing = true;
+    if (!hasXRange && !hasAutoScale) return;
     
-    // Get the new x-axis range
-    let xRange;
+    isTimeSeriesSyncing = true;
+    
+    // Build the relayout object based on what changed
+    let relayoutData = {};
+    
+    // Handle zoom/pan (explicit range)
     if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
-        xRange = [eventData['xaxis.range[0]'], eventData['xaxis.range[1]']];
+        relayoutData['xaxis.range'] = [eventData['xaxis.range[0]'], eventData['xaxis.range[1]']];
     } else if (eventData['xaxis.range']) {
-        xRange = eventData['xaxis.range'];
+        relayoutData['xaxis.range'] = eventData['xaxis.range'];
     } else if (eventData.xaxis && eventData.xaxis.range) {
-        xRange = eventData.xaxis.range;
-    } else {
-        isZoomSyncing = false;
+        relayoutData['xaxis.range'] = eventData.xaxis.range;
+    }
+    
+    // Handle autorange (reset/double-click)
+    if (eventData['xaxis.autorange'] !== undefined) {
+        relayoutData['xaxis.autorange'] = eventData['xaxis.autorange'];
+    }
+    
+    // If no relevant changes, exit
+    if (Object.keys(relayoutData).length === 0) {
+        isTimeSeriesSyncing = false;
         return;
     }
     
     // Update all plots except the source
     const plotIds = ['slowQueriesPlot', 'connectionsPlot', 'errorsPlot'];
+    let syncPromises = [];
     
     plotIds.forEach(plotId => {
         if (plotId !== sourceId) {
             const plotElement = document.getElementById(plotId);
             if (plotElement && plotElement.data) {
-                Plotly.relayout(plotId, {
-                    'xaxis.range': xRange
-                }).then(() => {
-                    // Allow new zoom events after a small delay
-                    setTimeout(() => {
-                        isZoomSyncing = false;
-                    }, 100);
-                }).catch(() => {
-                    isZoomSyncing = false;
-                });
+                syncPromises.push(
+                    Plotly.relayout(plotId, relayoutData).catch(err => {
+                        console.warn(`Failed to sync ${plotId}:`, err);
+                    })
+                );
             }
         }
     });
     
-    // Reset flag after a delay as fallback
-    setTimeout(() => {
-        isZoomSyncing = false;
-    }, 200);
+    // Wait for all sync operations to complete
+    Promise.all(syncPromises).finally(() => {
+        setTimeout(() => {
+            isTimeSeriesSyncing = false;
+        }, 100);
+    });
 }
 
 function displayQueryDetails(timestamp, duration, namespace, command, planSummary) {
@@ -1560,3 +1605,482 @@ function displayAggregatedErrorsTable(aggregatedErrors) {
     container.innerHTML = '';
     container.appendChild(table);
 } 
+
+function showLLMInstallationModal(statusData) {
+    const modal = document.createElement('div');
+    modal.className = 'recommendations-modal';
+    modal.style.display = 'flex';
+    
+    let instructionsHTML = '';
+    if (statusData.instructions && statusData.instructions.length > 0) {
+        instructionsHTML = statusData.instructions.map(instruction => `
+            <div class="installation-step">
+                <h4>Step ${instruction.step}: ${instruction.action}</h4>
+                <p>${instruction.description}</p>
+                <div class="command-box">
+                    <code>${instruction.command}</code>
+                    <button class="copy-btn" onclick="copyToClipboard('${instruction.command}')">
+                        <i class="fas fa-copy"></i> Copy
+                    </button>
+                </div>
+            </div>
+        `).join('');
+    }
+    
+    modal.innerHTML = `
+        <div class="recommendations-content" style="max-width: 700px;">
+            <div class="recommendations-header">
+                <h3><i class="fas fa-robot"></i> AI Index Advisor Setup Required</h3>
+                <button class="recommendations-close" onclick="this.closest('.recommendations-modal').remove()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            
+            <div class="installation-info">
+                <p><strong>The AI-powered index advisor is not yet configured.</strong></p>
+                <p>To enable intelligent index recommendations with LLM-enhanced analysis, please complete the following steps:</p>
+                
+                ${instructionsHTML}
+                
+                <div class="installation-note">
+                    <p><i class="fas fa-info-circle"></i> <strong>Note:</strong></p>
+                    <ul>
+                        <li>The LLM runs <strong>locally</strong> on your machine (no data sent externally)</li>
+                        <li>Model size: ~300MB (one-time download)</li>
+                        <li>Rule-based recommendations work without LLM, but AI provides better insights</li>
+                    </ul>
+                </div>
+                
+                <div class="installation-actions">
+                    <button class="btn" onclick="this.closest('.recommendations-modal').remove()">
+                        <i class="fas fa-times"></i> Cancel
+                    </button>
+                    <button class="btn btn-primary" onclick="window.open('https://github.com/abetlen/llama-cpp-python', '_blank')">
+                        <i class="fas fa-external-link-alt"></i> View Installation Guide
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+}
+
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        showToast('success', 'Command copied to clipboard!');
+    }).catch(err => {
+        console.error('Failed to copy:', err);
+        showToast('error', 'Failed to copy command');
+    });
+}
+
+// AI Index Recommendations for Individual Queries
+async function getIndexRecommendationForQuery(queryIndex) {
+    if (!currentQueriesData || queryIndex === null || queryIndex === undefined) {
+        alert('No query selected');
+        return;
+    }
+    
+    const query = currentQueriesData.queries[queryIndex];
+    
+    // Check LLM status first
+    showLoading('Checking AI system...');
+    try {
+        const statusResponse = await fetch('/api/llm-status');
+        const statusResult = await statusResponse.json();
+        
+        if (statusResult.status === 'success' && statusResult.data.installation_required) {
+            hideLoading();
+            showLLMInstallationModal(statusResult.data);
+            return;
+        }
+    } catch (error) {
+        console.error('Failed to check LLM status:', error);
+        // Continue anyway - will use rule-based recommendations
+    }
+    
+    // Use actual query example if available, otherwise use simplified pattern
+    let rawLogLine = null;
+    if (currentQueryExamples && currentQueryExamples.examples && currentQueryExamples.examples.length > 0) {
+        rawLogLine = currentQueryExamples.examples[0].raw_log_line;
+    }
+    
+    showLoading('Analyzing query pattern...');
+    
+    try {
+        // Build single-query payload for the advisor
+        const singleQueryData = {
+            namespace: query.namespace,
+            operation: query.operation,
+            pattern: query.pattern,  // Send simplified pattern for fallback
+            raw_log_line: rawLogLine,  // Send actual log line for detailed analysis
+            stats: {
+                count: query.count,
+                mean: query.mean_ms,
+                min: query.min_ms,
+                max: query.max_ms,
+                percentile_95: query.percentile_95_ms,
+                indexes: query.indexes || []
+            }
+        };
+        
+        // Call the recommendation API with single_query=true for LLM enhancement
+        const response = await fetch(`/api/analyze/${currentFileId}/index-recommendations?single_query=true`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(singleQueryData)
+        });
+        
+        const result = await response.json();
+        
+        console.log('📊 API Response:', result);
+        
+        if (result.status === 'success') {
+            // For single query analysis, we expect exactly one recommendation
+            const recommendations = result.data.recommendations;
+            
+            if (recommendations && recommendations.length > 0) {
+                console.log('✅ Displaying recommendation:', recommendations[0]);
+                displaySingleRecommendation(recommendations[0], query);
+            } else {
+                console.log('⚠️ No recommendations returned');
+                showNoRecommendationForQuery(query);
+            }
+        } else {
+            throw new Error(result.message || 'Failed to get recommendation');
+        }
+    } catch (error) {
+        console.error('Error getting recommendation:', error);
+        alert('Failed to get index recommendation: ' + error.message);
+    } finally {
+        hideLoading();
+    }
+}
+
+async function getDetailedAnalysis(buttonElement) {
+    const namespace = buttonElement.dataset.namespace;
+    const operation = buttonElement.dataset.operation;
+    const pattern = JSON.parse(buttonElement.dataset.pattern);
+    const stats = JSON.parse(buttonElement.dataset.stats);
+    
+    // Get raw log line if available (from current query examples)
+    let rawLogLine = null;
+    if (currentQueryExamples && currentQueryExamples.examples && currentQueryExamples.examples.length > 0) {
+        rawLogLine = currentQueryExamples.examples[0].raw_log_line;
+    }
+    
+    // Disable button and show loading
+    const originalHTML = buttonElement.innerHTML;
+    buttonElement.disabled = true;
+    buttonElement.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyzing... (this may take 10-30 seconds)';
+    
+    // Expand the explanation section if collapsed
+    const explanationToggle = buttonElement.closest('.explanation-header-with-button').querySelector('.explanation-toggle');
+    const explanationContent = buttonElement.closest('.recommendation-explanation').querySelector('.explanation-content');
+    if (explanationContent.style.display === 'none') {
+        toggleExplanation(explanationToggle);
+    }
+    
+    try {
+        const response = await fetch(`/api/analyze/${currentFileId}/detailed-analysis`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                namespace,
+                operation,
+                pattern,
+                raw_log_line: rawLogLine,
+                stats
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+            const placeholder = buttonElement.closest('.recommendation-explanation').querySelector('.detailed-analysis-placeholder');
+            
+            placeholder.innerHTML = `
+                <div class="detailed-analysis-result">
+                    <div class="analysis-header">
+                        <i class="fas fa-brain"></i> <strong>AI-Powered Detailed Analysis</strong>
+                    </div>
+                    ${result.data.is_optimized ? `
+                        <div class="optimization-approved">
+                            <i class="fas fa-check-circle"></i> Query is already optimized!
+                        </div>
+                    ` : ''}
+                    <div class="analysis-content">
+                        ${formatExplanation(result.data.explanation)}
+                    </div>
+                </div>
+            `;
+            
+            // Hide the button after successful analysis
+            buttonElement.style.display = 'none';
+            
+            showToast('success', 'Detailed AI analysis complete!');
+        } else {
+            throw new Error(result.message || 'Analysis failed');
+        }
+    } catch (error) {
+        console.error('Failed to get detailed analysis:', error);
+        showToast('error', `Failed to get detailed analysis: ${error.message}`);
+        buttonElement.disabled = false;
+        buttonElement.innerHTML = originalHTML;
+    }
+}
+
+function toggleExplanation(headerElement) {
+    const content = headerElement.parentElement.parentElement.querySelector('.explanation-content') || 
+                    headerElement.nextElementSibling;
+    const icon = headerElement.querySelector('i');
+    const hint = headerElement.querySelector('.toggle-hint');
+    
+    if (content && content.style.display === 'none') {
+        content.style.display = 'block';
+        icon.className = 'fas fa-chevron-down';
+        hint.textContent = '(click to collapse)';
+    } else if (content) {
+        content.style.display = 'none';
+        icon.className = 'fas fa-chevron-right';
+        hint.textContent = '(click to expand)';
+    }
+}
+
+function formatExplanation(text) {
+    if (!text) return '<p>No explanation provided.</p>';
+    
+    // Convert **Bold Text:** headers to styled divs
+    text = text.replace(/\*\*([^*]+):\*\*/g, '<div class="explanation-section"><strong>$1:</strong></div>');
+    
+    // Convert remaining **bold** text
+    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    
+    // Convert line breaks to paragraphs
+    const paragraphs = text.split('\n\n').filter(p => p.trim());
+    
+    return paragraphs.map(para => {
+        para = para.trim();
+        // If it starts with a section header div, don't wrap in <p>
+        if (para.startsWith('<div class="explanation-section">')) {
+            return para;
+        }
+        return `<p>${para.replace(/\n/g, '<br>')}</p>`;
+    }).join('');
+}
+
+function displayOptimizedQuery(rec, query) {
+    const stats = rec.stats || {};
+    
+    const modal = document.createElement('div');
+    modal.className = 'recommendations-modal';
+    modal.onclick = (e) => {
+        if (e.target === modal) {
+            modal.remove();
+        }
+    };
+    
+    const content = document.createElement('div');
+    content.className = 'recommendations-content';
+    content.onclick = (e) => e.stopPropagation();
+    
+    content.innerHTML = `
+        <div class="recommendations-header">
+            <h2><i class="fas fa-check-circle" style="color: #27ae60;"></i> Query Already Optimized</h2>
+            <button class="recommendations-close" onclick="this.closest('.recommendations-modal').remove()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        
+        <div class="optimized-query-info">
+            <div class="query-info-header">
+                <h3>${rec.namespace} - ${rec.operation}</h3>
+                <div class="query-stats-inline">
+                    <span><i class="fas fa-repeat"></i> ${stats.count}× executions</span>
+                    <span><i class="fas fa-clock"></i> ${stats.mean_ms?.toFixed(1)}ms avg</span>
+                    <span><i class="fas fa-chart-line"></i> ${stats.p95_ms?.toFixed(1)}ms p95</span>
+                </div>
+            </div>
+            
+            <div class="current-index-display">
+                <strong>Current Index:</strong> <code>${rec.current_index}</code>
+            </div>
+            
+            <div class="optimization-status">
+                <div class="status-badge status-good">
+                    <i class="fas fa-thumbs-up"></i> No Action Needed
+                </div>
+                <p>This query is already well-optimized and follows MongoDB best practices.</p>
+            </div>
+            
+            <div class="recommendation-explanation">
+                <h4 class="explanation-toggle" onclick="toggleExplanation(this)">
+                    <i class="fas fa-chevron-right"></i> Analysis Details
+                    <span class="toggle-hint">(click to expand)</span>
+                </h4>
+                <div class="explanation-content" style="display: none;">
+                    ${formatExplanation(rec.explanation || 'Query is already well-optimized.')}
+                </div>
+            </div>
+        </div>
+    `;
+    
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+}
+
+function displaySingleRecommendation(rec, query) {
+    // Check if query is already optimized
+    if (rec.is_optimized) {
+        displayOptimizedQuery(rec, query);
+        return;
+    }
+    
+    const priority = rec.priority_level || 'MEDIUM';
+    const stats = rec.stats || {};
+    const recommendation = rec.recommendation || {};
+    
+    // Create modal
+    const modal = document.createElement('div');
+    modal.className = 'recommendations-modal';
+    modal.onclick = (e) => {
+        if (e.target === modal) closeRecommendations();
+    };
+    
+    const content = document.createElement('div');
+    content.className = 'recommendations-content';
+    content.onclick = (e) => e.stopPropagation();
+    
+    const cmdId = 'cmd-single-' + Math.random().toString(36).substr(2, 9);
+    
+    content.innerHTML = `
+        <div class="recommendations-header">
+            <h2>
+                <i class="fas fa-magic"></i> 
+                Index Recommendation
+            </h2>
+            <button class="recommendations-close" onclick="closeRecommendations()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        
+        <div class="recommendation-card priority-${priority}">
+            <span class="recommendation-priority ${priority}">${priority} Priority</span>
+            
+            <div class="recommendation-query-info">
+                <h4>${rec.namespace} - ${rec.operation}</h4>
+                <div class="recommendation-stats">
+                    <span><i class="fas fa-redo"></i> ${stats.count || 0}× executed</span>
+                    <span><i class="fas fa-clock"></i> ${stats.mean_ms || 0}ms avg</span>
+                    <span><i class="fas fa-chart-line"></i> ${stats.p95_ms || 0}ms p95</span>
+                </div>
+                <div class="recommendation-pattern">${rec.pattern}</div>
+            </div>
+            
+            <div class="recommendation-index">
+                <h5><i class="fas fa-database"></i> Recommended Index</h5>
+                <div class="recommendation-command">
+                    <code id="${cmdId}">${recommendation.command || ''}</code>
+                    <button class="copy-btn" onclick="copyIndexCommand('${cmdId}')">
+                        <i class="fas fa-copy"></i> Copy
+                    </button>
+                </div>
+            </div>
+            
+            <div class="recommendation-explanation">
+                <div class="explanation-header-with-button">
+                    <h4 class="explanation-toggle" onclick="toggleExplanation(this)">
+                        <i class="fas fa-chevron-right"></i> Why This Index Is Recommended
+                        <span class="toggle-hint">(click to expand)</span>
+                    </h4>
+                    <button class="btn btn-detailed-analysis" onclick="getDetailedAnalysis(this)" 
+                            data-namespace="${rec.namespace}" 
+                            data-operation="${rec.operation}"
+                            data-pattern='${JSON.stringify(rec.pattern).replace(/'/g, "&apos;")}'
+                            data-stats='${JSON.stringify(rec.stats).replace(/'/g, "&apos;")}'
+                            data-current-index="${rec.current_index}">
+                        <i class="fas fa-brain"></i> Get Detailed AI Explanation
+                    </button>
+                </div>
+                <div class="explanation-content" style="display: none;">
+                    ${formatExplanation(recommendation.reason || 'No reason provided')}
+                    <div class="detailed-analysis-placeholder"></div>
+                </div>
+            </div>
+            
+            ${recommendation.additional_tip ? `
+                <div class="llm-tip">
+                    ${recommendation.additional_tip}
+                </div>
+            ` : ''}
+        </div>
+    `;
+    
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+}
+
+function showNoRecommendationForQuery(query) {
+    const modal = document.createElement('div');
+    modal.className = 'recommendations-modal';
+    modal.onclick = (e) => {
+        if (e.target === modal) closeRecommendations();
+    };
+    
+    const content = document.createElement('div');
+    content.className = 'recommendations-content';
+    content.onclick = (e) => e.stopPropagation();
+    
+    content.innerHTML = `
+        <div class="recommendations-header">
+            <h2><i class="fas fa-magic"></i> Index Recommendation</h2>
+            <button class="recommendations-close" onclick="closeRecommendations()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        
+        <div class="no-recommendations">
+            <i class="fas fa-check-circle"></i>
+            <h3>This Query Looks Good!</h3>
+            <p><strong>${query.namespace} - ${query.operation}</strong></p>
+            <p style="margin-top: 15px; color: #27ae60;">
+                ✓ No critical optimization needed for this query pattern
+            </p>
+            <p style="margin-top: 10px; font-size: 0.9rem; color: #666;">
+                Current index: <strong>${formatIndexes(query.indexes)}</strong>
+            </p>
+        </div>
+    `;
+    
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+}
+
+function closeRecommendations() {
+    const modal = document.querySelector('.recommendations-modal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
+function copyIndexCommand(elementId) {
+    const element = document.getElementById(elementId);
+    if (!element) return;
+    
+    const text = element.textContent || element.innerText;
+    
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+            showToast('success', 'Index command copied to clipboard!');
+        }).catch(() => {
+            fallbackCopyToClipboard(text);
+        });
+    } else {
+        fallbackCopyToClipboard(text);
+    }
+}

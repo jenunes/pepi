@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FAQ - Pepi MongoDB Log Analyzer</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            padding: 50px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 50px;
+            padding-bottom: 30px;
+            border-bottom: 3px solid #667eea;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            color: #666;
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+            margin-bottom: 30px;
+            transition: all 0.3s;
+        }
+
+        .back-link:hover {
+            color: #764ba2;
+            transform: translateX(-5px);
+        }
+
+        .faq-section {
+            margin-bottom: 50px;
+        }
+
+        .section-title {
+            font-size: 1.8rem;
+            color: #667eea;
+            margin-bottom: 25px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .faq-item {
+            margin-bottom: 30px;
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            border-radius: 8px;
+        }
+
+        .faq-question {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .faq-question i {
+            color: #667eea;
+            margin-top: 3px;
+        }
+
+        .faq-answer {
+            color: #555;
+            line-height: 1.7;
+        }
+
+        .faq-answer ul {
+            margin: 15px 0 15px 30px;
+        }
+
+        .faq-answer li {
+            margin: 8px 0;
+        }
+
+        .faq-answer code {
+            background: #e0e0e0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 0.95em;
+        }
+
+        .highlight-box {
+            background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+            border-left: 4px solid #27ae60;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+
+        .highlight-box h4 {
+            color: #2d6a3e;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .warning-box {
+            background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+            border-left: 4px solid #f57c00;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+
+        .warning-box h4 {
+            color: #e65100;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 50px;
+            padding-top: 30px;
+            border-top: 2px solid #e0e0e0;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="index.html" class="back-link">
+            <i class="fas fa-arrow-left"></i> Back to Analyzer
+        </a>
+
+        <div class="header">
+            <h1><i class="fas fa-question-circle"></i> Frequently Asked Questions</h1>
+            <p>Everything you need to know about Pepi</p>
+        </div>
+
+        <!-- Privacy & Data Collection -->
+        <div class="faq-section">
+            <h2 class="section-title">
+                <i class="fas fa-shield-alt"></i> Privacy & Data Collection
+            </h2>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>Does Pepi send my MongoDB logs to any external servers?</span>
+                </div>
+                <div class="faq-answer">
+                    <div class="highlight-box">
+                        <h4><i class="fas fa-check-circle"></i> No, Absolutely Not!</h4>
+                        <p>Pepi operates <strong>100% locally</strong> on your machine. Your MongoDB log files never leave your computer. All analysis, parsing, and recommendations happen entirely on your local system.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>What data does Pepi collect or store?</span>
+                </div>
+                <div class="faq-answer">
+                    <p>Pepi stores data <strong>only on your local machine</strong>:</p>
+                    <ul>
+                        <li><strong>Cached Analysis:</strong> Parsed log data is cached locally for 7 days to speed up repeated analyses</li>
+                        <li><strong>Uploaded Files:</strong> Log files you upload via the web UI are temporarily stored in your system's temp directory</li>
+                        <li><strong>LLM Model:</strong> If you use AI features, a small language model (~300MB) is downloaded and stored in <code>pepi/models/</code></li>
+                    </ul>
+                    <p><strong>No telemetry, no analytics, no external communication whatsoever.</strong></p>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>Can I use Pepi offline?</span>
+                </div>
+                <div class="faq-answer">
+                    <p><strong>Yes!</strong> Once installed, Pepi works completely offline. The web UI loads from your local system, and all processing happens locally. The only time you need internet is:</p>
+                    <ul>
+                        <li>Initial installation: <code>pip install</code></li>
+                        <li>First-time AI setup: Downloading the LLM model (optional)</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI Features -->
+        <div class="faq-section">
+            <h2 class="section-title">
+                <i class="fas fa-brain"></i> AI-Powered Index Recommendations
+            </h2>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>How does the AI Index Advisor work?</span>
+                </div>
+                <div class="faq-answer">
+                    <p>Pepi uses a <strong>two-tier approach</strong>:</p>
+                    <ul>
+                        <li><strong>Fast Rule-Based Analysis (instant):</strong> Applies MongoDB's ESR (Equality-Sort-Range) principles and best practices to recommend optimal indexes</li>
+                        <li><strong>Detailed AI Analysis (optional, 10-30 seconds):</strong> Uses a local LLM to provide in-depth technical explanations with specific MongoDB optimization principles</li>
+                    </ul>
+                    <p>The AI is trained on official MongoDB documentation and provides authoritative, technically accurate recommendations.</p>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>Does the AI send my queries to OpenAI, ChatGPT, or any cloud service?</span>
+                </div>
+                <div class="faq-answer">
+                    <div class="highlight-box">
+                        <h4><i class="fas fa-check-circle"></i> No External AI Services!</h4>
+                        <p>Pepi uses <strong>llama-cpp-python</strong> to run a lightweight language model (<strong>locally on your CPU</strong>). Your queries, data, and analysis never leave your machine. This is a key design principle of Pepi - complete privacy and offline capability.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>What LLM model does Pepi use?</span>
+                </div>
+                <div class="faq-answer">
+                    <p>Pepi is <strong>model-agnostic</strong> - you can use any GGUF-format LLM model. The choice is yours!</p>
+                    <p><strong>Recommended:</strong> We suggest <strong>Qwen2.5-0.5B-Instruct</strong> (quantized GGUF, ~300MB) for the best balance of:</p>
+                    <ul>
+                        <li><strong>Size</strong> - Small footprint (~300MB)</li>
+                        <li><strong>CPU execution</strong> - No GPU required</li>
+                        <li><strong>Fast inference</strong> - Responses in 10-30 seconds</li>
+                        <li><strong>Technical accuracy</strong> - Good at understanding MongoDB concepts</li>
+                    </ul>
+                    <p><strong>Alternative options:</strong> You can download any GGUF model (e.g., Phi-3-mini, TinyLlama, Mistral-7B) and place it in <code>pepi/models/</code>. Larger models provide better analysis but take longer to run.</p>
+                    <p>Pepi runs with a 2048 token context window, sufficient for MongoDB documentation + your query analysis.</p>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>Is the AI required? Can I use Pepi without it?</span>
+                </div>
+                <div class="faq-answer">
+                    <p><strong>Absolutely!</strong> The AI is completely optional:</p>
+                    <ul>
+                        <li>All core features work without AI (query analysis, time series, index detection)</li>
+                        <li>Rule-based recommendations are fast and accurate</li>
+                        <li>AI provides enhanced explanations but isn't necessary for index recommendations</li>
+                    </ul>
+                    <p>If AI isn't available, Pepi will simply use the rule-based approach for all recommendations.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance & Resources -->
+        <div class="faq-section">
+            <h2 class="section-title">
+                <i class="fas fa-tachometer-alt"></i> Performance & Resources
+            </h2>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>How much CPU/RAM does the AI use?</span>
+                </div>
+                <div class="faq-answer">
+                    <p>AI analysis is <strong>only triggered when you click "Get Detailed AI Explanation"</strong>:</p>
+                    <ul>
+                        <li><strong>CPU:</strong> Uses 4 threads, typically 20-30% CPU for 10-30 seconds</li>
+                        <li><strong>RAM:</strong> ~500MB-1GB while running inference</li>
+                        <li><strong>Disk:</strong> 300MB for the model file</li>
+                    </ul>
+                    <div class="warning-box">
+                        <h4><i class="fas fa-exclamation-triangle"></i> Performance Note</h4>
+                        <p>Running LLM inference on CPU is slower than GPU but ensures Pepi works on any machine. The 10-30 second wait is worth it for the detailed technical analysis.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>Can I analyze large log files (GB+)?</span>
+                </div>
+                <div class="faq-answer">
+                    <p><strong>Yes!</strong> Pepi handles large files efficiently:</p>
+                    <ul>
+                        <li><strong>Streaming parser:</strong> Processes files line-by-line (doesn't load entire file into memory)</li>
+                        <li><strong>7-day cache:</strong> Re-analyzing the same file is instant</li>
+                        <li><strong>Progress bars:</strong> Shows real-time progress with <code>tqdm</code></li>
+                        <li><strong>Data sampling:</strong> Time series automatically samples large datasets (>10k points) for browser performance</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Technical -->
+        <div class="faq-section">
+            <h2 class="section-title">
+                <i class="fas fa-code"></i> Technical Details
+            </h2>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>What MongoDB versions are supported?</span>
+                </div>
+                <div class="faq-answer">
+                    <p>Pepi supports MongoDB <strong>4.4+</strong> (versions that use the JSON log output format introduced in MongoDB 4.4). It has been tested with MongoDB 4.4, 5.x, 6.x, and 7.x.</p>
+                    <p>MongoDB 4.4 introduced structured JSON logging (Relaxed Extended JSON v2.0) for all log destinations, which Pepi requires for accurate parsing.</p>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>Where is the cache stored?</span>
+                </div>
+                <div class="faq-answer">
+                    <p>Cache is stored in <code>~/.pepi_cache/</code> with 7-day TTL. You can clear it anytime with:</p>
+                    <code>pepi --clear-cache</code>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>Can I trust the AI recommendations?</span>
+                </div>
+                <div class="faq-answer">
+                    <div class="highlight-box">
+                        <h4><i class="fas fa-info-circle"></i> Always Review Recommendations</h4>
+                        <p>While Pepi's recommendations are based on MongoDB best practices and official documentation, <strong>always review and test index changes in a development environment first</strong>. The AI provides guidance, but you should validate recommendations against your specific workload and use case.</p>
+                    </div>
+                    <p>The AI is loaded with official MongoDB documentation (ESR guidelines, index strategies, selectivity principles) and generates technically sound recommendations. However, every database is unique.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p><strong>Pepi</strong> - MongoDB Log Analyzer v1.0</p>
+            <p>Open Source | 100% Local | Privacy-First</p>
+            <p style="margin-top: 15px;">
+                <a href="https://github.com/yourusername/pepi" style="color: #667eea; text-decoration: none;">
+                    <i class="fas fa-code-branch"></i> GitHub
+                </a>
+            </p>
+        </div>
+    </div>
+</body>
+</html>
+

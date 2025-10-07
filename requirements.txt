@@ -6,3 +6,8 @@ uvicorn>=0.23.0
 python-multipart>=0.0.6
 psutil>=5.9.0
 python-dateutil>=2.8.0
+
+# Optional: For AI-powered index recommendations
+# Install with: pip install llama-cpp-python
+# Then run: python scripts/download_model.py
+# llama-cpp-python>=0.2.0

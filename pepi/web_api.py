@@ -19,6 +19,7 @@ from . import (
     parse_clients, parse_queries, calculate_query_stats, calculate_connection_stats,
     count_lines, get_date_range, trim_log_file, parse_timeseries_data
 )
+from .index_advisor import IndexAdvisor
 
 # Get the directory where this script is located
 script_dir = Path(__file__).parent
@@ -297,8 +298,11 @@ async def get_query_examples(file_id: str, request: QueryExamplesRequest):
     operation = request.operation
     pattern = request.pattern
     
+    print(f"🔍 Looking for examples: ns={namespace}, op={operation}, pattern={pattern[:100]}")
+    
     try:
         examples = []
+        match_attempts = 0
         with open(file_path, 'r') as f:
             for line in f:
                 try:
@@ -320,8 +324,31 @@ async def get_query_examples(file_id: str, request: QueryExamplesRequest):
                             
                         from . import extract_query_pattern
                         query_pattern = extract_query_pattern(op, command)
-                        if query_pattern != pattern:
-                            continue
+                        match_attempts += 1
+                        if match_attempts <= 3:  # Log first few attempts
+                            print(f"  Comparing: {query_pattern[:100]} == {pattern[:100]}")
+                        
+                        # Try exact match first
+                        if query_pattern == pattern:
+                            pass  # Match found
+                        # For aggregate queries, also try legacy format compatibility
+                        elif op == 'aggregate':
+                            # Convert between formats: ["$match","$project"] <=> [$match,$project]
+                            try:
+                                # Parse new format (JSON array)
+                                stages_new = json.loads(query_pattern) if query_pattern.startswith('[') else []
+                                # Parse old format (bracket-comma-separated)
+                                stages_old = pattern.strip('[]').split(',') if pattern.startswith('[') and not pattern.startswith('["') else []
+                                
+                                # Compare stage lists
+                                if stages_new and stages_old and stages_new == stages_old:
+                                    pass  # Match found (different format but same stages)
+                                else:
+                                    continue  # No match
+                            except:
+                                continue  # No match
+                        else:
+                            continue  # No match
                             
                         # This is a match - add the example
                         examples.append({
@@ -338,6 +365,8 @@ async def get_query_examples(file_id: str, request: QueryExamplesRequest):
                             
                 except Exception:
                     continue
+        
+        print(f"✅ Found {len(examples)} examples (checked {match_attempts} patterns)")
         
         return AnalysisResult(
             status="success",
@@ -470,6 +499,203 @@ async def analyze_timeseries(file_id: str, namespace: Optional[str] = None):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Time-series analysis failed: {str(e)}")
+
+class SingleQueryRequest(BaseModel):
+    namespace: str
+    operation: str
+    pattern: str
+    raw_log_line: Optional[str] = None
+    stats: Dict
+
+@app.get("/api/llm-status")
+async def get_llm_status():
+    """Check if LLM is available and provide installation instructions if not."""
+    from .index_advisor import IndexAdvisor
+    
+    advisor = IndexAdvisor()
+    
+    status = {
+        "available": advisor.llm is not None,
+        "model_path": str(advisor.model_path) if advisor.model_path else None,
+    }
+    
+    if not status["available"]:
+        # Check what's missing
+        try:
+            import llama_cpp
+            status["llama_cpp_installed"] = True
+        except ImportError:
+            status["llama_cpp_installed"] = False
+        
+        # Check if models directory exists
+        package_dir = Path(__file__).parent
+        model_dir = package_dir / "models"
+        status["models_dir_exists"] = model_dir.exists()
+        status["model_files"] = [f.name for f in model_dir.glob("*.gguf")] if model_dir.exists() else []
+        
+        # Provide installation instructions
+        instructions = []
+        if not status["llama_cpp_installed"]:
+            instructions.append({
+                "step": 1,
+                "action": "Install llama-cpp-python",
+                "command": "pip install llama-cpp-python",
+                "description": "This installs the Python bindings for running LLM models locally."
+            })
+        
+        if not status["model_files"]:
+            instructions.append({
+                "step": 2 if not status["llama_cpp_installed"] else 1,
+                "action": "Download LLM model",
+                "command": "python scripts/download_model.py",
+                "description": "Downloads a small (~300MB) quantized LLM model for index recommendations."
+            })
+        
+        status["installation_required"] = True
+        status["instructions"] = instructions
+    else:
+        status["installation_required"] = False
+    
+    return AnalysisResult(
+        status="success",
+        data=status
+    )
+
+@app.post("/api/analyze/{file_id}/detailed-analysis")
+async def get_detailed_analysis(file_id: str, request: SingleQueryRequest):
+    """Get detailed LLM-powered analysis for a specific query.
+    
+    This endpoint uses the LLM for deep analysis and may take longer.
+    """
+    if file_id not in upload_store:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        from .index_advisor import IndexAdvisor
+        
+        # Parse the actual command from the log line if available
+        actual_pattern = request.pattern
+        if request.raw_log_line:
+            log_entry = json.loads(request.raw_log_line)
+            command = log_entry.get('attr', {}).get('command', {})
+            
+            if request.operation == 'aggregate' and 'pipeline' in command:
+                actual_pattern = json.dumps(command['pipeline'])
+        
+        # Initialize advisor
+        advisor = IndexAdvisor()
+        
+        if not advisor.llm:
+            raise HTTPException(status_code=503, detail="LLM not available for detailed analysis")
+        
+        # Extract fields
+        from . import extract_query_pattern
+        fields = advisor._extract_query_fields(actual_pattern, request.operation)
+        
+        if not fields:
+            return AnalysisResult(
+                status="success",
+                data={"analysis": "Unable to extract fields from query pattern for detailed analysis."}
+            )
+        
+        # Build index spec
+        index_spec = advisor._build_index_spec(fields, request.operation, actual_pattern)
+        
+        if not index_spec:
+            return AnalysisResult(
+                status="success",
+                data={"analysis": "Unable to generate index specification for this query pattern."}
+            )
+        
+        # Get detailed LLM analysis
+        llm_result = advisor._get_llm_analysis(request.namespace, request.operation, 
+                                               fields, index_spec, request.stats)
+        
+        return AnalysisResult(
+            status="success",
+            data={
+                "is_optimized": llm_result.get('is_optimized', False),
+                "explanation": llm_result.get('explanation', 'Analysis completed.'),
+                "index_spec": index_spec,
+                "command": advisor._format_create_index(request.namespace, index_spec)
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Detailed analysis failed: {str(e)}")
+
+@app.post("/api/analyze/{file_id}/index-recommendations")
+async def get_index_recommendations(file_id: str, request: Optional[SingleQueryRequest] = None, top_n: int = 10, single_query: bool = False):
+    """Get AI-powered index recommendations for queries.
+    
+    Args:
+        file_id: Uploaded file ID
+        request: Single query data (if analyzing one specific query)
+        top_n: Number of recommendations to return (for bulk analysis)
+        single_query: If True, use LLM enhancement (for single query from UI button)
+    """
+    if file_id not in upload_store:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    file_path = upload_store[file_id]['path']
+    
+    try:
+        # Initialize index advisor
+        advisor = IndexAdvisor()
+        
+        # If we have a single query with raw log line, use it directly
+        if request and request.raw_log_line:
+            print(f"🎯 Using raw log line for analysis")
+            # Parse the actual command from the log line
+            log_entry = json.loads(request.raw_log_line)
+            command = log_entry.get('attr', {}).get('command', {})
+            
+            # Extract pattern from actual command
+            from . import extract_query_pattern
+            actual_pattern = extract_query_pattern(request.operation, command)
+            
+            # For aggregate, use the full pipeline JSON
+            if request.operation == 'aggregate' and 'pipeline' in command:
+                actual_pattern = json.dumps(command['pipeline'])
+            
+            print(f"📊 Extracted pattern: {actual_pattern[:200]}")
+            
+            # Analyze single query
+            recommendation = advisor.analyze_single_query(
+                namespace=request.namespace,
+                operation=request.operation,
+                pattern=actual_pattern,
+                stats=request.stats
+            )
+            
+            return AnalysisResult(
+                status="success",
+                data={
+                    "recommendations": [recommendation] if recommendation else [],
+                    "total_analyzed": 1,
+                    "has_llm": advisor.llm is not None
+                }
+            )
+        
+        # Otherwise, parse all queries from log file (bulk analysis)
+        queries_data = parse_queries(file_path)
+        query_stats = calculate_query_stats(queries_data)
+        
+        # Generate recommendations (LLM only if single_query=True)
+        recommendations = advisor.analyze_queries(query_stats, use_llm=single_query)
+        
+        # Limit to top N
+        recommendations = recommendations[:top_n]
+        
+        return AnalysisResult(
+            status="success",
+            data={
+                "recommendations": recommendations,
+                "total_analyzed": len(query_stats),
+                "has_llm": advisor.llm is not None
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Index recommendation failed: {str(e)}")
 
 @app.post("/api/trim/{file_id}")
 async def trim_log(file_id: str, trim_request: TrimRequest):

@@ -37,4 +37,8 @@ wheels/
 Thumbs.db
 
 # Logs
-*.log 
+*.log
+
+# LLM Models (users download their own)
+pepi/models/
+*.gguf

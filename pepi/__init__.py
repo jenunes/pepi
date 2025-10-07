@@ -560,8 +560,15 @@ def extract_query_pattern(operation, command):
     elif operation == 'aggregate':
         pipeline = command.get('pipeline', [])
         if pipeline and isinstance(pipeline, list):
-            stages = [list(stage.keys())[0] for stage in pipeline if isinstance(stage, dict) and stage]
-            return '[' + ','.join(stages) + ']'
+            # Extract stage names, filtering out empty stages
+            stages = []
+            for stage in pipeline:
+                if isinstance(stage, dict) and stage:
+                    stage_keys = list(stage.keys())
+                    if stage_keys:
+                        stages.append(stage_keys[0])
+            # Return as JSON array for consistent string comparison
+            return json.dumps(stages)
         return '[unknown]'
     else:
         # For other commands, just show the keys
@@ -1192,7 +1199,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
     
     # Handle version flag
     if version:
-        click.echo("pepi version 0.0.2.3")
+        click.echo("pepi version 1.0.0")
         click.echo("MongoDB log analysis tool")
         click.echo("https://github.com/jenunes/pepi")
         return
