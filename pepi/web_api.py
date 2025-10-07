@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from . import (
     parse_connections, parse_replica_set_config, parse_replica_set_state,
     parse_clients, parse_queries, calculate_query_stats, calculate_connection_stats,
-    count_lines, get_date_range, trim_log_file
+    count_lines, get_date_range, trim_log_file, parse_timeseries_data
 )
 
 # Get the directory where this script is located
@@ -393,6 +393,83 @@ async def analyze_clients(file_id: str):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Client analysis failed: {str(e)}")
+
+@app.post("/api/analyze/{file_id}/timeseries")
+async def analyze_timeseries(file_id: str, namespace: Optional[str] = None):
+    """Analyze time-series data for slow queries, connections, and errors."""
+    if file_id not in upload_store:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    file_path = upload_store[file_id]['path']
+    
+    try:
+        slow_queries, connections, errors = parse_timeseries_data(file_path)
+        
+        # Filter slow queries by namespace if specified
+        if namespace:
+            slow_queries = [q for q in slow_queries if q['namespace'] == namespace]
+        
+        # Sample data if too large (> 10,000 points) to prevent browser overload
+        max_points = 10000
+        if len(slow_queries) > max_points:
+            import random
+            slow_queries = random.sample(slow_queries, max_points)
+        
+        # Get unique namespaces for filtering
+        unique_namespaces = sorted(set(q['namespace'] for q in slow_queries))
+        
+        # Aggregate slow queries by namespace
+        from collections import defaultdict
+        namespace_stats = defaultdict(lambda: {'count': 0, 'total_duration': 0})
+        for q in slow_queries:
+            ns = q['namespace']
+            namespace_stats[ns]['count'] += 1
+            namespace_stats[ns]['total_duration'] += q['duration_ms']
+        
+        # Calculate average duration and format for response
+        aggregated_queries = [
+            {
+                'namespace': ns,
+                'count': stats['count'],
+                'mean_duration_ms': round(stats['total_duration'] / stats['count'], 1)
+            }
+            for ns, stats in namespace_stats.items()
+        ]
+        aggregated_queries.sort(key=lambda x: x['count'], reverse=True)
+        
+        # Aggregate errors by message
+        error_stats = defaultdict(int)
+        for e in errors:
+            error_stats[e['message']] += 1
+        
+        aggregated_errors = [
+            {
+                'message': msg,
+                'count': count
+            }
+            for msg, count in error_stats.items()
+        ]
+        aggregated_errors.sort(key=lambda x: x['count'], reverse=True)
+        
+        # Get MongoDB info from slow queries
+        total_slow_queries = len(slow_queries)
+        sampled = len(slow_queries) == max_points
+        
+        return AnalysisResult(
+            status="success",
+            data={
+                "slow_queries": slow_queries,
+                "connections": connections,
+                "errors": errors,
+                "aggregated_queries": aggregated_queries,
+                "aggregated_errors": aggregated_errors,
+                "unique_namespaces": unique_namespaces,
+                "total_slow_queries": total_slow_queries,
+                "sampled": sampled
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Time-series analysis failed: {str(e)}")
 
 @app.post("/api/trim/{file_id}")
 async def trim_log(file_id: str, trim_request: TrimRequest):

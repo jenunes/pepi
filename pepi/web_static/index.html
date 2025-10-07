@@ -6,6 +6,7 @@
     <title>Pepi - MongoDB Log Analyzer</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -54,6 +55,7 @@
                 <button class="tab-btn active" data-tab="basic"><i class="fas fa-info-circle"></i> Basic Info</button>
                 <button class="tab-btn" data-tab="connections"><i class="fas fa-network-wired"></i> Connections</button>
                 <button class="tab-btn" data-tab="queries"><i class="fas fa-search"></i> Queries</button>
+                <button class="tab-btn" data-tab="timeseries"><i class="fas fa-chart-line"></i> Time Series</button>
                 <button class="tab-btn" data-tab="replica-set"><i class="fas fa-server"></i> Replica Set</button>
                 <button class="tab-btn" data-tab="clients"><i class="fas fa-users"></i> Clients</button>
                 <button class="tab-btn" data-tab="trim"><i class="fas fa-cut"></i> Trim Log</button>
@@ -75,6 +77,61 @@
                             <div class="info-details" id="mongoInfo">
                                 <p>No data available</p>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Time Series Tab -->
+                <div class="tab-pane" id="timeseries">
+                    <div class="analysis-header">
+                        <h2><i class="fas fa-chart-line"></i> Time Series Analysis</h2>
+                        <div class="query-controls">
+                            <select id="timeseriesNamespaceFilter">
+                                <option value="">All namespaces</option>
+                            </select>
+                            <button class="btn btn-primary" onclick="analyzeTimeSeries()">
+                                <i class="fas fa-play"></i> Analyze Time Series
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Plotly Charts Container -->
+                    <div class="timeseries-charts">
+                        <div class="chart-section">
+                            <h3><i class="fas fa-clock"></i> Slow Queries Over Time</h3>
+                            <div id="slowQueriesPlot" class="plotly-chart"></div>
+                        </div>
+                        
+                        <div class="chart-section">
+                            <h3><i class="fas fa-plug"></i> Connections Over Time</h3>
+                            <div id="connectionsPlot" class="plotly-chart"></div>
+                        </div>
+                        
+                        <div class="chart-section">
+                            <h3><i class="fas fa-exclamation-triangle"></i> Errors & Warnings Over Time</h3>
+                            <div id="errorsPlot" class="plotly-chart"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Query Details Display -->
+                    <div id="queryDetails" class="query-details" style="display: none;">
+                        <button class="close-details" onclick="closeQueryDetails()">
+                            <i class="fas fa-times"></i> Close
+                        </button>
+                        <h4><i class="fas fa-info-circle"></i> Query Details</h4>
+                        <div id="queryDetailsContent"></div>
+                    </div>
+                    
+                    <!-- Aggregated Tables -->
+                    <div class="timeseries-tables">
+                        <div class="table-section">
+                            <h3><i class="fas fa-table"></i> Slow Queries by Namespace</h3>
+                            <div id="aggregatedQueriesTable"></div>
+                        </div>
+                        
+                        <div class="table-section">
+                            <h3><i class="fas fa-bug"></i> Errors & Warnings Summary</h3>
+                            <div id="aggregatedErrorsTable"></div>
                         </div>
                     </div>
                 </div>

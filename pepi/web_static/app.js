@@ -1147,4 +1147,349 @@ function copyQueryExample(exampleIndex) {
             fallbackCopyToClipboard(text);
         }
     }
+}
+
+// Time Series Analysis Functions
+async function analyzeTimeSeries() {
+    if (!currentFileId) return;
+    
+    const namespace = document.getElementById('timeseriesNamespaceFilter').value;
+    
+    showLoading('Analyzing time-series data...');
+    
+    try {
+        let url = `/api/analyze/${currentFileId}/timeseries`;
+        if (namespace) {
+            url += `?namespace=${encodeURIComponent(namespace)}`;
+        }
+        
+        const response = await fetch(url, { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+            displayTimeSeriesData(result.data);
+        } else {
+            showToast('error', 'Time-series analysis failed');
+        }
+    } catch (error) {
+        showToast('error', `Analysis failed: ${error.message}`);
+    } finally {
+        hideLoading();
+    }
+}
+
+function displayTimeSeriesData(data) {
+    // Update namespace filter
+    const namespaceFilter = document.getElementById('timeseriesNamespaceFilter');
+    namespaceFilter.innerHTML = '<option value="">All namespaces</option>';
+    data.unique_namespaces.forEach(ns => {
+        const option = document.createElement('option');
+        option.value = ns;
+        option.textContent = ns;
+        namespaceFilter.appendChild(option);
+    });
+    
+    // Create slow queries plot
+    createSlowQueriesPlot(data.slow_queries);
+    
+    // Create connections plot
+    createConnectionsPlot(data.connections);
+    
+    // Create errors plot
+    createErrorsPlot(data.errors);
+    
+    // Display aggregated tables
+    displayAggregatedQueriesTable(data.aggregated_queries);
+    displayAggregatedErrorsTable(data.aggregated_errors);
+    
+    // Show info if data was sampled
+    if (data.sampled) {
+        showToast('info', `Displaying 10,000 sampled queries out of ${data.total_slow_queries.toLocaleString()} total`);
+    }
+}
+
+function createSlowQueriesPlot(slowQueries) {
+    if (!slowQueries || slowQueries.length === 0) {
+        document.getElementById('slowQueriesPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No slow queries found in the log file.</p>';
+        return;
+    }
+    
+    // Group by namespace for different traces
+    const tracesByNamespace = {};
+    slowQueries.forEach(q => {
+        if (!tracesByNamespace[q.namespace]) {
+            tracesByNamespace[q.namespace] = {
+                x: [],
+                y: [],
+                customdata: [],
+                mode: 'markers',
+                type: 'scatter',
+                name: q.namespace,
+                marker: { size: 8 }
+            };
+        }
+        tracesByNamespace[q.namespace].x.push(q.timestamp);
+        tracesByNamespace[q.namespace].y.push(q.duration_ms);
+        tracesByNamespace[q.namespace].customdata.push({
+            command: q.command,
+            plan_summary: q.plan_summary,
+            namespace: q.namespace
+        });
+    });
+    
+    const traces = Object.values(tracesByNamespace);
+    
+    const layout = {
+        title: '',
+        xaxis: {
+            title: 'Timestamp',
+            type: 'date',
+            rangeslider: { visible: false }
+        },
+        yaxis: {
+            title: 'Duration (ms)',
+            type: 'linear'
+        },
+        hovermode: 'closest',
+        showlegend: true,
+        legend: {
+            orientation: 'h',
+            y: -0.2
+        },
+        margin: { t: 20, r: 20, b: 80, l: 60 }
+    };
+    
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        displaylogo: false
+    };
+    
+    Plotly.newPlot('slowQueriesPlot', traces, layout, config);
+    
+    // Add click event to show query details
+    document.getElementById('slowQueriesPlot').on('plotly_click', function(eventData) {
+        const point = eventData.points[0];
+        const customdata = point.customdata;
+        displayQueryDetails(
+            point.x,
+            point.y,
+            customdata.namespace,
+            customdata.command,
+            customdata.plan_summary
+        );
+    });
+}
+
+function createConnectionsPlot(connections) {
+    if (!connections || connections.length === 0) {
+        document.getElementById('connectionsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection data found in the log file.</p>';
+        return;
+    }
+    
+    const trace = {
+        x: connections.map(c => c.timestamp),
+        y: connections.map(c => c.connection_count),
+        mode: 'lines',
+        type: 'scatter',
+        name: 'Connection Count',
+        line: {
+            color: '#667eea',
+            width: 2
+        },
+        fill: 'tozeroy',
+        fillcolor: 'rgba(102, 126, 234, 0.2)'
+    };
+    
+    const layout = {
+        title: '',
+        xaxis: {
+            title: 'Timestamp',
+            type: 'date',
+            rangeslider: { visible: false }
+        },
+        yaxis: {
+            title: 'Connection Count',
+            type: 'linear'
+        },
+        hovermode: 'x unified',
+        showlegend: false,
+        margin: { t: 20, r: 20, b: 80, l: 60 }
+    };
+    
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        displaylogo: false
+    };
+    
+    Plotly.newPlot('connectionsPlot', [trace], layout, config);
+}
+
+function createErrorsPlot(errors) {
+    if (!errors || errors.length === 0) {
+        document.getElementById('errorsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No errors or warnings found in the log file.</p>';
+        return;
+    }
+    
+    // Group by message
+    const tracesByMessage = {};
+    errors.forEach(e => {
+        const msgKey = e.message;
+        if (!tracesByMessage[msgKey]) {
+            tracesByMessage[msgKey] = {
+                x: [],
+                y: [],
+                mode: 'markers',
+                type: 'scatter',
+                name: msgKey.substring(0, 50) + (msgKey.length > 50 ? '...' : ''),
+                marker: { 
+                    size: 10,
+                    symbol: 'diamond'
+                }
+            };
+        }
+        tracesByMessage[msgKey].x.push(e.timestamp);
+        tracesByMessage[msgKey].y.push(msgKey);
+    });
+    
+    const traces = Object.values(tracesByMessage);
+    
+    const layout = {
+        title: '',
+        xaxis: {
+            title: 'Timestamp',
+            type: 'date',
+            rangeslider: { visible: false }
+        },
+        yaxis: {
+            title: 'Error/Warning Message',
+            type: 'category'
+        },
+        hovermode: 'closest',
+        showlegend: true,
+        legend: {
+            orientation: 'h',
+            y: -0.2
+        },
+        margin: { t: 20, r: 20, b: 80, l: 60 }
+    };
+    
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        displaylogo: false
+    };
+    
+    Plotly.newPlot('errorsPlot', traces, layout, config);
+}
+
+function displayQueryDetails(timestamp, duration, namespace, command, planSummary) {
+    const detailsContainer = document.getElementById('queryDetails');
+    const detailsContent = document.getElementById('queryDetailsContent');
+    
+    detailsContent.innerHTML = `
+        <div class="info-details">
+            <p><strong>Timestamp:</strong> ${new Date(timestamp).toLocaleString()}</p>
+            <p><strong>Duration:</strong> ${duration} ms</p>
+            <p><strong>Namespace:</strong> ${namespace}</p>
+            <p><strong>Plan Summary:</strong> ${planSummary}</p>
+        </div>
+        <div class="json-viewer">
+            <button class="json-copy-btn" onclick="copyCommandToClipboard()">
+                <i class="fas fa-copy"></i> Copy Command
+            </button>
+            <pre id="commandJson">${syntaxHighlightJson(command)}</pre>
+        </div>
+    `;
+    
+    detailsContainer.style.display = 'block';
+    detailsContainer.scrollIntoView({ behavior: 'smooth' });
+}
+
+function closeQueryDetails() {
+    document.getElementById('queryDetails').style.display = 'none';
+}
+
+function copyCommandToClipboard() {
+    const element = document.getElementById('commandJson');
+    if (element) {
+        const text = element.textContent || element.innerText;
+        
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('success', 'Command copied to clipboard!');
+            }).catch(() => {
+                fallbackCopyToClipboard(text);
+            });
+        } else {
+            fallbackCopyToClipboard(text);
+        }
+    }
+}
+
+function displayAggregatedQueriesTable(aggregatedQueries) {
+    const container = document.getElementById('aggregatedQueriesTable');
+    
+    if (!aggregatedQueries || aggregatedQueries.length === 0) {
+        container.innerHTML = '<p>No slow queries to aggregate.</p>';
+        return;
+    }
+    
+    const table = document.createElement('table');
+    table.className = 'timeseries-table';
+    
+    table.innerHTML = `
+        <thead>
+            <tr>
+                <th>Namespace</th>
+                <th>Count</th>
+                <th>Mean Duration (ms)</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${aggregatedQueries.map(q => `
+                <tr>
+                    <td>${q.namespace}</td>
+                    <td>${q.count}</td>
+                    <td>${q.mean_duration_ms}</td>
+                </tr>
+            `).join('')}
+        </tbody>
+    `;
+    
+    container.innerHTML = '';
+    container.appendChild(table);
+}
+
+function displayAggregatedErrorsTable(aggregatedErrors) {
+    const container = document.getElementById('aggregatedErrorsTable');
+    
+    if (!aggregatedErrors || aggregatedErrors.length === 0) {
+        container.innerHTML = '<p>No errors or warnings to display.</p>';
+        return;
+    }
+    
+    const table = document.createElement('table');
+    table.className = 'timeseries-table';
+    
+    table.innerHTML = `
+        <thead>
+            <tr>
+                <th>Message</th>
+                <th>Count</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${aggregatedErrors.map(e => `
+                <tr>
+                    <td>${e.message}</td>
+                    <td>${e.count}</td>
+                </tr>
+            `).join('')}
+        </tbody>
+    `;
+    
+    container.innerHTML = '';
+    container.appendChild(table);
 } 

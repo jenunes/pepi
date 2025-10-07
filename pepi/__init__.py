@@ -568,6 +568,82 @@ def extract_query_pattern(operation, command):
         return json.dumps(sorted(command.keys()))
 
 
+def parse_timeseries_data(logfile):
+    """Parse time-series data for slow queries, connections, and errors."""
+    # Check cache first
+    cache_key = get_cache_key(logfile, 'timeseries')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached time-series data...")
+        return cached_result['slow_queries'], cached_result['connections'], cached_result['errors']
+    
+    slow_queries = []
+    connections = []
+    errors = []
+    
+    # Count lines for progress bar
+    total_lines = count_lines(logfile)
+    
+    with open(logfile, 'r') as f:
+        for line in tqdm(f, total=total_lines, desc="Parsing time-series data", unit="lines"):
+            try:
+                entry = json.loads(line)
+                timestamp = entry.get('t', {}).get('$date')
+                
+                if not timestamp:
+                    continue
+                
+                # Parse slow queries
+                if entry.get('c') == 'COMMAND' and entry.get('msg') in ('command', 'Slow query'):
+                    attr = entry.get('attr', {})
+                    namespace = attr.get('ns', '')
+                    duration_ms = attr.get('durationMillis', 0)
+                    command = attr.get('command', {})
+                    plan_summary = attr.get('planSummary', 'N/A')
+                    
+                    if namespace and duration_ms > 0:
+                        slow_queries.append({
+                            'timestamp': timestamp,
+                            'duration_ms': duration_ms,
+                            'namespace': namespace,
+                            'command': command,
+                            'plan_summary': plan_summary
+                        })
+                
+                # Parse connections
+                elif entry.get('c') == 'NETWORK' and entry.get('msg') == 'Connection accepted':
+                    attr = entry.get('attr', {})
+                    connection_count = attr.get('connectionCount', 0)
+                    
+                    connections.append({
+                        'timestamp': timestamp,
+                        'connection_count': connection_count
+                    })
+                
+                # Parse errors and warnings (anything with severity or containing 'error')
+                severity = entry.get('s', '')
+                msg = entry.get('msg', '')
+                if severity in ('E', 'W') or 'error' in msg.lower() or 'warning' in msg.lower():
+                    errors.append({
+                        'timestamp': timestamp,
+                        'severity': severity,
+                        'message': msg,
+                        'component': entry.get('c', 'Unknown')
+                    })
+                    
+            except Exception:
+                pass
+    
+    # Save to cache
+    cache_data = {
+        'slow_queries': slow_queries,
+        'connections': connections,
+        'errors': errors
+    }
+    save_to_cache(cache_key, cache_data)
+    
+    return slow_queries, connections, errors
+
 def parse_queries(logfile):
     """Parse query patterns and statistics from MongoDB log file, grouped by pattern."""
     # Check cache first
@@ -1116,7 +1192,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
     
     # Handle version flag
     if version:
-        click.echo("pepi version 0.0.2.1")
+        click.echo("pepi version 0.0.2.2")
         click.echo("MongoDB log analysis tool")
         click.echo("https://github.com/jenunes/pepi")
         return

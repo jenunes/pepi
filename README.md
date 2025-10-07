@@ -14,9 +14,11 @@ A fast, user-friendly MongoDB log analysis tool for extracting insights from Mon
 
 ### Web Interface
 - **Interactive Dashboard**: Modern web UI with charts, tables, and visualizations
+- **Time Series Visualization**: Interactive plots showing slow queries, connections, and errors over time
 - **Drag & Drop Upload**: Easy file upload with progress tracking
 - **Real-time Analysis**: Live progress updates during log processing
 - **Interactive Charts**: Visual representations of connections and query performance
+- **Click-to-View Details**: Click on any data point in time series plots to see full query details
 - **Advanced Filtering**: Filter queries by namespace, operation type, and more
 - **Log Trimming**: Extract specific time ranges with intuitive date selection
 - **File Management**: Download, delete, and manage multiple log files
@@ -415,8 +417,33 @@ pepi --web-ui --help
 - **Interactive Charts**: Visual charts for connection patterns and query performance
 - **Real-time Processing**: Live progress updates during analysis
 
+#### Time Series Tab
+
+The Time Series tab provides interactive visualizations over time:
+
+- **Slow Queries Plot**: Scatter plot showing query execution times over time
+  - Color-coded by namespace for easy identification
+  - Click any point to see full query details including command and plan summary
+  - Automatically samples large datasets (>10,000 queries) for performance
+  
+- **Connections Plot**: Line chart showing connection count trends over time
+  - Filled area chart for better visibility
+  - Zoom and pan to focus on specific time ranges
+  
+- **Errors & Warnings Plot**: Scatter plot showing errors and warnings over time
+  - Diamond markers for easy distinction
+  - Grouped by error message type
+  
+- **Aggregated Tables**: Summary statistics showing:
+  - Slow queries grouped by namespace with count and average duration
+  - Error messages with occurrence counts
+  
+- **Namespace Filtering**: Filter time series data by specific namespace to focus analysis
+
 ## Version History
 
+- **v0.0.2.2**: Added Time Series visualization tab with interactive Plotly charts for slow queries, connections, and errors over time
+- **v0.0.2.1**: Internal improvements and dependency updates
 - **v0.0.1.8**: Added integrated web interface with --web-ui flag for modern dashboard experience
 - **v0.0.1.7**: Added index information column to query analysis showing which indexes are used
 - **v0.0.1.5**: Added `--queries` flag with query pattern analysis and performance statistics
