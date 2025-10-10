@@ -14,13 +14,18 @@ function initializeEventListeners() {
     // File upload
     const fileInput = document.getElementById('fileInput');
     const uploadArea = document.getElementById('uploadArea');
+    const uploadCompact = document.getElementById('uploadCompact');
     
     fileInput.addEventListener('change', handleFileUpload);
     
-    // Drag and drop
-    uploadArea.addEventListener('dragover', handleDragOver);
-    uploadArea.addEventListener('dragleave', handleDragLeave);
-    uploadArea.addEventListener('drop', handleFileDrop);
+    // Drag and drop - both compact and expanded areas
+    [uploadArea, uploadCompact].forEach(area => {
+        if (area) {
+            area.addEventListener('dragover', handleDragOver);
+            area.addEventListener('dragleave', handleDragLeave);
+            area.addEventListener('drop', handleFileDrop);
+        }
+    });
     
     // Tab switching
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -60,11 +65,35 @@ function handleFileUpload(event) {
 function handleDragOver(event) {
     event.preventDefault();
     event.currentTarget.classList.add('dragover');
+    
+    // Show expanded area when dragging over compact area
+    const uploadArea = document.getElementById('uploadArea');
+    const uploadCompact = document.getElementById('uploadCompact');
+    
+    if (event.currentTarget === uploadCompact) {
+        uploadArea.style.display = 'block';
+        uploadArea.classList.add('active');
+        uploadCompact.style.display = 'none';
+    }
 }
 
 function handleDragLeave(event) {
     event.preventDefault();
     event.currentTarget.classList.remove('dragover');
+    
+    // Hide expanded area after a short delay
+    const uploadArea = document.getElementById('uploadArea');
+    const uploadCompact = document.getElementById('uploadCompact');
+    
+    if (event.currentTarget === uploadArea && !event.relatedTarget?.closest('.upload-area')) {
+        setTimeout(() => {
+            if (!uploadArea.classList.contains('dragover')) {
+                uploadArea.style.display = 'none';
+                uploadArea.classList.remove('active');
+                uploadCompact.style.display = 'block';
+            }
+        }, 100);
+    }
 }
 
 function handleFileDrop(event) {
@@ -72,6 +101,19 @@ function handleFileDrop(event) {
     event.currentTarget.classList.remove('dragover');
     
     const files = event.dataTransfer.files;
+    
+    // Reset upload areas
+    const uploadArea = document.getElementById('uploadArea');
+    const uploadCompact = document.getElementById('uploadCompact');
+    
+    if (uploadArea) {
+        uploadArea.style.display = 'none';
+        uploadArea.classList.remove('active');
+    }
+    if (uploadCompact) {
+        uploadCompact.style.display = 'block';
+    }
+    
     if (files.length > 0) {
         uploadFile(files[0]);
     }
@@ -130,10 +172,16 @@ async function loadUploadedFiles() {
         
         const filesSection = document.getElementById('filesSection');
         const filesList = document.getElementById('filesList');
+        const filesCount = document.getElementById('filesCount');
         
         if (data.files.length > 0) {
             filesSection.style.display = 'block';
             filesList.innerHTML = '';
+            
+            // Update file count
+            if (filesCount) {
+                filesCount.textContent = data.files.length;
+            }
             
             let preloadedFile = null;
             
@@ -167,25 +215,60 @@ function createFileItem(file) {
     div.className = 'file-item';
     div.dataset.fileId = file.file_id;
     
+    // Calculate time ago
+    const timeAgo = getTimeAgo(file.upload_date);
+    
     div.innerHTML = `
-        <div class="file-info">
-            <h4>${file.filename}</h4>
-            <p>${formatFileSize(file.size)} • ${file.lines.toLocaleString()} lines</p>
+        <i class="fas fa-file-alt file-icon"></i>
+        <span class="file-name" title="${file.filename}">${file.filename}</span>
+        <div class="file-meta">
+            <span class="file-size">${formatFileSize(file.size)}</span>
+            <span class="file-time">${timeAgo}</span>
         </div>
         <div class="file-actions">
-            <button class="btn btn-primary" onclick="selectFile('${file.file_id}')">
-                <i class="fas fa-eye"></i> Analyze
+            <button title="Analyze" onclick="selectFile('${file.file_id}')">
+                <i class="fas fa-eye"></i>
             </button>
-            <button class="btn btn-secondary" onclick="downloadFile('${file.file_id}')">
-                <i class="fas fa-download"></i> Download
+            <button title="Download" onclick="downloadFile('${file.file_id}')">
+                <i class="fas fa-download"></i>
             </button>
-            <button class="btn btn-danger" onclick="deleteFile('${file.file_id}')">
-                <i class="fas fa-trash"></i> Delete
+            <button title="Delete" onclick="deleteFile('${file.file_id}')">
+                <i class="fas fa-trash"></i>
             </button>
         </div>
     `;
     
+    // Add click handler to select file
+    div.addEventListener('click', (e) => {
+        if (!e.target.closest('.file-actions')) {
+            selectFile(file.file_id);
+        }
+    });
+    
     return div;
+}
+
+function getTimeAgo(dateString) {
+    if (!dateString) return 'Just now';
+    
+    const date = new Date(dateString);
+    const now = new Date();
+    const seconds = Math.floor((now - date) / 1000);
+    
+    if (seconds < 60) return 'Just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+    return date.toLocaleDateString();
+}
+
+function toggleFilesSection() {
+    const filesSection = document.getElementById('filesSection');
+    const toggleIcon = document.getElementById('filesToggleIcon');
+    
+    filesSection.classList.toggle('collapsed');
+    toggleIcon.classList.toggle('fa-chevron-up');
+    toggleIcon.classList.toggle('fa-chevron-down');
 }
 
 function formatFileSize(bytes) {
@@ -216,11 +299,16 @@ function formatDateTime(isoString) {
 async function selectFile(fileId) {
     currentFileId = fileId;
     
-    // Update UI
+    // Update UI - highlight selected file
     document.querySelectorAll('.file-item').forEach(item => {
-        item.classList.remove('selected');
+        item.classList.remove('selected', 'active');
     });
-    document.querySelector(`[data-file-id="${fileId}"]`).classList.add('selected');
+    const selectedItem = document.querySelector(`[data-file-id="${fileId}"]`);
+    if (selectedItem) {
+        selectedItem.classList.add('selected', 'active');
+    }
+    
+    // File selector removed - using side-by-side layout
     
     // Show dashboard
     document.getElementById('dashboard').style.display = 'block';
@@ -288,6 +376,11 @@ function switchTab(tabName) {
         pane.classList.remove('active');
     });
     document.getElementById(tabName).classList.add('active');
+    
+    // Load filter options when switching to extractor tab
+    if (tabName === 'extractor' && currentFileId) {
+        loadFilterOptions();
+    }
 }
 
 // Analysis functions
@@ -2868,4 +2961,224 @@ function displayPerformanceGuidance(namespace, operation, stats, coverage_analys
     
     modal.appendChild(content);
     document.body.appendChild(modal);
+}
+
+// Raw Log Extractor Functions
+let filterOptions = null;
+
+async function loadFilterOptions() {
+    if (!currentFileId) return;
+    
+    try {
+        const response = await fetch(`/api/analyze/${currentFileId}/filter-options`);
+        const data = await response.json();
+        filterOptions = data.data;
+        populateFilterOptions();
+    } catch (error) {
+        console.error('Failed to load filter options:', error);
+        showToast('error', 'Failed to load filter options');
+    }
+}
+
+function populateFilterOptions() {
+    if (!filterOptions) return;
+    
+    // Event Types
+    const eventTypeContainer = document.getElementById('eventTypeOptions');
+    eventTypeContainer.innerHTML = '';
+    
+    const eventTypeLabels = {
+        'COLLSCAN': 'COLLSCAN',
+        'IXSCAN': 'IXSCAN', 
+        'slow_query': 'Slow Query (>100ms)',
+        'error': 'Errors'
+    };
+    
+    Object.entries(filterOptions.event_types).forEach(([key, available]) => {
+        if (available) {
+            const label = document.createElement('label');
+            label.innerHTML = `<input type="checkbox" class="event-type" value="${key}"> ${eventTypeLabels[key]}`;
+            eventTypeContainer.appendChild(label);
+        }
+    });
+    
+    // Components
+    const componentContainer = document.getElementById('componentOptions');
+    componentContainer.innerHTML = '';
+    
+    filterOptions.components.forEach(component => {
+        const label = document.createElement('label');
+        label.innerHTML = `<input type="checkbox" class="component" value="${component}"> ${component}`;
+        componentContainer.appendChild(label);
+    });
+    
+    // Severities
+    const severityContainer = document.getElementById('severityOptions');
+    severityContainer.innerHTML = '';
+    
+    const severityLabels = {
+        'I': 'Info',
+        'W': 'Warning', 
+        'E': 'Error',
+        'F': 'Fatal',
+        'D': 'Debug',
+        'D1': 'Debug 1',
+        'D2': 'Debug 2',
+        'D3': 'Debug 3',
+        'D4': 'Debug 4',
+        'D5': 'Debug 5'
+    };
+    
+    filterOptions.severities.forEach(severity => {
+        const label = document.createElement('label');
+        const displayName = severityLabels[severity] || severity;
+        label.innerHTML = `<input type="checkbox" class="severity" value="${severity}"> ${displayName}`;
+        severityContainer.appendChild(label);
+    });
+    
+    // Operations
+    const operationContainer = document.getElementById('operationOptions');
+    operationContainer.innerHTML = '';
+    
+    filterOptions.operations.forEach(operation => {
+        const label = document.createElement('label');
+        label.innerHTML = `<input type="checkbox" class="operation" value="${operation}"> ${operation}`;
+        operationContainer.appendChild(label);
+    });
+    
+    // Namespaces
+    const namespaceSelect = document.getElementById('extractNamespace');
+    namespaceSelect.innerHTML = '<option value="">All namespaces</option>';
+    
+    filterOptions.namespaces.forEach(namespace => {
+        const option = document.createElement('option');
+        option.value = namespace;
+        option.textContent = namespace;
+        namespaceSelect.appendChild(option);
+    });
+    
+    // Show namespace dropdown if we have namespaces
+    if (filterOptions.namespaces.length > 0) {
+        namespaceSelect.style.display = 'inline-block';
+    }
+}
+
+// Handle namespace toggle
+document.addEventListener('DOMContentLoaded', function() {
+    const useCustomCheckbox = document.getElementById('useCustomNamespace');
+    const namespaceSelect = document.getElementById('extractNamespace');
+    const namespaceCustom = document.getElementById('extractNamespaceCustom');
+    
+    if (useCustomCheckbox) {
+        useCustomCheckbox.addEventListener('change', function() {
+            if (this.checked) {
+                namespaceSelect.style.display = 'none';
+                namespaceCustom.style.display = 'inline-block';
+            } else {
+                namespaceSelect.style.display = 'inline-block';
+                namespaceCustom.style.display = 'none';
+            }
+        });
+    }
+});
+
+async function applyExtraction() {
+    // Handle namespace (dropdown vs custom input)
+    let namespace = '';
+    if (document.getElementById('useCustomNamespace').checked) {
+        namespace = document.getElementById('extractNamespaceCustom').value;
+    } else {
+        namespace = document.getElementById('extractNamespace').value;
+    }
+    
+    const filters = {
+        text_search: document.getElementById('extractTextSearch').value,
+        case_sensitive: document.getElementById('extractCaseSensitive').checked,
+        event_types: getCheckedValues('.event-type'),
+        components: getCheckedValues('.component'),
+        severities: getCheckedValues('.severity'),
+        operations: getCheckedValues('.operation'),
+        namespace: namespace,
+        date_from: document.getElementById('extractDateFrom').value,
+        date_to: document.getElementById('extractDateTo').value,
+        limit: 10000
+    };
+    
+    showToast('info', 'Extracting logs...');
+    
+    const response = await fetch(`/api/analyze/${currentFileId}/extract`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(filters)
+    });
+    
+    const data = await response.json();
+    
+    // Update match count
+    document.getElementById('matchCount').textContent = data.total_matched;
+    
+    // Format output based on selection
+    const format = document.querySelector('input[name="outputFormat"]:checked').value;
+    let output = '';
+    
+    if (format === 'raw') {
+        output = data.lines.join('\n');
+    } else if (format === 'oneline') {
+        output = data.lines.join('\n');
+    } else if (format === 'pretty') {
+        output = data.lines.map(line => {
+            try {
+                return JSON.stringify(JSON.parse(line), null, 2);
+            } catch {
+                return line;
+            }
+        }).join('\n---\n');
+    }
+    
+    document.getElementById('extractorOutput').value = output;
+    
+    if (data.truncated) {
+        showToast('warning', `Results truncated to ${filters.limit} lines`);
+    } else {
+        showToast('success', `Found ${data.total_matched} matches`);
+    }
+}
+
+function getCheckedValues(selector) {
+    return Array.from(document.querySelectorAll(selector + ':checked'))
+        .map(el => el.value);
+}
+
+function copyResults() {
+    const output = document.getElementById('extractorOutput');
+    output.select();
+    document.execCommand('copy');
+    showToast('success', 'Copied to clipboard');
+}
+
+function downloadResults() {
+    const output = document.getElementById('extractorOutput').value;
+    const blob = new Blob([output], {type: 'text/plain'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `extracted-logs-${Date.now()}.log`;
+    a.click();
+    showToast('success', 'Downloaded');
+}
+
+function selectAllResults() {
+    document.getElementById('extractorOutput').select();
+}
+
+function clearExtractFilters() {
+    document.getElementById('extractTextSearch').value = '';
+    document.getElementById('extractCaseSensitive').checked = false;
+    document.getElementById('extractNamespace').value = '';
+    document.getElementById('extractNamespaceCustom').value = '';
+    document.getElementById('useCustomNamespace').checked = false;
+    document.getElementById('extractDateFrom').value = '';
+    document.getElementById('extractDateTo').value = '';
+    document.querySelectorAll('.event-type, .component, .severity, .operation')
+        .forEach(cb => cb.checked = false);
 }

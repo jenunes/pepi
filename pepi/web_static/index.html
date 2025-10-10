@@ -21,33 +21,52 @@
             </div>
         </header>
 
-        <!-- File Upload Section -->
-        <section class="upload-section">
-            <div class="upload-area" id="uploadArea">
-                <div class="upload-content">
-                    <i class="fas fa-cloud-upload-alt"></i>
-                    <h3>Upload MongoDB Log File</h3>
-                    <p>Drag & drop your .log, .txt, or .json file here or click to browse</p>
-                    <input type="file" id="fileInput" accept=".log,.txt,.json" style="display: none;">
-                    <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
-                        <i class="fas fa-folder-open"></i> Browse Files
+        <!-- Upload and Files Side by Side -->
+        <section class="upload-files-container">
+            <!-- Upload Section (50%) -->
+            <div class="upload-section compact-upload">
+                <div class="upload-compact" id="uploadCompact">
+                    <div class="upload-compact-content">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                        <span class="upload-text">Upload Log File or Drag & Drop</span>
+                        <input type="file" id="fileInput" accept=".log,.txt,.json" style="display: none;">
+                        <button class="btn btn-primary btn-sm" onclick="document.getElementById('fileInput').click()">
+                            <i class="fas fa-folder-open"></i> Browse
+                        </button>
+                        <span class="last-file" id="lastFileInfo" style="display: none;">
+                            <i class="fas fa-clock"></i> Last: <span id="lastFileName"></span>
+                        </span>
+                    </div>
+                </div>
+                
+                <!-- Expanded Upload Area (shows on hover/drag) -->
+                <div class="upload-area upload-expanded" id="uploadArea" style="display: none;">
+                    <div class="upload-content">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                        <h3>Drop Your MongoDB Log File Here</h3>
+                        <p>Supports .log, .txt, and .json files</p>
+                    </div>
+                </div>
+                
+                <!-- Progress Bar -->
+                <div class="progress-container" id="progressContainer" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <p id="progressText">Uploading...</p>
+                </div>
+            </div>
+
+            <!-- File List (50%) -->
+            <div class="files-section compact-files" id="filesSection" style="display: none;">
+                <div class="files-header">
+                    <h3><i class="fas fa-folder-open"></i> Files (<span id="filesCount">0</span>)</h3>
+                    <button class="btn-text" onclick="toggleFilesSection()">
+                        <i class="fas fa-chevron-up" id="filesToggleIcon"></i>
                     </button>
                 </div>
+                <div class="files-list compact-list" id="filesList"></div>
             </div>
-            
-            <!-- Progress Bar -->
-            <div class="progress-container" id="progressContainer" style="display: none;">
-                <div class="progress-bar">
-                    <div class="progress-fill" id="progressFill"></div>
-                </div>
-                <p id="progressText">Uploading...</p>
-            </div>
-        </section>
-
-        <!-- File List -->
-        <section class="files-section" id="filesSection" style="display: none;">
-            <h2><i class="fas fa-files"></i> Uploaded Files</h2>
-            <div class="files-list" id="filesList"></div>
         </section>
 
         <!-- Analysis Dashboard -->
@@ -55,6 +74,7 @@
             <!-- Navigation Tabs -->
             <nav class="tabs">
                 <button class="tab-btn active" data-tab="basic"><i class="fas fa-info-circle"></i> Basic Info</button>
+                <button class="tab-btn" data-tab="extractor"><i class="fas fa-filter"></i> Raw Extractor</button>
                 <button class="tab-btn" data-tab="connections"><i class="fas fa-network-wired"></i> Connections</button>
                 <button class="tab-btn" data-tab="clients"><i class="fas fa-users"></i> Clients</button>
                 <button class="tab-btn" data-tab="queries"><i class="fas fa-search"></i> Queries</button>
@@ -162,6 +182,95 @@
                             <h3><i class="fas fa-bug"></i> Errors & Warnings Summary</h3>
                             <div id="aggregatedErrorsTable"></div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Raw Extractor Tab -->
+                <div class="tab-pane" id="extractor">
+                    <div class="extractor-filters">
+                        <h3>🔧 Filter Options</h3>
+                        
+                        <!-- Text Search -->
+                        <div class="filter-row">
+                            <label>Text Search:</label>
+                            <input type="text" id="extractTextSearch" placeholder="e.g., COLLSCAN, userId, error">
+                            <label><input type="checkbox" id="extractCaseSensitive"> Case Sensitive</label>
+                        </div>
+                        
+                        <!-- Event Type -->
+                        <div class="filter-row">
+                            <label>Event Type:</label>
+                            <div id="eventTypeOptions">
+                                <!-- Dynamically populated -->
+                            </div>
+                        </div>
+                        
+                        <!-- Component -->
+                        <div class="filter-row">
+                            <label>Component:</label>
+                            <div id="componentOptions">
+                                <!-- Dynamically populated -->
+                            </div>
+                        </div>
+                        
+                        <!-- Severity -->
+                        <div class="filter-row">
+                            <label>Severity:</label>
+                            <div id="severityOptions">
+                                <!-- Dynamically populated -->
+                            </div>
+                        </div>
+                        
+                        <!-- Operation -->
+                        <div class="filter-row">
+                            <label>Operation:</label>
+                            <div id="operationOptions">
+                                <!-- Dynamically populated -->
+                            </div>
+                        </div>
+                        
+                        <!-- Namespace -->
+                        <div class="filter-row">
+                            <label>Namespace/Collection:</label>
+                            <select id="extractNamespace" style="display: none;">
+                                <option value="">All namespaces</option>
+                            </select>
+                            <input type="text" id="extractNamespaceCustom" placeholder="e.g., cprng_proddb.cpr_Bids" style="display: none;">
+                            <label><input type="checkbox" id="useCustomNamespace"> Custom namespace</label>
+                        </div>
+                        
+                        <!-- Time Range -->
+                        <div class="filter-row">
+                            <label>Time Range:</label>
+                            From: <input type="text" id="extractDateFrom" placeholder="2024-10-10T07:00:00">
+                            To: <input type="text" id="extractDateTo" placeholder="2024-10-10T08:00:00">
+                        </div>
+                        
+                        <div class="filter-actions">
+                            <button class="btn btn-primary" onclick="applyExtraction()">Apply Filters</button>
+                            <button class="btn btn-secondary" onclick="clearExtractFilters()">Clear All</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Results -->
+                    <div class="extractor-results">
+                        <h3>📊 Results</h3>
+                        <div class="results-info">
+                            Matches: <span id="matchCount">0</span> lines
+                            <button class="btn-small" onclick="copyResults()">Copy All</button>
+                            <button class="btn-small" onclick="downloadResults()">Download</button>
+                            <button class="btn-small" onclick="selectAllResults()">Select All</button>
+                        </div>
+                        
+                        <!-- Output format -->
+                        <div class="output-format">
+                            <label>Output Format:</label>
+                            <label><input type="radio" name="outputFormat" value="raw" checked> Raw JSON</label>
+                            <label><input type="radio" name="outputFormat" value="oneline"> One per line</label>
+                            <label><input type="radio" name="outputFormat" value="pretty"> Pretty JSON</label>
+                        </div>
+                        
+                        <textarea id="extractorOutput" readonly></textarea>
                     </div>
                 </div>
 

@@ -79,6 +79,20 @@ class QueryExamplesRequest(BaseModel):
     operation: str
     pattern: str
 
+class LogFilterRequest(BaseModel):
+    text_search: Optional[str] = None
+    case_sensitive: bool = False
+    event_types: List[str] = []  # ['COLLSCAN', 'IXSCAN', 'slow_query', 'planSummary']
+    components: List[str] = []    # MongoDB components: NETWORK, COMMAND, QUERY, etc.
+    severities: List[str] = []    # ['I', 'W', 'E', 'F', 'D'] or specific D1-D5
+    operations: List[str] = []    # ['find', 'aggregate', 'insert', 'update', 'delete']
+    namespace: Optional[str] = None  # Filter by ns in attr
+    log_id: Optional[int] = None     # Filter by specific log ID
+    context: Optional[str] = None    # Filter by ctx (thread/connection)
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    limit: int = 10000  # Max lines to return
+
 # Serve static files
 
 app.mount("/static", StaticFiles(directory=str(web_static_dir)), name="static")
@@ -778,7 +792,194 @@ def preload_file():
             print(f"❌ Failed to pre-load file {preload_path}: {str(e)}")
     return None
 
+@app.post("/api/analyze/{file_id}/extract")
+async def extract_logs(file_id: str, filters: LogFilterRequest):
+    """Extract raw log entries based on filters."""
+    
+    if file_id not in upload_store:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    file_path = upload_store[file_id]['path']
+    matched_lines = []
+    total_lines = 0
+    
+    with open(file_path, 'r') as f:
+        for line in f:
+            total_lines += 1
+            
+            # Quick text search first (fastest)
+            if filters.text_search:
+                if filters.case_sensitive:
+                    if filters.text_search not in line:
+                        continue
+                else:
+                    if filters.text_search.lower() not in line.lower():
+                        continue
+            
+            # Parse JSON for detailed filtering
+            try:
+                entry = json.loads(line.strip())
+            except:
+                continue
+            
+            # Apply filters
+            if not apply_filters(entry, line, filters):
+                continue
+            
+            matched_lines.append(line.strip())
+            
+            # Limit results
+            if len(matched_lines) >= filters.limit:
+                break
+    
+    return {
+        "status": "success",
+        "total_scanned": total_lines,
+        "total_matched": len(matched_lines),
+        "lines": matched_lines,
+        "truncated": len(matched_lines) >= filters.limit
+    }
 
+def apply_filters(entry, line, filters):
+    """Check if entry matches all filters."""
+    
+    # Event type filters
+    if filters.event_types:
+        matched = False
+        if 'COLLSCAN' in filters.event_types and 'COLLSCAN' in line:
+            matched = True
+        if 'IXSCAN' in filters.event_types and 'IXSCAN' in line:
+            matched = True
+        if 'slow_query' in filters.event_types:
+            if entry.get('attr', {}).get('durationMillis', 0) > 100:
+                matched = True
+        if 'error' in filters.event_types and entry.get('s') in ['E', 'F']:
+            matched = True
+        
+        if not matched:
+            return False
+    
+    # Component filter
+    if filters.components:
+        if entry.get('c') not in filters.components:
+            return False
+    
+    # Severity filter
+    if filters.severities:
+        if entry.get('s') not in filters.severities:
+            return False
+    
+    # Operation filter
+    if filters.operations:
+        cmd = entry.get('attr', {}).get('command', {})
+        op = next(iter(cmd.keys())) if cmd else None
+        if op not in filters.operations:
+            return False
+    
+    # Namespace filter
+    if filters.namespace:
+        ns = entry.get('attr', {}).get('ns', '')
+        if filters.namespace not in ns:
+            return False
+    
+    # Log ID filter
+    if filters.log_id:
+        if entry.get('id') != filters.log_id:
+            return False
+    
+    # Context filter
+    if filters.context:
+        if filters.context not in entry.get('ctx', ''):
+            return False
+    
+    # Time range filter
+    if filters.date_from or filters.date_to:
+        timestamp = entry.get('t', {}).get('$date')
+        if not timestamp:
+            return False
+        
+        if filters.date_from and timestamp < filters.date_from:
+            return False
+        if filters.date_to and timestamp > filters.date_to:
+            return False
+    
+    return True
+
+@app.get("/api/analyze/{file_id}/filter-options")
+async def get_filter_options(file_id: str):
+    """Get available filter options based on log content."""
+    
+    if file_id not in upload_store:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    file_path = upload_store[file_id]['path']
+    
+    # Scan log to find available options
+    available_components = set()
+    available_severities = set()
+    available_operations = set()
+    available_namespaces = set()
+    has_collscan = False
+    has_ixscan = False
+    has_slow_queries = False
+    has_errors = False
+    
+    with open(file_path, 'r') as f:
+        for line in f:
+            try:
+                entry = json.loads(line.strip())
+                
+                # Collect components
+                if entry.get('c'):
+                    available_components.add(entry['c'])
+                
+                # Collect severities
+                if entry.get('s'):
+                    available_severities.add(entry['s'])
+                
+                # Check for COLLSCAN/IXSCAN
+                if 'COLLSCAN' in line:
+                    has_collscan = True
+                if 'IXSCAN' in line:
+                    has_ixscan = True
+                
+                # Check for slow queries
+                if entry.get('attr', {}).get('durationMillis', 0) > 100:
+                    has_slow_queries = True
+                
+                # Check for errors
+                if entry.get('s') in ['E', 'F']:
+                    has_errors = True
+                
+                # Collect operations
+                cmd = entry.get('attr', {}).get('command', {})
+                if cmd:
+                    op = next(iter(cmd.keys()))
+                    available_operations.add(op)
+                
+                # Collect namespaces
+                ns = entry.get('attr', {}).get('ns')
+                if ns:
+                    available_namespaces.add(ns)
+                    
+            except:
+                continue
+    
+    return {
+        "status": "success",
+        "data": {
+            "event_types": {
+                "COLLSCAN": has_collscan,
+                "IXSCAN": has_ixscan,
+                "slow_query": has_slow_queries,
+                "error": has_errors
+            },
+            "components": sorted(list(available_components)),
+            "severities": sorted(list(available_severities)),
+            "operations": sorted(list(available_operations)),
+            "namespaces": sorted(list(available_namespaces))[:20]  # Limit to top 20
+        }
+    }
 
 def find_available_port(start_port=8000):
     """Find an available port for pepi web-ui, allowing max 3 instances."""
