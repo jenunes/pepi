@@ -8,6 +8,7 @@ import tempfile
 import os
 import json
 import asyncio
+import time
 from pathlib import Path
 import shutil
 import socket
@@ -153,28 +154,33 @@ async def analyze_basic_info(file_id: str):
         raise HTTPException(status_code=404, detail="File no longer exists")
     
     try:
-        # Parse basic information from first and last lines
+        # Parse basic information from log file
         start_date = end_date = None
         os_version = kernel_version = db_version = cmd_options = None
         
+        # More robust date range extraction
         with open(file_path, 'r') as f:
             lines = f.readlines()
             
-        # Get start date from first line
-        if lines:
+        # Get start date from first valid entry
+        for line in lines[:100]:  # Check first 100 lines for start date
             try:
-                first_entry = json.loads(lines[0])
-                start_date = first_entry.get('t', {}).get('$date')
+                entry = json.loads(line.strip())
+                if entry.get('t', {}).get('$date'):
+                    start_date = entry.get('t', {}).get('$date')
+                    break
             except:
-                pass
+                continue
         
-        # Get end date from last line
-        if lines:
+        # Get end date from last valid entry
+        for line in reversed(lines[-100:]):  # Check last 100 lines for end date
             try:
-                last_entry = json.loads(lines[-1])
-                end_date = last_entry.get('t', {}).get('$date')
+                entry = json.loads(line.strip())
+                if entry.get('t', {}).get('$date'):
+                    end_date = entry.get('t', {}).get('$date')
+                    break
             except:
-                pass
+                continue
         
         # Scan for version info and startup options (limit to first 1000 lines for performance)
         for line in lines[:1000]:
@@ -507,122 +513,6 @@ class SingleQueryRequest(BaseModel):
     raw_log_line: Optional[str] = None
     stats: Dict
 
-@app.get("/api/llm-status")
-async def get_llm_status():
-    """Check if LLM is available and provide installation instructions if not."""
-    from .index_advisor import IndexAdvisor
-    
-    advisor = IndexAdvisor()
-    
-    status = {
-        "available": advisor.llm is not None,
-        "model_path": str(advisor.model_path) if advisor.model_path else None,
-    }
-    
-    if not status["available"]:
-        # Check what's missing
-        try:
-            import llama_cpp
-            status["llama_cpp_installed"] = True
-        except ImportError:
-            status["llama_cpp_installed"] = False
-        
-        # Check if models directory exists
-        package_dir = Path(__file__).parent
-        model_dir = package_dir / "models"
-        status["models_dir_exists"] = model_dir.exists()
-        status["model_files"] = [f.name for f in model_dir.glob("*.gguf")] if model_dir.exists() else []
-        
-        # Provide installation instructions
-        instructions = []
-        if not status["llama_cpp_installed"]:
-            instructions.append({
-                "step": 1,
-                "action": "Install llama-cpp-python",
-                "command": "pip install llama-cpp-python",
-                "description": "This installs the Python bindings for running LLM models locally."
-            })
-        
-        if not status["model_files"]:
-            instructions.append({
-                "step": 2 if not status["llama_cpp_installed"] else 1,
-                "action": "Download LLM model",
-                "command": "python scripts/download_model.py",
-                "description": "Downloads a small (~300MB) quantized LLM model for index recommendations."
-            })
-        
-        status["installation_required"] = True
-        status["instructions"] = instructions
-    else:
-        status["installation_required"] = False
-    
-    return AnalysisResult(
-        status="success",
-        data=status
-    )
-
-@app.post("/api/analyze/{file_id}/detailed-analysis")
-async def get_detailed_analysis(file_id: str, request: SingleQueryRequest):
-    """Get detailed LLM-powered analysis for a specific query.
-    
-    This endpoint uses the LLM for deep analysis and may take longer.
-    """
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    try:
-        from .index_advisor import IndexAdvisor
-        
-        # Parse the actual command from the log line if available
-        actual_pattern = request.pattern
-        if request.raw_log_line:
-            log_entry = json.loads(request.raw_log_line)
-            command = log_entry.get('attr', {}).get('command', {})
-            
-            if request.operation == 'aggregate' and 'pipeline' in command:
-                actual_pattern = json.dumps(command['pipeline'])
-        
-        # Initialize advisor
-        advisor = IndexAdvisor()
-        
-        if not advisor.llm:
-            raise HTTPException(status_code=503, detail="LLM not available for detailed analysis")
-        
-        # Extract fields
-        from . import extract_query_pattern
-        fields = advisor._extract_query_fields(actual_pattern, request.operation)
-        
-        if not fields:
-            return AnalysisResult(
-                status="success",
-                data={"analysis": "Unable to extract fields from query pattern for detailed analysis."}
-            )
-        
-        # Build index spec
-        index_spec = advisor._build_index_spec(fields, request.operation, actual_pattern)
-        
-        if not index_spec:
-            return AnalysisResult(
-                status="success",
-                data={"analysis": "Unable to generate index specification for this query pattern."}
-            )
-        
-        # Get detailed LLM analysis
-        llm_result = advisor._get_llm_analysis(request.namespace, request.operation, 
-                                               fields, index_spec, request.stats)
-        
-        return AnalysisResult(
-            status="success",
-            data={
-                "is_optimized": llm_result.get('is_optimized', False),
-                "explanation": llm_result.get('explanation', 'Analysis completed.'),
-                "index_spec": index_spec,
-                "command": advisor._format_create_index(request.namespace, index_spec)
-            }
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Detailed analysis failed: {str(e)}")
-
 @app.post("/api/analyze/{file_id}/index-recommendations")
 async def get_index_recommendations(file_id: str, request: Optional[SingleQueryRequest] = None, top_n: int = 10, single_query: bool = False):
     """Get AI-powered index recommendations for queries.
@@ -648,23 +538,25 @@ async def get_index_recommendations(file_id: str, request: Optional[SingleQueryR
             # Parse the actual command from the log line
             log_entry = json.loads(request.raw_log_line)
             command = log_entry.get('attr', {}).get('command', {})
+            plan_summary = log_entry.get('attr', {}).get('planSummary', 'COLLSCAN')
             
-            # Extract pattern from actual command
-            from . import extract_query_pattern
-            actual_pattern = extract_query_pattern(request.operation, command)
+            # Pass the ENTIRE command object as JSON to the AI
+            # This includes filter, sort, projection, limit, skip, pipeline, etc.
+            full_command_json = json.dumps(command)
             
-            # For aggregate, use the full pipeline JSON
-            if request.operation == 'aggregate' and 'pipeline' in command:
-                actual_pattern = json.dumps(command['pipeline'])
+            print(f"📊 Passing full command to AI (first 200 chars): {full_command_json[:200]}")
+            print(f"📊 Plan summary: {plan_summary}")
             
-            print(f"📊 Extracted pattern: {actual_pattern[:200]}")
+            # Enhance stats with planSummary for coverage analysis
+            enhanced_stats = request.stats.copy()
+            enhanced_stats['plan_summary'] = plan_summary
             
             # Analyze single query
             recommendation = advisor.analyze_single_query(
                 namespace=request.namespace,
                 operation=request.operation,
-                pattern=actual_pattern,
-                stats=request.stats
+                pattern=full_command_json,
+                stats=enhanced_stats
             )
             
             return AnalysisResult(
@@ -672,7 +564,7 @@ async def get_index_recommendations(file_id: str, request: Optional[SingleQueryR
                 data={
                     "recommendations": [recommendation] if recommendation else [],
                     "total_analyzed": 1,
-                    "has_llm": advisor.llm is not None
+                    "has_llm": False
                 }
             )
         
@@ -680,8 +572,24 @@ async def get_index_recommendations(file_id: str, request: Optional[SingleQueryR
         queries_data = parse_queries(file_path)
         query_stats = calculate_query_stats(queries_data)
         
+        # Enhance query stats with planSummary information for coverage analysis
+        for (namespace, operation, pattern), stats in query_stats.items():
+            # Get the most common planSummary from the indexes set
+            indexes = stats.get('indexes', set())
+            if indexes:
+                # Find the most common planSummary (not COLLSCAN if possible)
+                plan_summaries = list(indexes)
+                # Prefer non-COLLSCAN planSummaries
+                non_collscan = [ps for ps in plan_summaries if ps != 'COLLSCAN']
+                if non_collscan:
+                    stats['plan_summary'] = non_collscan[0]  # Use first non-COLLSCAN
+                else:
+                    stats['plan_summary'] = 'COLLSCAN'
+            else:
+                stats['plan_summary'] = 'COLLSCAN'
+        
         # Generate recommendations (LLM only if single_query=True)
-        recommendations = advisor.analyze_queries(query_stats, use_llm=single_query)
+        recommendations = advisor.analyze_queries(query_stats)
         
         # Limit to top N
         recommendations = recommendations[:top_n]
@@ -717,22 +625,35 @@ async def trim_log(file_id: str, trim_request: TrimRequest):
             )
         
         # Create a new temporary file with trimmed content
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='_trimmed.log', mode='w')
-        for line in filtered_lines:
-            temp_file.write(line)
-        temp_file.close()
-        
-        # Generate new file ID
-        new_file_id = os.path.basename(temp_file.name)
         original_name = upload_store[file_id]['original_name']
         base_name = Path(original_name).stem
         extension = Path(original_name).suffix
         
+        # Create a more permanent temporary file
+        temp_dir = tempfile.gettempdir()
+        temp_filename = f"{base_name}_trimmed{extension}"
+        temp_file_path = os.path.join(temp_dir, temp_filename)
+        
+        with open(temp_file_path, 'w', encoding='utf-8') as f:
+            for line in filtered_lines:
+                f.write(line)
+        
+        # Ensure file is properly written and closed
+        if not os.path.exists(temp_file_path):
+            raise Exception("Failed to create trimmed file")
+        
+        file_size = os.path.getsize(temp_file_path)
+        if file_size == 0:
+            raise Exception("Trimmed file is empty")
+        
+        # Generate new file ID with timestamp to ensure uniqueness
+        new_file_id = f"trimmed_{int(time.time())}_{file_id}"
+        
         # Store trimmed file
         upload_store[new_file_id] = {
-            'path': temp_file.name,
+            'path': temp_file_path,
             'original_name': f"{base_name}_trimmed{extension}",
-            'size': os.path.getsize(temp_file.name),
+            'size': os.path.getsize(temp_file_path),
             'lines': len(filtered_lines)
         }
         
@@ -758,14 +679,28 @@ async def download_file(file_id: str):
         raise HTTPException(status_code=404, detail="File not found")
     
     file_path = upload_store[file_id]['path']
+    original_name = upload_store[file_id]['original_name']
+    
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File no longer exists")
     
-    return FileResponse(
-        path=file_path,
-        filename=upload_store[file_id]['original_name'],
-        media_type='application/octet-stream'
-    )
+    try:
+        # Check file size
+        file_size = os.path.getsize(file_path)
+        if file_size == 0:
+            raise HTTPException(status_code=400, detail="File is empty")
+        
+        return FileResponse(
+            path=file_path,
+            filename=original_name,
+            media_type='application/octet-stream',
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{original_name}\"",
+                "Content-Length": str(file_size)
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
 @app.delete("/api/files/{file_id}")
 async def delete_file(file_id: str):

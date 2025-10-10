@@ -444,7 +444,7 @@ The Time Series tab provides interactive visualizations over time:
 
 **🔒 Is my data safe?** Yes! Pepi runs **100% locally** on your machine. Your MongoDB logs never leave your computer.
 
-**🤖 Does the AI send data externally?** No! The AI uses a local LLM (llama-cpp-python) that runs entirely on your CPU. You can use any GGUF model you prefer (we recommend Qwen2.5-0.5B-Instruct). No data is sent to OpenAI, ChatGPT, or any cloud service.
+**🤖 Does the index advisor send data externally?** No! The index advisor uses rule-based analysis that runs entirely on your CPU. No data is sent to any external services.
 
 **📊 What data is collected?** None. Pepi has no telemetry, no analytics, no external communication. Only local caching for performance.
 
@@ -452,7 +452,7 @@ For more details, see the **[FAQ page](/pepi/web_static/faq.html)** in the web U
 
 ## Version History
 
-- **v1.0.0**: 🎉 Major release with AI-powered index recommendations! Includes local LLM integration, two-tier analysis (fast rule-based + optional detailed AI), synchronized time series interactions, and comprehensive FAQ page
+- **v1.0.0**: 🎉 Major release with intelligent index recommendations! Includes rule-based ESR analysis, index coverage scoring, synchronized time series interactions, and comprehensive FAQ page
 - **v0.0.2.3**: Re-added Index column and synchronized zoom for Time Series
 - **v0.0.2.2**: Added Time Series visualization tab with interactive Plotly charts for slow queries, connections, and errors over time
 - **v0.0.2.1**: Internal improvements and dependency updates

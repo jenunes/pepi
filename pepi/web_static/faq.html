@@ -204,7 +204,6 @@
                     <ul>
                         <li><strong>Cached Analysis:</strong> Parsed log data is cached locally for 7 days to speed up repeated analyses</li>
                         <li><strong>Uploaded Files:</strong> Log files you upload via the web UI are temporarily stored in your system's temp directory</li>
-                        <li><strong>LLM Model:</strong> If you use AI features, a small language model (~300MB) is downloaded and stored in <code>pepi/models/</code></li>
                     </ul>
                     <p><strong>No telemetry, no analytics, no external communication whatsoever.</strong></p>
                 </div>
@@ -219,81 +218,11 @@
                     <p><strong>Yes!</strong> Once installed, Pepi works completely offline. The web UI loads from your local system, and all processing happens locally. The only time you need internet is:</p>
                     <ul>
                         <li>Initial installation: <code>pip install</code></li>
-                        <li>First-time AI setup: Downloading the LLM model (optional)</li>
                     </ul>
                 </div>
             </div>
         </div>
 
-        <!-- AI Features -->
-        <div class="faq-section">
-            <h2 class="section-title">
-                <i class="fas fa-brain"></i> AI-Powered Index Recommendations
-            </h2>
-
-            <div class="faq-item">
-                <div class="faq-question">
-                    <i class="fas fa-circle-question"></i>
-                    <span>How does the AI Index Advisor work?</span>
-                </div>
-                <div class="faq-answer">
-                    <p>Pepi uses a <strong>two-tier approach</strong>:</p>
-                    <ul>
-                        <li><strong>Fast Rule-Based Analysis (instant):</strong> Applies MongoDB's ESR (Equality-Sort-Range) principles and best practices to recommend optimal indexes</li>
-                        <li><strong>Detailed AI Analysis (optional, 10-30 seconds):</strong> Uses a local LLM to provide in-depth technical explanations with specific MongoDB optimization principles</li>
-                    </ul>
-                    <p>The AI is trained on official MongoDB documentation and provides authoritative, technically accurate recommendations.</p>
-                </div>
-            </div>
-
-            <div class="faq-item">
-                <div class="faq-question">
-                    <i class="fas fa-circle-question"></i>
-                    <span>Does the AI send my queries to OpenAI, ChatGPT, or any cloud service?</span>
-                </div>
-                <div class="faq-answer">
-                    <div class="highlight-box">
-                        <h4><i class="fas fa-check-circle"></i> No External AI Services!</h4>
-                        <p>Pepi uses <strong>llama-cpp-python</strong> to run a lightweight language model (<strong>locally on your CPU</strong>). Your queries, data, and analysis never leave your machine. This is a key design principle of Pepi - complete privacy and offline capability.</p>
-                    </div>
-                </div>
-            </div>
-
-            <div class="faq-item">
-                <div class="faq-question">
-                    <i class="fas fa-circle-question"></i>
-                    <span>What LLM model does Pepi use?</span>
-                </div>
-                <div class="faq-answer">
-                    <p>Pepi is <strong>model-agnostic</strong> - you can use any GGUF-format LLM model. The choice is yours!</p>
-                    <p><strong>Recommended:</strong> We suggest <strong>Qwen2.5-0.5B-Instruct</strong> (quantized GGUF, ~300MB) for the best balance of:</p>
-                    <ul>
-                        <li><strong>Size</strong> - Small footprint (~300MB)</li>
-                        <li><strong>CPU execution</strong> - No GPU required</li>
-                        <li><strong>Fast inference</strong> - Responses in 10-30 seconds</li>
-                        <li><strong>Technical accuracy</strong> - Good at understanding MongoDB concepts</li>
-                    </ul>
-                    <p><strong>Alternative options:</strong> You can download any GGUF model (e.g., Phi-3-mini, TinyLlama, Mistral-7B) and place it in <code>pepi/models/</code>. Larger models provide better analysis but take longer to run.</p>
-                    <p>Pepi runs with a 2048 token context window, sufficient for MongoDB documentation + your query analysis.</p>
-                </div>
-            </div>
-
-            <div class="faq-item">
-                <div class="faq-question">
-                    <i class="fas fa-circle-question"></i>
-                    <span>Is the AI required? Can I use Pepi without it?</span>
-                </div>
-                <div class="faq-answer">
-                    <p><strong>Absolutely!</strong> The AI is completely optional:</p>
-                    <ul>
-                        <li>All core features work without AI (query analysis, time series, index detection)</li>
-                        <li>Rule-based recommendations are fast and accurate</li>
-                        <li>AI provides enhanced explanations but isn't necessary for index recommendations</li>
-                    </ul>
-                    <p>If AI isn't available, Pepi will simply use the rule-based approach for all recommendations.</p>
-                </div>
-            </div>
-        </div>
 
         <!-- Performance & Resources -->
         <div class="faq-section">
@@ -301,24 +230,6 @@
                 <i class="fas fa-tachometer-alt"></i> Performance & Resources
             </h2>
 
-            <div class="faq-item">
-                <div class="faq-question">
-                    <i class="fas fa-circle-question"></i>
-                    <span>How much CPU/RAM does the AI use?</span>
-                </div>
-                <div class="faq-answer">
-                    <p>AI analysis is <strong>only triggered when you click "Get Detailed AI Explanation"</strong>:</p>
-                    <ul>
-                        <li><strong>CPU:</strong> Uses 4 threads, typically 20-30% CPU for 10-30 seconds</li>
-                        <li><strong>RAM:</strong> ~500MB-1GB while running inference</li>
-                        <li><strong>Disk:</strong> 300MB for the model file</li>
-                    </ul>
-                    <div class="warning-box">
-                        <h4><i class="fas fa-exclamation-triangle"></i> Performance Note</h4>
-                        <p>Running LLM inference on CPU is slower than GPU but ensures Pepi works on any machine. The 10-30 second wait is worth it for the detailed technical analysis.</p>
-                    </div>
-                </div>
-            </div>
 
             <div class="faq-item">
                 <div class="faq-question">
@@ -365,19 +276,6 @@
                 </div>
             </div>
 
-            <div class="faq-item">
-                <div class="faq-question">
-                    <i class="fas fa-circle-question"></i>
-                    <span>Can I trust the AI recommendations?</span>
-                </div>
-                <div class="faq-answer">
-                    <div class="highlight-box">
-                        <h4><i class="fas fa-info-circle"></i> Always Review Recommendations</h4>
-                        <p>While Pepi's recommendations are based on MongoDB best practices and official documentation, <strong>always review and test index changes in a development environment first</strong>. The AI provides guidance, but you should validate recommendations against your specific workload and use case.</p>
-                    </div>
-                    <p>The AI is loaded with official MongoDB documentation (ESR guidelines, index strategies, selectivity principles) and generates technically sound recommendations. However, every database is unique.</p>
-                </div>
-            </div>
         </div>
 
         <div class="footer">

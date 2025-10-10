@@ -7,6 +7,8 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -58,7 +60,6 @@
                 <button class="tab-btn" data-tab="timeseries"><i class="fas fa-chart-line"></i> Time Series</button>
                 <button class="tab-btn" data-tab="replica-set"><i class="fas fa-server"></i> Replica Set</button>
                 <button class="tab-btn" data-tab="clients"><i class="fas fa-users"></i> Clients</button>
-                <button class="tab-btn" data-tab="trim"><i class="fas fa-cut"></i> Trim Log</button>
             </nav>
 
             <!-- Tab Content -->
@@ -66,16 +67,49 @@
                 <!-- Basic Info Tab -->
                 <div class="tab-pane active" id="basic">
                     <div class="info-grid" id="basicInfo">
-                        <div class="info-card">
-                            <h3><i class="fas fa-file"></i> File Information</h3>
-                            <div class="info-details" id="fileInfo">
-                                <p>Select a file to view information</p>
+                        <!-- Left Column: File Information and Trim -->
+                        <div class="info-column">
+                            <div class="info-card">
+                                <h3><i class="fas fa-file"></i> File Information</h3>
+                                <div class="info-details" id="fileInfo">
+                                    <p>Select a file to view information</p>
+                                </div>
+                            </div>
+                            
+                            <!-- Trim Log Section -->
+                            <div class="info-card" style="margin-top: 20px;">
+                                <h3><i class="fas fa-cut"></i> Trim Log File</h3>
+                                <div class="trim-container">
+                                    <div class="trim-form">
+                                        <div class="form-group">
+                                            <label for="fromDate">From Date/Time:</label>
+                                            <input type="text" id="fromDate" class="flatpickr-input" placeholder="Select start date/time">
+                                            <small>Click to open calendar or type manually</small>
+                                        </div>
+                                        
+                                        <div class="form-group">
+                                            <label for="untilDate">Until Date/Time:</label>
+                                            <input type="text" id="untilDate" class="flatpickr-input" placeholder="Select end date/time">
+                                            <small>Click to open calendar or type manually</small>
+                                        </div>
+                                        
+                                        <button class="btn btn-primary" onclick="trimLogFile()">
+                                            <i class="fas fa-cut"></i> Trim Log File
+                                        </button>
+                                    </div>
+                                    
+                                    <div id="trimResult" class="trim-result"></div>
+                                </div>
                             </div>
                         </div>
-                        <div class="info-card">
-                            <h3><i class="fas fa-server"></i> MongoDB Information</h3>
-                            <div class="info-details" id="mongoInfo">
-                                <p>No data available</p>
+                        
+                        <!-- Right Column: MongoDB Information -->
+                        <div class="info-column">
+                            <div class="info-card">
+                                <h3><i class="fas fa-server"></i> MongoDB Information</h3>
+                                <div class="info-details" id="mongoInfo">
+                                    <p>No data available</p>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -199,33 +233,6 @@
                     <div id="clientsContent"></div>
                 </div>
 
-                <!-- Trim Tab -->
-                <div class="tab-pane" id="trim">
-                    <div class="trim-container">
-                        <h2><i class="fas fa-cut"></i> Trim Log File</h2>
-                        <p>Extract a specific time range from your log file</p>
-                        
-                        <div class="trim-form">
-                            <div class="form-group">
-                                <label for="fromDate">From Date/Time:</label>
-                                <input type="text" id="fromDate" placeholder="DD/MM/YYYY HH:MM:SS">
-                                <small>Format: DD/MM/YYYY HH:MM:SS (time parts optional)</small>
-                            </div>
-                            
-                            <div class="form-group">
-                                <label for="untilDate">Until Date/Time:</label>
-                                <input type="text" id="untilDate" placeholder="DD/MM/YYYY HH:MM:SS">
-                                <small>Format: DD/MM/YYYY HH:MM:SS (time parts optional)</small>
-                            </div>
-                            
-                            <button class="btn btn-primary" onclick="trimLogFile()">
-                                <i class="fas fa-cut"></i> Trim Log File
-                            </button>
-                        </div>
-                        
-                        <div id="trimResult" class="trim-result"></div>
-                    </div>
-                </div>
             </div>
         </div>
 

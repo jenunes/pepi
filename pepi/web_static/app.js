@@ -7,6 +7,7 @@ let currentSort = { table: null, column: null, direction: 'asc' };
 document.addEventListener('DOMContentLoaded', function() {
     initializeEventListeners();
     loadUploadedFiles();
+    initializeDatePickers();
 });
 
 function initializeEventListeners() {
@@ -25,6 +26,27 @@ function initializeEventListeners() {
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
+}
+
+function initializeDatePickers() {
+    // Initialize Flatpickr for date/time inputs
+    if (typeof flatpickr !== 'undefined') {
+        flatpickr("#fromDate", {
+            enableTime: true,
+            dateFormat: "d/m/Y H:i:S",
+            time_24hr: true,
+            allowInput: true,
+            placeholder: "Select start date/time"
+        });
+        
+        flatpickr("#untilDate", {
+            enableTime: true,
+            dateFormat: "d/m/Y H:i:S",
+            time_24hr: true,
+            allowInput: true,
+            placeholder: "Select end date/time"
+        });
+    }
 }
 
 // File upload handling
@@ -174,6 +196,22 @@ function formatFileSize(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+function formatDateTime(isoString) {
+    if (!isoString) return 'N/A';
+    try {
+        const date = new Date(isoString);
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+    } catch (e) {
+        return isoString;
+    }
+}
+
 // File selection and analysis
 async function selectFile(fileId) {
     currentFileId = fileId;
@@ -196,11 +234,21 @@ async function downloadFile(fileId) {
         const response = await fetch(`/api/download/${fileId}`);
         if (!response.ok) throw new Error('Download failed');
         
+        // Get filename from Content-Disposition header or use default
+        let filename = 'log_file.log';
+        const contentDisposition = response.headers.get('Content-Disposition');
+        if (contentDisposition) {
+            const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/);
+            if (filenameMatch) {
+                filename = filenameMatch[1];
+            }
+        }
+        
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'log_file.log';
+        a.download = filename;
         a.click();
         window.URL.revokeObjectURL(url);
     } catch (error) {
@@ -1061,7 +1109,7 @@ async function showQueryExamples(namespace, operation, encodedPattern, rowIndex)
     }
 }
 
-// Store current query info for AI recommendations
+// Store current query info for recommendations
 let currentQueryForAI = null;
 let currentQueryExamples = null;
 
@@ -1103,7 +1151,7 @@ function displayQueryExamples(data, rowIndex) {
             </h4>
             <div class="examples-actions">
                 <button class="btn btn-ai" onclick="getIndexRecommendationForQuery(${rowIndex})">
-                    <i class="fas fa-magic"></i> Get AI Index Recommendation
+                    <i class="fas fa-magic"></i> Get Index Recommendation
                 </button>
                 <button class="close-examples" onclick="closeQueryExamples()">
                     <i class="fas fa-times"></i> Close
@@ -1637,7 +1685,7 @@ function showLLMInstallationModal(statusData) {
             </div>
             
             <div class="installation-info">
-                <p><strong>The AI-powered index advisor is not yet configured.</strong></p>
+                <p><strong>The index advisor is not yet configured.</strong></p>
                 <p>To enable intelligent index recommendations with LLM-enhanced analysis, please complete the following steps:</p>
                 
                 ${instructionsHTML}
@@ -1760,80 +1808,6 @@ async function getIndexRecommendationForQuery(queryIndex) {
     }
 }
 
-async function getDetailedAnalysis(buttonElement) {
-    const namespace = buttonElement.dataset.namespace;
-    const operation = buttonElement.dataset.operation;
-    const pattern = JSON.parse(buttonElement.dataset.pattern);
-    const stats = JSON.parse(buttonElement.dataset.stats);
-    
-    // Get raw log line if available (from current query examples)
-    let rawLogLine = null;
-    if (currentQueryExamples && currentQueryExamples.examples && currentQueryExamples.examples.length > 0) {
-        rawLogLine = currentQueryExamples.examples[0].raw_log_line;
-    }
-    
-    // Disable button and show loading
-    const originalHTML = buttonElement.innerHTML;
-    buttonElement.disabled = true;
-    buttonElement.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyzing... (this may take 10-30 seconds)';
-    
-    // Expand the explanation section if collapsed
-    const explanationToggle = buttonElement.closest('.explanation-header-with-button').querySelector('.explanation-toggle');
-    const explanationContent = buttonElement.closest('.recommendation-explanation').querySelector('.explanation-content');
-    if (explanationContent.style.display === 'none') {
-        toggleExplanation(explanationToggle);
-    }
-    
-    try {
-        const response = await fetch(`/api/analyze/${currentFileId}/detailed-analysis`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                namespace,
-                operation,
-                pattern,
-                raw_log_line: rawLogLine,
-                stats
-            })
-        });
-        
-        const result = await response.json();
-        
-        if (result.status === 'success') {
-            const placeholder = buttonElement.closest('.recommendation-explanation').querySelector('.detailed-analysis-placeholder');
-            
-            placeholder.innerHTML = `
-                <div class="detailed-analysis-result">
-                    <div class="analysis-header">
-                        <i class="fas fa-brain"></i> <strong>AI-Powered Detailed Analysis</strong>
-                    </div>
-                    ${result.data.is_optimized ? `
-                        <div class="optimization-approved">
-                            <i class="fas fa-check-circle"></i> Query is already optimized!
-                        </div>
-                    ` : ''}
-                    <div class="analysis-content">
-                        ${formatExplanation(result.data.explanation)}
-                    </div>
-                </div>
-            `;
-            
-            // Hide the button after successful analysis
-            buttonElement.style.display = 'none';
-            
-            showToast('success', 'Detailed AI analysis complete!');
-        } else {
-            throw new Error(result.message || 'Analysis failed');
-        }
-    } catch (error) {
-        console.error('Failed to get detailed analysis:', error);
-        showToast('error', `Failed to get detailed analysis: ${error.message}`);
-        buttonElement.disabled = false;
-        buttonElement.innerHTML = originalHTML;
-    }
-}
 
 function toggleExplanation(headerElement) {
     const content = headerElement.parentElement.parentElement.querySelector('.explanation-content') || 
@@ -1944,6 +1918,8 @@ function displaySingleRecommendation(rec, query) {
     const priority = rec.priority_level || 'MEDIUM';
     const stats = rec.stats || {};
     const recommendation = rec.recommendation || {};
+    const coverage_analysis = rec.coverage_analysis || {};
+    const migration_strategy = recommendation.migration_strategy || {};
     
     // Create modal
     const modal = document.createElement('div');
@@ -1957,6 +1933,12 @@ function displaySingleRecommendation(rec, query) {
     content.onclick = (e) => e.stopPropagation();
     
     const cmdId = 'cmd-single-' + Math.random().toString(36).substr(2, 9);
+    
+    // Generate coverage analysis HTML
+    const coverageHTML = generateCoverageAnalysisHTML(coverage_analysis, rec.current_index_structure);
+    
+    // Generate migration strategy HTML
+    const migrationHTML = generateMigrationStrategyHTML(migration_strategy);
     
     content.innerHTML = `
         <div class="recommendations-header">
@@ -1982,6 +1964,8 @@ function displaySingleRecommendation(rec, query) {
                 <div class="recommendation-pattern">${rec.pattern}</div>
             </div>
             
+            ${coverageHTML}
+            
             <div class="recommendation-index">
                 <h5><i class="fas fa-database"></i> Recommended Index</h5>
                 <div class="recommendation-command">
@@ -1992,32 +1976,18 @@ function displaySingleRecommendation(rec, query) {
                 </div>
             </div>
             
+            ${migrationHTML}
+            
             <div class="recommendation-explanation">
-                <div class="explanation-header-with-button">
-                    <h4 class="explanation-toggle" onclick="toggleExplanation(this)">
-                        <i class="fas fa-chevron-right"></i> Why This Index Is Recommended
-                        <span class="toggle-hint">(click to expand)</span>
-                    </h4>
-                    <button class="btn btn-detailed-analysis" onclick="getDetailedAnalysis(this)" 
-                            data-namespace="${rec.namespace}" 
-                            data-operation="${rec.operation}"
-                            data-pattern='${JSON.stringify(rec.pattern).replace(/'/g, "&apos;")}'
-                            data-stats='${JSON.stringify(rec.stats).replace(/'/g, "&apos;")}'
-                            data-current-index="${rec.current_index}">
-                        <i class="fas fa-brain"></i> Get Detailed AI Explanation
-                    </button>
-                </div>
+                <h4 class="explanation-toggle" onclick="toggleExplanation(this)">
+                    <i class="fas fa-chevron-right"></i> Why This Index Is Recommended
+                    <span class="toggle-hint">(click to expand)</span>
+                </h4>
                 <div class="explanation-content" style="display: none;">
                     ${formatExplanation(recommendation.reason || 'No reason provided')}
-                    <div class="detailed-analysis-placeholder"></div>
                 </div>
             </div>
             
-            ${recommendation.additional_tip ? `
-                <div class="llm-tip">
-                    ${recommendation.additional_tip}
-                </div>
-            ` : ''}
         </div>
     `;
     
@@ -2083,4 +2053,205 @@ function copyIndexCommand(elementId) {
     } else {
         fallbackCopyToClipboard(text);
     }
+}
+
+function generateCoverageAnalysisHTML(coverage_analysis, current_index_structure) {
+    if (!coverage_analysis || Object.keys(coverage_analysis).length === 0) {
+        return '';
+    }
+    
+    const coverage_score = coverage_analysis.coverage_score || 0;
+    const recommendation_type = coverage_analysis.recommendation_type || 'CREATE_NEW';
+    const esr_violations = coverage_analysis.esr_violations || [];
+    const missing_fields = coverage_analysis.missing_fields || [];
+    const improvement_details = coverage_analysis.improvement_details || [];
+    
+    // Generate current index structure display
+    const currentIndexHTML = current_index_structure && current_index_structure.length > 0 
+        ? `<div class="current-index-structure">
+             <strong>Current Index:</strong> {${current_index_structure.map(([field, dir]) => `${field}: ${dir}`).join(', ')}}
+           </div>`
+        : '<div class="current-index-structure"><strong>Current Index:</strong> COLLSCAN</div>';
+    
+    // Generate coverage score bar
+    const scoreColor = coverage_score >= 80 ? '#27ae60' : coverage_score >= 50 ? '#f39c12' : '#e74c3c';
+    const scoreBarHTML = `
+        <div class="coverage-score">
+            <div class="score-label">Index Coverage: ${coverage_score}%</div>
+            <div class="score-bar">
+                <div class="score-fill" style="width: ${coverage_score}%; background-color: ${scoreColor};"></div>
+            </div>
+        </div>
+    `;
+    
+    // Generate issues list
+    const issuesHTML = improvement_details.length > 0 
+        ? `<div class="coverage-issues">
+             <h6><i class="fas fa-exclamation-triangle"></i> Issues Found:</h6>
+             <ul>
+               ${improvement_details.map(issue => `<li>${issue}</li>`).join('')}
+             </ul>
+           </div>`
+        : '';
+    
+    return `
+        <div class="coverage-analysis">
+            <h5><i class="fas fa-chart-bar"></i> Index Coverage Analysis</h5>
+            ${currentIndexHTML}
+            ${scoreBarHTML}
+            ${issuesHTML}
+        </div>
+    `;
+}
+
+function generateMigrationStrategyHTML(migration_strategy) {
+    if (!migration_strategy || Object.keys(migration_strategy).length === 0) {
+        return '';
+    }
+    
+    const type = migration_strategy.type || 'CREATE_NEW';
+    const commands = migration_strategy.commands || [];
+    const warnings = migration_strategy.warnings || [];
+    const impact = migration_strategy.estimated_impact || 'low';
+    
+    // Generate impact badge
+    const impactColor = impact === 'high' ? '#e74c3c' : impact === 'medium' ? '#f39c12' : '#27ae60';
+    const impactBadge = `<span class="impact-badge" style="background-color: ${impactColor};">${impact.toUpperCase()} IMPACT</span>`;
+    
+    // Generate warnings
+    const warningsHTML = warnings.length > 0 
+        ? `<div class="migration-warnings">
+             <h6><i class="fas fa-exclamation-triangle"></i> Warnings:</h6>
+             <ul>
+               ${warnings.map(warning => `<li>${warning}</li>`).join('')}
+             </ul>
+           </div>`
+        : '';
+    
+    // Generate commands
+    const commandsHTML = commands.length > 0 
+        ? `<div class="migration-commands">
+             <h6><i class="fas fa-terminal"></i> Migration Commands:</h6>
+             <div class="command-list">
+               ${commands.map((cmd, index) => `
+                 <div class="migration-command">
+                   <div class="command-header">
+                     <span class="command-step">Step ${index + 1}</span>
+                     <span class="command-action">${cmd.action.toUpperCase()}</span>
+                   </div>
+                   <div class="command-description">${cmd.description}</div>
+                   <code class="command-code">${cmd.command}</code>
+                 </div>
+               `).join('')}
+             </div>
+           </div>`
+        : '';
+    
+    return `
+        <div class="migration-strategy">
+            <h5><i class="fas fa-exchange-alt"></i> Migration Strategy ${impactBadge}</h5>
+            <div class="strategy-type">Recommendation Type: <strong>${type.replace('_', ' ')}</strong></div>
+            ${warningsHTML}
+            ${commandsHTML}
+        </div>
+    `;
+}
+
+function displayPerformanceGuidance(namespace, operation, stats, coverage_analysis) {
+    const modal = document.createElement('div');
+    modal.className = 'recommendations-modal';
+    modal.onclick = (e) => {
+        if (e.target === modal) closeRecommendations();
+    };
+    
+    const content = document.createElement('div');
+    content.className = 'recommendations-content';
+    content.onclick = (e) => e.stopPropagation();
+    
+    const coverage_score = coverage_analysis.coverage_score || 0;
+    const current_index_structure = coverage_analysis.current_index_structure || [];
+    
+    content.innerHTML = `
+        <div class="recommendations-header">
+            <h2>
+                <i class="fas fa-check-circle" style="color: #27ae60;"></i> 
+                Index is Optimal
+            </h2>
+            <button class="recommendations-close" onclick="closeRecommendations()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        
+        <div class="performance-guidance-card">
+            <div class="performance-status">
+                <span class="status-badge optimal">✅ OPTIMIZED</span>
+                <span class="coverage-score">Index Coverage: ${coverage_score}%</span>
+            </div>
+            
+            <div class="query-info">
+                <h4>${namespace} - ${operation}</h4>
+                <div class="query-stats">
+                    <span><i class="fas fa-redo"></i> ${stats.count || 0}× executed</span>
+                    <span><i class="fas fa-clock"></i> ${stats.mean_ms || 0}ms avg</span>
+                    <span><i class="fas fa-chart-line"></i> ${stats.p95_ms || 0}ms p95</span>
+                </div>
+            </div>
+            
+            <div class="current-index-info">
+                <h5><i class="fas fa-database"></i> Current Index Structure</h5>
+                <div class="index-structure">
+                    ${current_index_structure.length > 0 
+                        ? `{${current_index_structure.map(([field, dir]) => `${field}: ${dir}`).join(', ')}}`
+                        : 'COLLSCAN'
+                    }
+                </div>
+            </div>
+            
+            <div class="performance-analysis">
+                <h5><i class="fas fa-chart-bar"></i> Performance Analysis</h5>
+                <div class="analysis-content">
+                    <p><strong>Index structure is optimal and follows ESR principles.</strong></p>
+                    <p>Query slowness (${stats.mean_ms || 0}ms average, ${stats.count || 0}× executions) is likely due to:</p>
+                    <ul>
+                        <li><strong>Data volume:</strong> Query may be returning too many documents</li>
+                        <li><strong>Poor selectivity:</strong> Filter conditions may match many records</li>
+                        <li><strong>Result set size:</strong> Consider adding limit or pagination</li>
+                        <li><strong>Hardware/network:</strong> Check system resources and network latency</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="recommendations">
+                <h5><i class="fas fa-lightbulb"></i> Recommendations</h5>
+                <div class="recommendation-list">
+                    <div class="recommendation-item">
+                        <i class="fas fa-filter"></i>
+                        <span>Add more selective filters to reduce result set size</span>
+                    </div>
+                    <div class="recommendation-item">
+                        <i class="fas fa-list-ol"></i>
+                        <span>Use limit() to cap the number of returned documents</span>
+                    </div>
+                    <div class="recommendation-item">
+                        <i class="fas fa-pagination"></i>
+                        <span>Implement pagination for large result sets</span>
+                    </div>
+                    <div class="recommendation-item">
+                        <i class="fas fa-search"></i>
+                        <span>Review query patterns and data distribution</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="performance-note">
+                <p><i class="fas fa-info-circle"></i> 
+                <strong>Note:</strong> This query has an optimal index structure. 
+                Performance issues are likely due to data volume or query design, not indexing problems.
+                </p>
+            </div>
+        </div>
+    `;
+    
+    modal.appendChild(content);
+    document.body.appendChild(modal);
 }

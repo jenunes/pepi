@@ -1,6 +1,6 @@
 """
-Lightweight AI-powered index recommendations for MongoDB queries.
-Uses embedded local LLM for seamless experience.
+Rule-based index recommendations for MongoDB queries.
+Provides accurate, fast analysis without AI dependencies.
 """
 
 import re
@@ -91,61 +91,17 @@ AGGREGATION PIPELINE CONSIDERATIONS:
 
 
 class IndexAdvisor:
-    """Lightweight index advisor with embedded local LLM."""
+    """Rule-based index advisor with fast, accurate analysis."""
     
     def __init__(self):
-        self.llm = None
-        self.model_path = None
-        self._init_llm()
+        pass
     
-    def _init_llm(self):
-        """Initialize embedded LLM if available."""
-        try:
-            from llama_cpp import Llama
-            
-            # Look for model in package directory
-            package_dir = Path(__file__).parent
-            model_dir = package_dir / "models"
-            
-            print(f"🔍 Looking for LLM models in: {model_dir}")
-            
-            # Try to find a model file
-            model_files = list(model_dir.glob("*.gguf")) if model_dir.exists() else []
-            
-            if model_files:
-                self.model_path = model_files[0]
-                print(f"🤖 Loading LLM model: {self.model_path.name}")
-                # Initialize with larger context for detailed explanations
-                self.llm = Llama(
-                    model_path=str(self.model_path),
-                    n_ctx=2048,         # Larger context window for MongoDB docs + analysis
-                    n_threads=4,        # More threads for better performance
-                    n_gpu_layers=0,     # CPU only for portability
-                    verbose=False
-                )
-                print(f"✅ LLM initialized successfully!")
-            else:
-                # LLM not available, will use pure rule-based
-                print(f"⚠️  No LLM model found in {model_dir}")
-                print("   Install with: pip install llama-cpp-python")
-                print("   Then download model: python scripts/download_model.py")
-                self.llm = None
-        
-        except ImportError:
-            # llama-cpp-python not installed, use rule-based only
-            print("⚠️  llama-cpp-python not installed (rule-based recommendations only)")
-            print("   Install with: pip install llama-cpp-python")
-            self.llm = None
-        except Exception as e:
-            print(f"❌ Failed to initialize LLM: {e}")
-            self.llm = None
     
-    def analyze_queries(self, query_stats: Dict, use_llm: bool = False) -> List[Dict]:
+    def analyze_queries(self, query_stats: Dict) -> List[Dict]:
         """Analyze queries and generate index recommendations.
         
         Args:
             query_stats: Dictionary of query statistics from calculate_query_stats
-            use_llm: Whether to use LLM enhancement (default: False for bulk analysis)
             
         Returns:
             List of recommendations sorted by priority
@@ -164,8 +120,8 @@ class IndexAdvisor:
             # Calculate priority score
             priority = self._calculate_priority(stats)
             
-            # Generate recommendation (without LLM for bulk analysis)
-            rec = self._generate_recommendation(namespace, operation, pattern, stats, use_llm=use_llm)
+            # Generate recommendation
+            rec = self._generate_recommendation(namespace, operation, pattern, stats)
             
             if rec:
                 rec['priority'] = priority
@@ -178,10 +134,10 @@ class IndexAdvisor:
         return recommendations
     
     def analyze_single_query(self, namespace: str, operation: str, pattern: str, stats: Dict) -> Optional[Dict]:
-        """Analyze a single query with LLM enhancement (for UI button clicks).
+        """Analyze a single query for detailed recommendations.
         
-        When user explicitly clicks "Get AI Recommendation", always analyze the query
-        even if it has an index - the index might be suboptimal or incorrect.
+        When user explicitly clicks "Get Index Recommendation", analyze the query
+        but skip if the index is already optimal to prevent unnecessary recommendations.
         
         Args:
             namespace: Query namespace (db.collection)
@@ -201,16 +157,31 @@ class IndexAdvisor:
             print(f"   ⚠️  Skipping system collection")
             return None
         
-        # For explicit user requests, ALWAYS analyze (even with existing indexes)
-        # Existing indexes might be wrong or suboptimal
+        # Parse query pattern to extract fields
+        fields = self._extract_query_fields(pattern, operation)
+        if not fields:
+            print(f"   ⚠️  No fields detected")
+            return None
+        
+        # Get current index information and perform coverage analysis
+        current_index_info = self._get_current_index_info(stats)
+        coverage_analysis = self._analyze_index_coverage(fields, current_index_info, stats)
+        
+        # CRITICAL FIX: Skip AI analysis for OPTIMIZED queries
+        if (coverage_analysis['recommendation_type'] == 'OPTIMIZED' and 
+            coverage_analysis['coverage_score'] >= 90):
+            print(f"   ✅ Query is already optimally indexed (coverage: {coverage_analysis['coverage_score']}%)")
+            print(f"   ⚠️  Skipping AI analysis to prevent hallucinations")
+            return None
+        
         print(f"   ✅ Analyzing query (user-requested)")
         
         # Calculate priority
         priority = self._calculate_priority(stats)
         print(f"   Priority score: {priority}")
         
-        # Generate recommendation WITH LLM (use_llm=True for single query)
-        rec = self._generate_recommendation(namespace, operation, pattern, stats, use_llm=True)
+        # Generate recommendation
+        rec = self._generate_recommendation(namespace, operation, pattern, stats)
         print(f"   Generated recommendation: {rec is not None}")
         if rec:
             print(f"   Recommendation keys: {rec.keys()}")
@@ -302,23 +273,29 @@ class IndexAdvisor:
             return "LOW"
     
     def _generate_recommendation(self, namespace: str, operation: str, 
-                                 pattern: str, stats: Dict, use_llm: bool = False) -> Optional[Dict]:
+                                 pattern: str, stats: Dict) -> Optional[Dict]:
         """Generate index recommendation for a query."""
         
         # Parse query pattern to extract fields
         fields = self._extract_query_fields(pattern, operation)
         
-        # Check if this is a COLLSCAN query
-        indexes = stats.get('indexes', set())
-        if isinstance(indexes, list):
-            indexes = set(indexes)
-        has_collscan = 'COLLSCAN' in indexes
+        # Get current index information from planSummary
+        current_index_info = self._get_current_index_info(stats)
         
         # If no fields detected but has COLLSCAN, provide generic advice
-        if not fields and has_collscan:
-            return self._generate_generic_collscan_recommendation(namespace, operation, pattern, stats, use_llm)
+        if not fields and current_index_info['type'] == 'COLLSCAN':
+            return self._generate_generic_collscan_recommendation(namespace, operation, pattern, stats)
         
         if not fields:
+            return None
+        
+        # Perform coverage analysis
+        coverage_analysis = self._analyze_index_coverage(fields, current_index_info, stats)
+        
+        # CRITICAL FIX: Skip recommendations for OPTIMIZED queries
+        if (coverage_analysis['recommendation_type'] == 'OPTIMIZED' and 
+            coverage_analysis['coverage_score'] >= 90):
+            print(f"✅ Query is already optimally indexed (coverage: {coverage_analysis['coverage_score']}%)")
             return None
         
         # Generate index command
@@ -326,36 +303,145 @@ class IndexAdvisor:
         
         if not index_spec:
             # Has fields but couldn't build index (complex query)
-            if has_collscan:
-                return self._generate_generic_collscan_recommendation(namespace, operation, pattern, stats, use_llm)
+            if current_index_info['type'] == 'COLLSCAN':
+                return self._generate_generic_collscan_recommendation(namespace, operation, pattern, stats)
             return None
+        
+        # Generate migration strategy
+        migration_strategy = self._generate_migration_strategy(
+            namespace, current_index_info, index_spec, coverage_analysis
+        )
         
         # For initial fast response, use rule-based explanation
         # User can request detailed LLM analysis later
-        reason = self._generate_reason(fields, operation, stats)
+        reason = self._generate_reason(fields, operation, stats, coverage_analysis)
         
-        # Build recommendation
+        # Build enhanced recommendation
         rec = {
             'namespace': namespace,
             'operation': operation,
             'pattern': pattern[:200],  # Truncate for display
-            'current_index': ', '.join(stats.get('indexes', [])) or 'COLLSCAN',
+            'current_index': current_index_info['type'],
+            'current_index_structure': current_index_info.get('structure', []),
             'stats': {
                 'count': stats.get('count', 0),
                 'mean_ms': round(stats.get('mean', 0), 1),
                 'p95_ms': round(stats.get('percentile_95', 0), 1),
             },
+            'coverage_analysis': coverage_analysis,
             'recommendation': {
                 'index_spec': index_spec,
                 'command': self._format_create_index(namespace, index_spec),
                 'reason': reason,
+                'migration_strategy': migration_strategy,
             }
         }
         
         return rec
     
-    def _generate_generic_collscan_recommendation(self, namespace: str, operation: str,
-                                                  pattern: str, stats: Dict, use_llm: bool = False) -> Dict:
+    def _get_current_index_info(self, stats: Dict) -> Dict:
+        """Extract current index information from stats.
+        
+        Args:
+            stats: Query statistics containing index information
+            
+        Returns:
+            Parsed index structure
+        """
+        # Get planSummary from stats if available
+        plan_summary = stats.get('plan_summary', 'COLLSCAN')
+        
+        # Parse the planSummary to get index structure
+        return self._parse_plan_summary(plan_summary)
+    
+    def _generate_migration_strategy(self, namespace: str, current_index: Dict, 
+                                   recommended_index: Dict, coverage_analysis: Dict) -> Dict:
+        """Generate migration strategy for index changes.
+        
+        Args:
+            namespace: Database.collection name
+            current_index: Current index structure
+            recommended_index: Recommended index specification
+            coverage_analysis: Coverage analysis results
+            
+        Returns:
+            Migration strategy with commands and warnings
+        """
+        strategy = {
+            'type': coverage_analysis['recommendation_type'],
+            'commands': [],
+            'warnings': [],
+            'estimated_impact': 'low'
+        }
+        
+        rec_type = coverage_analysis['recommendation_type']
+        
+        if rec_type == 'CREATE_NEW':
+            # Simple case - just create new index
+            strategy['commands'].append({
+                'action': 'create',
+                'command': self._format_create_index(namespace, recommended_index),
+                'description': 'Create new index'
+            })
+            strategy['estimated_impact'] = 'low'
+            
+        elif rec_type == 'IMPROVE_EXISTING':
+            # Need to replace existing index with better field order
+            strategy['warnings'].append('This will replace an existing index. Monitor performance during index build.')
+            strategy['commands'].extend([
+                {
+                    'action': 'create',
+                    'command': self._format_create_index(namespace, recommended_index),
+                    'description': 'Create improved index'
+                },
+                {
+                    'action': 'drop',
+                    'command': f'// Drop old index after new one is created\n// db.{namespace.split(".")[-1]}.dropIndex({{ /* old index spec */ }})',
+                    'description': 'Drop old index (after verifying new one works)'
+                }
+            ])
+            strategy['estimated_impact'] = 'medium'
+            
+        elif rec_type == 'EXTEND_INDEX':
+            # Add fields to existing index
+            strategy['warnings'].append('Consider if extending index is better than creating a new compound index.')
+            strategy['commands'].append({
+                'action': 'create',
+                'command': self._format_create_index(namespace, recommended_index),
+                'description': 'Create extended index with additional fields'
+            })
+            strategy['estimated_impact'] = 'low'
+            
+        elif rec_type == 'REPLACE_INDEX':
+            # Complete replacement needed
+            strategy['warnings'].append('Complete index replacement required. Plan for maintenance window.')
+            strategy['commands'].extend([
+                {
+                    'action': 'create',
+                    'command': self._format_create_index(namespace, recommended_index),
+                    'description': 'Create new optimized index'
+                },
+                {
+                    'action': 'drop',
+                    'command': f'// Drop old index after verification\n// db.{namespace.split(".")[-1]}.dropIndex({{ /* old index spec */ }})',
+                    'description': 'Drop old index (after verification)'
+                }
+            ])
+            strategy['estimated_impact'] = 'high'
+            
+        elif rec_type == 'OPTIMIZED':
+            # Index is already optimal
+            strategy['commands'].append({
+                'action': 'none',
+                'command': '// Index is already optimal for this query pattern',
+                'description': 'No changes needed'
+            })
+            strategy['estimated_impact'] = 'none'
+        
+        return strategy
+    
+    def _generate_generic_collscan_recommendation(self, namespace: str, operation: str, 
+                                                  pattern: str, stats: Dict) -> Dict:
         """Generate generic recommendation for COLLSCAN queries where fields couldn't be extracted."""
         
         count = stats.get('count', 0)
@@ -392,22 +478,65 @@ class IndexAdvisor:
             }
         }
         
-        # Add LLM insight if available
-        if use_llm and self.llm:
-            llm_insight = self._get_llm_insight_for_complex_query(namespace, operation, pattern, stats)
-            if llm_insight:
-                rec['recommendation']['additional_tip'] = llm_insight
         
         return rec
     
-    def _should_use_llm(self, stats: Dict) -> bool:
-        """Decide if LLM enhancement is worth it for this query."""
-        # Only use LLM for high-priority queries to keep it fast
-        priority = self._calculate_priority(stats)
-        return priority >= 50  # HIGH or CRITICAL only
+    
+    def _extract_fields_from_match_clause(self, match_clause: dict, fields: List[Tuple[str, str]]):
+        """Recursively extract fields from a $match clause, handling $and, $or, $nor.
+        
+        Args:
+            match_clause: The match clause dictionary
+            fields: List to append extracted fields to (modified in place)
+        """
+        for field_name, field_value in match_clause.items():
+            # Handle logical operators that contain arrays of conditions
+            if field_name in ('$and', '$or', '$nor'):
+                if isinstance(field_value, list):
+                    for condition in field_value:
+                        if isinstance(condition, dict):
+                            self._extract_fields_from_match_clause(condition, fields)
+            # Skip other $ operators at top level
+            elif field_name.startswith('$'):
+                continue
+            # Regular field
+            else:
+                # Determine if it's equality or range
+                if isinstance(field_value, dict):
+                    # Check for query operators
+                    operators = [k for k in field_value.keys() if k.startswith('$')]
+                    if operators:
+                        # Check specific operator types
+                        range_ops = {'$gt', '$gte', '$lt', '$lte', '$ne', '$nin', '$regex', '$exists'}
+                        in_op = {'$in'}
+                        eq_op = {'$eq'}
+                        
+                        if any(op in range_ops for op in operators):
+                            fields.append((field_name, 'range'))
+                        elif any(op in in_op for op in operators):
+                            # Check $in array size if possible
+                            in_value = field_value.get('$in', [])
+                            if isinstance(in_value, list) and len(in_value) >= 201:
+                                fields.append((field_name, 'range'))
+                            else:
+                                fields.append((field_name, 'equality'))
+                        elif any(op in eq_op for op in operators):
+                            fields.append((field_name, 'equality'))
+                        else:
+                            # Unknown operator, assume range
+                            fields.append((field_name, 'range'))
+                    else:
+                        # Dict without operators (nested document equality)
+                        fields.append((field_name, 'equality'))
+                else:
+                    # Simple value equality
+                    fields.append((field_name, 'equality'))
     
     def _extract_query_fields(self, pattern: str, operation: str) -> List[Tuple[str, str]]:
         """Extract fields and their usage from query pattern.
+        
+        Now accepts the FULL command object (including filter, sort, projection, etc.)
+        instead of just normalized patterns.
         
         Returns:
             List of (field_name, usage_type) tuples
@@ -420,55 +549,89 @@ class IndexAdvisor:
         try:
             # Handle different operation types
             if operation == 'find':
-                # Parse JSON-like pattern
-                # Look for field patterns like {"field": value} or {"field": {"$gt": value}}
-                
-                # Equality matches
-                equality_fields = re.findall(r'"([^"]+)":\s*"[^"]*"', pattern)
-                for field in equality_fields:
-                    if not field.startswith('$'):
-                        fields.append((field, 'equality'))
-                
-                # Range operators
-                range_patterns = [r'"([^"]+)":\s*\{"(\$gt|\$gte|\$lt|\$lte|\$ne)"', 
-                                 r'"([^"]+)":\s*\{"(\$in|\$nin)"']
-                for pat in range_patterns:
-                    matches = re.findall(pat, pattern)
-                    for field, op in matches:
+                # Try JSON parsing first for structured queries
+                try:
+                    query = json.loads(pattern)
+                    if isinstance(query, dict):
+                        # Check if this is a full command object (with 'find' key) or just a filter
+                        if 'find' in query:
+                            # Full command object: extract filter, sort, etc.
+                            print(f"✅ Detected full find command object")
+                            
+                            # Extract from filter
+                            filter_clause = query.get('filter', {})
+                            if filter_clause:
+                                self._extract_fields_from_match_clause(filter_clause, fields)
+                            
+                            # Extract from sort
+                            sort_clause = query.get('sort', {})
+                            if sort_clause and isinstance(sort_clause, dict):
+                                for field_name in sort_clause.keys():
+                                    if not field_name.startswith('$'):
+                                        fields.append((field_name, 'sort'))
+                            
+                            # Note: projection fields are NOT indexed, so we skip them
+                            print(f"✅ Extracted {len(fields)} fields from full command: {fields}")
+                        else:
+                            # Just a filter object (backward compatibility)
+                            self._extract_fields_from_match_clause(query, fields)
+                            print(f"✅ JSON parsing succeeded for find! Extracted {len(fields)} fields: {fields}")
+                except (json.JSONDecodeError, TypeError) as e:
+                    print(f"⚠️ JSON parsing failed for find: {e}, falling back to regex")
+                    # Fallback to regex-based extraction
+                    # Equality matches
+                    equality_fields = re.findall(r'"([^"]+)":\s*"[^"]*"', pattern)
+                    for field in equality_fields:
                         if not field.startswith('$'):
-                            fields.append((field, 'range'))
-                
-                # Text search
-                if '$text' in pattern or '$regex' in pattern:
-                    text_fields = re.findall(r'"([^"]+)":\s*\{"\$regex"', pattern)
-                    for field in text_fields:
-                        fields.append((field, 'text'))
-                
-                # Sort detection
-                if '"sort"' in pattern.lower():
-                    sort_fields = re.findall(r'"sort":\s*\{[^}]*"([^"]+)"', pattern)
-                    for field in sort_fields:
-                        if not field.startswith('$'):
-                            fields.append((field, 'sort'))
+                            fields.append((field, 'equality'))
+                    
+                    # Range operators
+                    range_patterns = [r'"([^"]+)":\s*\{"(\$gt|\$gte|\$lt|\$lte|\$ne)"', 
+                                     r'"([^"]+)":\s*\{"(\$in|\$nin)"']
+                    for pat in range_patterns:
+                        matches = re.findall(pat, pattern)
+                        for field, op in matches:
+                            if not field.startswith('$'):
+                                fields.append((field, 'range'))
+                    
+                    # Text search
+                    if '$text' in pattern or '$regex' in pattern:
+                        text_fields = re.findall(r'"([^"]+)":\s*\{"\$regex"', pattern)
+                        for field in text_fields:
+                            fields.append((field, 'text'))
+                    
+                    # Sort detection
+                    if '"sort"' in pattern.lower():
+                        sort_fields = re.findall(r'"sort":\s*\{[^}]*"([^"]+)"', pattern)
+                        for field in sort_fields:
+                            if not field.startswith('$'):
+                                fields.append((field, 'sort'))
             
             elif operation == 'aggregate':
                 # Parse aggregation pipeline - try JSON parsing first for structured pipelines
                 try:
-                    # Try to parse as JSON array (full pipeline)
-                    pipeline = json.loads(pattern)
+                    parsed = json.loads(pattern)
+                    
+                    # Check if this is a full command object (with 'aggregate' key) or just a pipeline
+                    if isinstance(parsed, dict) and 'aggregate' in parsed:
+                        # Full command object: extract pipeline
+                        print(f"✅ Detected full aggregate command object")
+                        pipeline = parsed.get('pipeline', [])
+                    elif isinstance(parsed, list):
+                        # Just a pipeline array (backward compatibility)
+                        pipeline = parsed
+                    else:
+                        # Unknown format
+                        print(f"⚠️ Unknown aggregate format: {type(parsed)}")
+                        pipeline = []
+                    
                     if isinstance(pipeline, list):
                         for stage in pipeline:
                             if isinstance(stage, dict):
-                                # Extract $match fields
+                                # Extract $match fields (recursively handles $and, $or, $nor)
                                 if '$match' in stage:
                                     match_clause = stage['$match']
-                                    for field_name, field_value in match_clause.items():
-                                        if not field_name.startswith('$'):
-                                            # Check if it's a range query
-                                            if isinstance(field_value, dict) and any(op.startswith('$') for op in field_value.keys()):
-                                                fields.append((field_name, 'range'))
-                                            else:
-                                                fields.append((field_name, 'equality'))
+                                    self._extract_fields_from_match_clause(match_clause, fields)
                                 
                                 # Extract $sort fields
                                 if '$sort' in stage:
@@ -507,11 +670,32 @@ class IndexAdvisor:
                                     fields.append((field, 'equality'))
             
             elif operation in ('update', 'delete'):
-                # Extract query fields
-                query_fields = re.findall(r'"q":\s*\{[^}]*"([^"]+)":', pattern)
-                for field in query_fields:
-                    if not field.startswith('$'):
-                        fields.append((field, 'equality'))
+                # Try JSON parsing first for full command objects
+                try:
+                    parsed = json.loads(pattern)
+                    if isinstance(parsed, dict):
+                        # Check if this is a full command object (with 'update'/'delete' key)
+                        if operation in parsed:
+                            print(f"✅ Detected full {operation} command object")
+                            # Extract from updates/deletes array
+                            items = parsed.get('updates', []) if operation == 'update' else parsed.get('deletes', [])
+                            for item in items:
+                                if isinstance(item, dict) and 'q' in item:
+                                    query_clause = item['q']
+                                    if isinstance(query_clause, dict):
+                                        self._extract_fields_from_match_clause(query_clause, fields)
+                        else:
+                            # Just extract query fields using regex fallback
+                            query_fields = re.findall(r'"q":\s*\{[^}]*"([^"]+)":', pattern)
+                            for field in query_fields:
+                                if not field.startswith('$'):
+                                    fields.append((field, 'equality'))
+                except (json.JSONDecodeError, TypeError):
+                    # Fallback to regex-based extraction
+                    query_fields = re.findall(r'"q":\s*\{[^}]*"([^"]+)":', pattern)
+                    for field in query_fields:
+                        if not field.startswith('$'):
+                            fields.append((field, 'equality'))
         
         except Exception:
             pass
@@ -574,7 +758,7 @@ class IndexAdvisor:
         return f'db.getSiblingDB("{db}").getCollection("{collection}").createIndex({spec_str})'
     
     def _generate_reason(self, fields: List[Tuple[str, str]], 
-                        operation: str, stats: Dict) -> str:
+                        operation: str, stats: Dict, coverage_analysis: Dict = None) -> str:
         """Generate human-readable reason for recommendation."""
         
         indexes = stats.get('indexes', set())
@@ -588,6 +772,14 @@ class IndexAdvisor:
         
         field_names = [f for f, _ in fields]
         field_types = {f: t for f, t in fields}
+        
+        # Check if this is an OPTIMIZED query (should not reach here due to skip logic, but safety check)
+        if coverage_analysis and coverage_analysis.get('recommendation_type') == 'OPTIMIZED':
+            reason = f"Index structure is optimal and follows ESR principles. "
+            reason += f"Query slowness ({mean_ms:.0f}ms average, {count}× executions) is likely due to: "
+            reason += "data volume, poor selectivity, or result set size. "
+            reason += "Consider adding more selective filters, using limit, or investigating data patterns."
+            return reason
         
         if has_collscan:
             reason = f"Query performs full collection scan. "
@@ -609,9 +801,30 @@ class IndexAdvisor:
             reason += f"Executed {count}× averaging {mean_ms:.0f}ms. "
             reason += "An index enables efficient B-tree lookup instead of scanning all documents."
         else:
-            reason = f"Query is slow ({mean_ms:.0f}ms average, {count}× executions). "
-            reason += f"Current index may not be optimal for this access pattern. "
-            reason += "A better-targeted compound index could significantly improve performance."
+            # Query has an index but is still slow - check coverage analysis
+            if coverage_analysis:
+                coverage_score = coverage_analysis.get('coverage_score', 0)
+                esr_violations = coverage_analysis.get('esr_violations', [])
+                missing_fields = coverage_analysis.get('missing_fields', [])
+                
+                if coverage_score < 50:
+                    reason = f"Current index has poor coverage ({coverage_score}%) for this query pattern. "
+                    if missing_fields:
+                        reason += f"Missing fields: {', '.join(missing_fields)}. "
+                    if esr_violations:
+                        reason += f"ESR violations: {'; '.join(esr_violations[:2])}. "
+                elif esr_violations:
+                    reason = f"Index exists but violates ESR principles: {'; '.join(esr_violations[:2])}. "
+                    reason += f"Query executed {count}× averaging {mean_ms:.0f}ms. "
+                    reason += "Reordering index fields will improve performance."
+                else:
+                    reason = f"Query is slow ({mean_ms:.0f}ms average, {count}× executions) despite having an index. "
+                    reason += "Current index may not be optimal for this access pattern. "
+                    reason += "A better-targeted compound index could significantly improve performance."
+            else:
+                reason = f"Query is slow ({mean_ms:.0f}ms average, {count}× executions). "
+                reason += f"Current index may not be optimal for this access pattern. "
+                reason += "A better-targeted compound index could significantly improve performance."
         
         return reason
     
@@ -641,161 +854,352 @@ class IndexAdvisor:
             else:
                 return "30-50% faster (estimated)"
     
-    def _get_llm_analysis(self, namespace: str, operation: str, 
-                          fields: List[Tuple[str, str]], index_spec: Dict, 
-                          stats: Dict) -> Dict:
-        """Analyze query and determine if optimization is needed, or if current index is sufficient."""
-        
-        if not self.llm:
-            return {'is_optimized': False, 'explanation': self._generate_reason(fields, operation, stats)}
-        
-        try:
-            # Build detailed context for LLM
-            field_details = []
-            for field_name, usage_type in fields:
-                field_details.append(f"{field_name} ({usage_type})")
-            
-            index_fields = ', '.join(index_spec.keys())
-            current_indexes = stats.get('indexes', ['COLLSCAN'])
-            current_index_str = current_indexes[0] if current_indexes else 'COLLSCAN'
-            
-            prompt = f"""<|system|>You are a senior MongoDB database performance engineer. Use the official MongoDB documentation provided to give accurate, authoritative recommendations.
-
-{MONGODB_ESR_GUIDELINES}
-
-{MONGODB_INDEX_STRATEGIES}<|end|>
-<|user|>Analyze this MongoDB query:
-
-Collection: {namespace}
-Operation: {operation}
-Current Index: {current_index_str}
-Execution Statistics:
-- Executions: {stats.get('count', 0)}×
-- Average duration: {stats.get('mean', 0):.1f}ms
-- P95 latency: {stats.get('percentile_95', 0):.1f}ms
-
-Query Field Usage:
-{chr(10).join([f"  • {name} ({usage})" for name, usage in fields])}
-
-Our Recommended Index:
-{chr(10).join([f"  • {field}: 1" for field in index_spec.keys()])}
-
-Task: Determine if the current index ({current_index_str}) is already optimal, or if our recommended index would improve performance.
-
-Respond in this format:
-STATUS: [OPTIMIZED or NEEDS_OPTIMIZATION]
-
-EXPLANATION:
-[If OPTIMIZED: Explain why the current index is already good and follows ESR principles]
-[If NEEDS_OPTIMIZATION: Provide detailed analysis with these sections:
-**Current Performance Issue:**
-**ESR Principle Application:**
-**Performance Improvements:**
-**Query Plan Changes:**]
-
-Be honest - if the query is already well-indexed and performing acceptably, say STATUS: OPTIMIZED.<|end|>
-<|assistant|>STATUS: """
-
-            response = self.llm(
-                prompt,
-                max_tokens=450,
-                temperature=0.7,
-                stop=["<|end|>", "<|user|>"],
-                echo=False
-            )
-            
-            text = response['choices'][0]['text'].strip()
-            print(f"🤖 LLM analysis generated: {len(text)} chars")
-            
-            # Parse the response
-            if text.startswith('OPTIMIZED'):
-                # Extract explanation after "EXPLANATION:"
-                explanation_start = text.find('EXPLANATION:')
-                explanation = text[explanation_start + 12:].strip() if explanation_start != -1 else text
-                print(f"✅ LLM says query is already optimized")
-                return {'is_optimized': True, 'explanation': explanation or 'Current index is already optimal for this query pattern.'}
-            else:
-                # NEEDS_OPTIMIZATION - extract explanation
-                explanation_start = text.find('EXPLANATION:')
-                explanation = text[explanation_start + 12:].strip() if explanation_start != -1 else text
-                print(f"⚠️ LLM recommends optimization")
-                return {'is_optimized': False, 'explanation': explanation or self._generate_reason(fields, operation, stats)}
-        
-        except Exception as e:
-            print(f"❌ LLM analysis failed: {e}")
-            return {'is_optimized': False, 'explanation': self._generate_reason(fields, operation, stats)}
     
-    def _get_llm_insight(self, namespace: str, operation: str, pattern: str,
-                         fields: List[Tuple[str, str]], stats: Dict) -> Optional[str]:
-        """Get additional insight from embedded LLM."""
-        
-        if not self.llm:
-            return None
-        
-        try:
-            # Build concise prompt
-            field_list = ', '.join([f"{f} ({t})" for f, t in fields[:3]])  # Top 3 fields only
-            
-            prompt = f"""<|system|>You are a MongoDB database expert providing index optimization advice.<|end|>
-<|user|>A MongoDB {operation} on {namespace} performs COLLSCAN scanning {stats.get('count', 0)} times averaging {stats.get('mean', 0):.0f}ms.
-Fields used: {field_list}
-
-Provide one specific optimization tip in 15 words or less.<|end|>
-<|assistant|>"""
-
-            # Generate with tight constraints for speed
-            response = self.llm(
-                prompt,
-                max_tokens=50,           # Very short
-                temperature=0.7,         # More creative
-                stop=["<|end|>", "\n\n"],  # Stop at end of response
-                echo=False
-            )
-            
-            text = response['choices'][0]['text'].strip()
-            print(f"🤖 LLM insight (raw): '{text}'")
-            
-            # Return only if meaningful
-            if len(text) > 10 and len(text.split()) <= 25:
-                print(f"✅ LLM insight accepted: '{text}'")
-                return text
-            else:
-                print(f"⚠️ LLM insight rejected (too short/long): '{text}'")
-        
-        except Exception as e:
-            print(f"❌ LLM insight failed: {e}")
-            pass
-        
-        return None
     
-    def _get_llm_insight_for_complex_query(self, namespace: str, operation: str, 
-                                           pattern: str, stats: Dict) -> Optional[str]:
-        """Get LLM insight for complex queries where fields couldn't be auto-detected."""
+    
+    def _parse_plan_summary(self, plan_summary: str) -> Dict:
+        """Parse planSummary to extract index structure and type.
         
-        if not self.llm:
-            return None
-        
-        try:
-            prompt = f"""MongoDB {operation} on {namespace} has COLLSCAN.
-Pattern (truncated): {pattern[:150]}
-Executions: {stats.get('count', 0)}× avg {stats.get('mean', 0):.0f}ms
-
-Suggest which fields to index (one sentence, max 25 words):"""
-
-            response = self.llm(
-                prompt,
-                max_tokens=60,
-                temperature=0.3,
-                stop=["\n"],
-                echo=False
-            )
+        Args:
+            plan_summary: String like "IXSCAN { status: 1, age: 1 }" or "COLLSCAN"
             
-            text = response['choices'][0]['text'].strip()
+        Returns:
+            Dict with index structure and metadata
+        """
+        if not plan_summary or plan_summary == 'N/A':
+            return {'type': 'COLLSCAN', 'fields': {}, 'structure': []}
+        
+        # Handle COLLSCAN
+        if plan_summary == 'COLLSCAN':
+            return {'type': 'COLLSCAN', 'fields': {}, 'structure': []}
+        
+        # Handle IDHACK (uses _id index)
+        if plan_summary == 'IDHACK':
+            return {'type': 'IDHACK', 'fields': {'_id': 1}, 'structure': [('_id', 1)]}
+        
+        # Handle IXSCAN with index structure
+        if plan_summary.startswith('IXSCAN'):
+            # Extract the index structure part
+            # Format: "IXSCAN { field1: 1, field2: -1 }"
+            try:
+                # Find the part after "IXSCAN "
+                index_part = plan_summary[6:].strip()  # Remove "IXSCAN "
+                
+                # Parse the JSON-like structure
+                # Replace single quotes with double quotes for JSON parsing
+                index_part = index_part.replace("'", '"')
+                
+                # Parse as JSON
+                index_structure = json.loads(index_part)
+                
+                # Convert to list of tuples for easier processing
+                structure = [(field, direction) for field, direction in index_structure.items()]
+                
+                return {
+                    'type': 'IXSCAN',
+                    'fields': index_structure,
+                    'structure': structure
+                }
+            except (json.JSONDecodeError, ValueError, IndexError) as e:
+                print(f"⚠️ Failed to parse IXSCAN structure: {plan_summary} - {e}")
+                # Try alternative parsing for MongoDB format
+                try:
+                    # Handle format like "IXSCAN { status: 1, age: 1 }"
+                    import re
+                    # Extract field: value pairs
+                    pattern = r'(\w+):\s*([+-]?\d+)'
+                    matches = re.findall(pattern, index_part)
+                    if matches:
+                        index_structure = {field: int(value) for field, value in matches}
+                        structure = [(field, direction) for field, direction in index_structure.items()]
+                        return {
+                            'type': 'IXSCAN',
+                            'fields': index_structure,
+                            'structure': structure
+                        }
+                except Exception as e2:
+                    print(f"⚠️ Alternative parsing also failed: {e2}")
+                
+                return {'type': 'IXSCAN', 'fields': {}, 'structure': []}
+        
+        # Handle other cases (TEXT, GEO, etc.)
+        return {'type': 'OTHER', 'fields': {}, 'structure': []}
+    
+    def _analyze_index_coverage(self, query_fields: List[Tuple[str, str]], 
+                                current_index: Dict, stats: Dict) -> Dict:
+        """Analyze how well the current index covers the query.
+        
+        Args:
+            query_fields: List of (field_name, usage_type) from query pattern
+            current_index: Parsed index structure from planSummary
+            stats: Query execution statistics
             
-            if len(text) > 10 and len(text.split()) <= 30:
-                return text
+        Returns:
+            Coverage analysis with score and issues
+        """
+        coverage_analysis = {
+            'coverage_score': 0,
+            'esr_violations': [],
+            'missing_fields': [],
+            'suboptimal_order': [],
+            'recommendation_type': 'CREATE_NEW',
+            'improvement_details': []
+        }
         
-        except Exception:
-            pass
+        # If COLLSCAN, no coverage
+        if current_index['type'] == 'COLLSCAN':
+            coverage_analysis['coverage_score'] = 0
+            coverage_analysis['recommendation_type'] = 'CREATE_NEW'
+            coverage_analysis['improvement_details'].append("Query performs full collection scan")
+            return coverage_analysis
         
-        return None
+        # Extract field information
+        query_field_names = [f for f, _ in query_fields]
+        query_field_types = {f: t for f, t in query_fields}
+        index_fields = current_index.get('fields', {})
+        index_structure = current_index.get('structure', [])
+        
+        # Calculate coverage score with performance context
+        coverage_score = self._calculate_coverage_score(query_field_names, query_field_types, index_structure, stats)
+        coverage_analysis['coverage_score'] = coverage_score
+        
+        # Check for ESR violations
+        esr_violations = self._validate_esr_compliance(index_structure, query_field_types)
+        coverage_analysis['esr_violations'] = esr_violations
+        
+        # Find missing fields
+        missing_fields = [f for f in query_field_names if f not in index_fields]
+        coverage_analysis['missing_fields'] = missing_fields
+        
+        # Determine recommendation type
+        if coverage_score == 0:
+            coverage_analysis['recommendation_type'] = 'CREATE_NEW'
+        elif coverage_score < 50:
+            coverage_analysis['recommendation_type'] = 'REPLACE_INDEX'
+        elif missing_fields and esr_violations:
+            coverage_analysis['recommendation_type'] = 'REPLACE_INDEX'
+        elif missing_fields:
+            coverage_analysis['recommendation_type'] = 'EXTEND_INDEX'
+        elif esr_violations:
+            coverage_analysis['recommendation_type'] = 'IMPROVE_EXISTING'
+        else:
+            coverage_analysis['recommendation_type'] = 'OPTIMIZED'
+        
+        # Generate improvement details
+        if esr_violations:
+            coverage_analysis['improvement_details'].extend(esr_violations)
+        if missing_fields:
+            coverage_analysis['improvement_details'].append(f"Missing fields: {', '.join(missing_fields)}")
+        
+        return coverage_analysis
+    
+    def _calculate_coverage_score(self, query_field_names: List[str], 
+                                 query_field_types: Dict[str, str], 
+                                 index_structure: List[Tuple[str, int]], 
+                                 stats: Dict = None) -> int:
+        """Calculate coverage score (0-100) for how well index matches query.
+        
+        Args:
+            query_field_names: Fields used in query
+            query_field_types: Field usage types (equality, range, sort)
+            index_structure: Current index structure as list of (field, direction)
+            stats: Query statistics for performance context
+            
+        Returns:
+            Coverage score 0-100
+        """
+        if not index_structure:
+            return 0
+        
+        index_fields = [field for field, _ in index_structure]
+        
+        # Check if all query fields are in index
+        field_coverage = sum(1 for field in query_field_names if field in index_fields)
+        total_query_fields = len(query_field_names)
+        
+        if total_query_fields == 0:
+            return 100  # No fields to cover
+        
+        # Base coverage percentage
+        base_coverage = (field_coverage / total_query_fields) * 100
+        
+        # Check ESR compliance
+        esr_score = self._calculate_esr_score(query_field_types, index_structure)
+        
+        # Combine coverage and ESR compliance
+        final_score = (base_coverage * 0.7) + (esr_score * 0.3)
+        
+        # Performance context adjustment
+        if stats:
+            mean_ms = stats.get('mean', 0)
+            count = stats.get('count', 0)
+            
+            # If query is very slow with good field coverage, investigate further
+            if mean_ms > 1000 and base_coverage >= 80:
+                # Check if it's a simple equality query (should be fast)
+                equality_fields = [f for f, t in query_field_types.items() if t == 'equality']
+                if len(equality_fields) == 1 and len(query_field_names) == 1:
+                    # Simple equality query with good index but still slow
+                    # This suggests poor selectivity or data volume issues
+                    # Reduce score to indicate the index might not be helping much
+                    final_score *= 0.8
+                    print(f"   ⚠️  Performance context: Simple query with good index but slow ({mean_ms:.0f}ms)")
+                    print(f"   ⚠️  This suggests poor selectivity or data volume issues")
+            
+            # If query is executed frequently and is slow, it needs attention
+            if count > 50 and mean_ms > 500:
+                # Don't reduce score for frequent slow queries - they need optimization
+                # But add context for better recommendations
+                print(f"   📊 Performance context: Frequent ({count}×) slow query ({mean_ms:.0f}ms)")
+        
+        return min(int(final_score), 100)
+    
+    def _calculate_esr_score(self, query_field_types: Dict[str, str], 
+                             index_structure: List[Tuple[str, int]]) -> int:
+        """Calculate ESR compliance score (0-100).
+        
+        Args:
+            query_field_types: Field usage types from query
+            index_structure: Index structure as list of (field, direction)
+            
+        Returns:
+            ESR score 0-100
+        """
+        if not index_structure:
+            return 0
+        
+        # Group fields by type
+        equality_fields = [f for f, t in query_field_types.items() if t == 'equality']
+        sort_fields = [f for f, t in query_field_types.items() if t == 'sort']
+        range_fields = [f for f, t in query_field_types.items() if t == 'range']
+        
+        # Check ESR order in index
+        index_fields = [field for field, _ in index_structure]
+        esr_violations = 0
+        
+        # Find positions of each type in index
+        equality_positions = [i for i, field in enumerate(index_fields) if field in equality_fields]
+        sort_positions = [i for i, field in enumerate(index_fields) if field in sort_fields]
+        range_positions = [i for i, field in enumerate(index_fields) if field in range_fields]
+        
+        # ESR Rule: Equality fields should come first
+        if equality_positions and sort_positions:
+            if max(equality_positions) > min(sort_positions):
+                esr_violations += 1
+        
+        if equality_positions and range_positions:
+            if max(equality_positions) > min(range_positions):
+                esr_violations += 1
+        
+        # Sort should come before range
+        if sort_positions and range_positions:
+            if max(sort_positions) > min(range_positions):
+                esr_violations += 1
+        
+        # Calculate score (fewer violations = higher score)
+        max_violations = 3  # Maximum possible violations
+        esr_score = max(0, 100 - (esr_violations / max_violations) * 100)
+        
+        return int(esr_score)
+    
+    def _validate_esr_compliance(self, index_structure: List[Tuple[str, int]], 
+                                query_field_types: Dict[str, str]) -> List[str]:
+        """Validate ESR compliance and return list of violations.
+        
+        Args:
+            index_structure: Index structure as list of (field, direction)
+            query_field_types: Field usage types from query
+            
+        Returns:
+            List of ESR violation descriptions
+        """
+        violations = []
+        
+        if not index_structure:
+            return violations
+        
+        # Group fields by type
+        equality_fields = [f for f, t in query_field_types.items() if t == 'equality']
+        sort_fields = [f for f, t in query_field_types.items() if t == 'sort']
+        range_fields = [f for f, t in query_field_types.items() if t == 'range']
+        
+        # Find positions in index
+        index_fields = [field for field, _ in index_structure]
+        
+        # Check ESR rule: Equality -> Sort -> Range
+        # Find positions of each field type in the index
+        equality_positions = [i for i, field in enumerate(index_fields) if field in equality_fields]
+        sort_positions = [i for i, field in enumerate(index_fields) if field in sort_fields]
+        range_positions = [i for i, field in enumerate(index_fields) if field in range_fields]
+        
+        # Check if range fields come before equality fields
+        for range_pos in range_positions:
+            for eq_pos in equality_positions:
+                if range_pos < eq_pos:
+                    violations.append(f"Range field '{index_fields[range_pos]}' appears before equality field '{index_fields[eq_pos]}'")
+        
+        # Check if range fields come before sort fields
+        for range_pos in range_positions:
+            for sort_pos in sort_positions:
+                if range_pos < sort_pos:
+                    violations.append(f"Range field '{index_fields[range_pos]}' appears before sort field '{index_fields[sort_pos]}'")
+        
+        return violations
+    
+    def _analyze_selectivity(self, query_field_types: Dict[str, str], 
+                           stats: Dict, index_structure: List[Tuple[str, int]]) -> Dict:
+        """Analyze index selectivity based on query patterns and performance.
+        
+        Args:
+            query_field_types: Field usage types from query
+            stats: Query execution statistics
+            index_structure: Current index structure
+            
+        Returns:
+            Selectivity analysis with recommendations
+        """
+        analysis = {
+            'selectivity_score': 100,
+            'issues': [],
+            'recommendations': []
+        }
+        
+        mean_ms = stats.get('mean', 0)
+        count = stats.get('count', 0)
+        
+        # Analyze field types for selectivity
+        equality_fields = [f for f, t in query_field_types.items() if t == 'equality']
+        range_fields = [f for f, t in query_field_types.items() if t == 'range']
+        
+        # Simple equality queries should be fast
+        if len(equality_fields) == 1 and len(query_field_types) == 1:
+            if mean_ms > 500:  # Simple equality should be < 500ms
+                analysis['selectivity_score'] = 50
+                analysis['issues'].append("Simple equality query is slow - suggests poor field selectivity")
+                analysis['recommendations'].append("Consider adding more selective filters or using compound indexes")
+        
+        # Range queries are inherently less selective
+        if range_fields:
+            analysis['selectivity_score'] = min(analysis['selectivity_score'], 70)
+            analysis['issues'].append(f"Range queries on {', '.join(range_fields)} are less selective")
+            analysis['recommendations'].append("Consider adding equality filters before range filters")
+        
+        # Multiple equality fields should be more selective
+        if len(equality_fields) > 1:
+            if mean_ms > 1000:  # Multiple equality should be very fast
+                analysis['selectivity_score'] = 60
+                analysis['issues'].append("Multiple equality filters but still slow - check data distribution")
+                analysis['recommendations'].append("Verify field cardinality and data distribution")
+        
+        # Check if index structure supports selectivity
+        if index_structure:
+            index_fields = [field for field, _ in index_structure]
+            # If equality fields are not at the beginning of index, it's less selective
+            for i, (field, _) in enumerate(index_structure):
+                if field in equality_fields and i > 0:
+                    # Equality field not at start of index
+                    analysis['selectivity_score'] = min(analysis['selectivity_score'], 80)
+                    analysis['issues'].append(f"Equality field '{field}' not at start of index")
+                    analysis['recommendations'].append("Reorder index to put equality fields first")
+        
+        return analysis
