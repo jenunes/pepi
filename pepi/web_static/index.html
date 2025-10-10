@@ -266,8 +266,8 @@
                         <div class="output-format">
                             <label>Output Format:</label>
                             <label><input type="radio" name="outputFormat" value="raw" checked> Raw JSON</label>
-                            <label><input type="radio" name="outputFormat" value="oneline"> One per line</label>
                             <label><input type="radio" name="outputFormat" value="pretty"> Pretty JSON</label>
+                            <button class="btn-small" onclick="applyOutputFormat()">Apply Format</button>
                         </div>
                         
                         <textarea id="extractorOutput" readonly></textarea>

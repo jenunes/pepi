@@ -1857,6 +1857,12 @@ function displayQueryExamples(data, rowIndex) {
                 Query Examples for ${data.namespace}.${data.operation}
             </h4>
             <div class="examples-actions">
+                <div class="output-format">
+                    <label>Format:</label>
+                    <label><input type="radio" name="queryExampleFormat" value="raw"> Raw JSON</label>
+                    <label><input type="radio" name="queryExampleFormat" value="pretty" checked> Pretty JSON</label>
+                    <button class="btn-small" onclick="applyQueryExampleFormat()">Apply Format</button>
+                </div>
                 <button class="btn btn-ai" onclick="getIndexRecommendationForQuery(${rowIndex})">
                     <i class="fas fa-magic"></i> Get Index Recommendation
                 </button>
@@ -1870,6 +1876,7 @@ function displayQueryExamples(data, rowIndex) {
     if (data.examples.length === 0) {
         examplesHtml += '<p>No query examples found for this pattern.</p>';
     } else {
+        examplesHtml += '<div id="queryExamplesContent">';
         data.examples.forEach((example, index) => {
             const timestamp = new Date(example.timestamp).toLocaleString();
             // Parse the full log entry from raw log line
@@ -1892,15 +1899,21 @@ function displayQueryExamples(data, rowIndex) {
                     </div>
                     <div class="query-example-command">
                         <div class="json-viewer json-viewer-compact">
-                            <button class="json-copy-btn" onclick="copyQueryExample(${index})">
-                                <i class="fas fa-copy"></i> Copy
-                            </button>
+                            <div class="json-actions">
+                                <button class="json-copy-btn" onclick="copyQueryExample(${index})">
+                                    <i class="fas fa-copy"></i> Copy
+                                </button>
+                                <button class="json-expand-btn" onclick="expandQueryExample(${index})">
+                                    <i class="fas fa-expand"></i> Expand
+                                </button>
+                            </div>
                             <pre id="example-${index}">${syntaxHighlightJson(fullLogEntry)}</pre>
                         </div>
                     </div>
                 </div>
             `;
         });
+        examplesHtml += '</div>';
     }
     
     examplesContainer.innerHTML = examplesHtml;
@@ -1911,6 +1924,198 @@ function displayQueryExamples(data, rowIndex) {
     
     // Scroll to examples
     examplesContainer.scrollIntoView({ behavior: 'smooth' });
+}
+
+function applyQueryExampleFormat() {
+    if (!currentQueryExamples || !currentQueryExamples.examples) {
+        showToast('warning', 'No query examples to format');
+        return;
+    }
+    
+    const format = document.querySelector('input[name="queryExampleFormat"]:checked').value;
+    const contentDiv = document.getElementById('queryExamplesContent');
+    
+    if (!contentDiv) return;
+    
+    let examplesHtml = '';
+    currentQueryExamples.examples.forEach((example, index) => {
+        const timestamp = new Date(example.timestamp).toLocaleString();
+        let fullLogEntry = {};
+        try {
+            fullLogEntry = JSON.parse(example.raw_log_line);
+        } catch (e) {
+            fullLogEntry = { error: "Could not parse log entry", raw: example.raw_log_line };
+        }
+        
+        let displayContent;
+        let cssClass = 'json-viewer-compact';
+        if (format === 'raw') {
+            displayContent = example.raw_log_line;
+            cssClass = 'json-viewer-raw';
+        } else {
+            displayContent = syntaxHighlightJson(fullLogEntry);
+        }
+        
+        examplesHtml += `
+            <div class="query-example">
+                <div class="query-example-header">
+                    <strong>Example ${index + 1}</strong>
+                    <div class="query-example-meta">
+                        <span><i class="fas fa-clock"></i> ${timestamp}</span>
+                        <span><i class="fas fa-stopwatch"></i> ${example.duration_ms}ms</span>
+                        <span><i class="fas fa-search"></i> ${example.plan_summary}</span>
+                    </div>
+                </div>
+                    <div class="query-example-command">
+                        <div class="json-viewer ${cssClass}">
+                            <div class="json-actions">
+                                <button class="json-copy-btn" onclick="copyQueryExample(${index})">
+                                    <i class="fas fa-copy"></i> Copy
+                                </button>
+                                <button class="json-expand-btn" onclick="expandQueryExample(${index})">
+                                    <i class="fas fa-expand"></i> Expand
+                                </button>
+                            </div>
+                            <pre id="example-${index}">${displayContent}</pre>
+                        </div>
+                    </div>
+            </div>
+        `;
+    });
+    
+    contentDiv.innerHTML = examplesHtml;
+    showToast('success', 'Format applied');
+}
+
+function expandQueryExample(exampleIndex) {
+    if (!currentQueryExamples || !currentQueryExamples.examples[exampleIndex]) {
+        showToast('error', 'Query example not found');
+        return;
+    }
+    
+    const example = currentQueryExamples.examples[exampleIndex];
+    const timestamp = new Date(example.timestamp).toLocaleString();
+    
+    // Parse the full log entry
+    let fullLogEntry = {};
+    try {
+        fullLogEntry = JSON.parse(example.raw_log_line);
+    } catch (e) {
+        fullLogEntry = { error: "Could not parse log entry", raw: example.raw_log_line };
+    }
+    
+    // Get current format
+    const format = document.querySelector('input[name="queryExampleFormat"]:checked')?.value || 'pretty';
+    let displayContent;
+    if (format === 'raw') {
+        displayContent = example.raw_log_line;
+    } else {
+        displayContent = syntaxHighlightJson(fullLogEntry);
+    }
+    
+    // Create modal
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.style.display = 'flex';
+    modal.style.position = 'fixed';
+    modal.style.top = '0';
+    modal.style.left = '0';
+    modal.style.width = '100%';
+    modal.style.height = '100%';
+    modal.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+    modal.style.zIndex = '9999';
+    modal.style.justifyContent = 'center';
+    modal.style.alignItems = 'center';
+    
+    const content = document.createElement('div');
+    content.className = 'modal-content query-example-modal';
+    content.innerHTML = `
+        <div class="modal-header">
+            <h3>
+                <i class="fas fa-code"></i> 
+                Query Example ${exampleIndex + 1} - ${currentQueryExamples.namespace}.${currentQueryExamples.operation}
+            </h3>
+            <button class="modal-close" onclick="closeQueryExampleModal()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        
+        <div class="modal-body">
+            <div class="query-example-meta-expanded">
+                <div class="meta-item">
+                    <i class="fas fa-clock"></i>
+                    <strong>Timestamp:</strong> ${timestamp}
+                </div>
+                <div class="meta-item">
+                    <i class="fas fa-stopwatch"></i>
+                    <strong>Duration:</strong> ${example.duration_ms}ms
+                </div>
+                <div class="meta-item">
+                    <i class="fas fa-search"></i>
+                    <strong>Plan Summary:</strong> ${example.plan_summary}
+                </div>
+            </div>
+            
+            <div class="query-example-content-expanded">
+                <div class="content-header">
+                    <h4>Query Details</h4>
+                    <div class="content-actions">
+                        <button class="btn btn-secondary" onclick="copyQueryExample(${exampleIndex})">
+                            <i class="fas fa-copy"></i> Copy
+                        </button>
+                        <button class="btn btn-primary" onclick="downloadQueryExample(${exampleIndex})">
+                            <i class="fas fa-download"></i> Download
+                        </button>
+                    </div>
+                </div>
+                <div class="json-viewer-expanded">
+                    <pre class="json-content-expanded">${displayContent}</pre>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    
+    // Store modal reference for closing
+    window.currentQueryExampleModal = modal;
+    
+    // Close modal when clicking outside
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closeQueryExampleModal();
+        }
+    });
+}
+
+function closeQueryExampleModal() {
+    const modal = window.currentQueryExampleModal;
+    if (modal) {
+        modal.remove();
+        window.currentQueryExampleModal = null;
+    }
+}
+
+function downloadQueryExample(exampleIndex) {
+    if (!currentQueryExamples || !currentQueryExamples.examples[exampleIndex]) {
+        showToast('error', 'Query example not found');
+        return;
+    }
+    
+    const example = currentQueryExamples.examples[exampleIndex];
+    const timestamp = new Date(example.timestamp).toLocaleString();
+    const filename = `query-example-${exampleIndex + 1}-${timestamp.replace(/[:.]/g, '-')}.json`;
+    
+    const blob = new Blob([example.raw_log_line], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    showToast('success', 'Query example downloaded');
 }
 
 function closeQueryExamples() {
@@ -3082,6 +3287,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
+// Store the raw lines for format changes
+let currentExtractionLines = [];
+
 async function applyExtraction() {
     // Handle namespace (dropdown vs custom input)
     let namespace = '';
@@ -3114,19 +3322,35 @@ async function applyExtraction() {
     
     const data = await response.json();
     
+    // Store raw lines for format changes
+    currentExtractionLines = data.lines;
+    
     // Update match count
     document.getElementById('matchCount').textContent = data.total_matched;
     
-    // Format output based on selection
+    // Apply current format
+    applyOutputFormat();
+    
+    if (data.truncated) {
+        showToast('warning', `Results truncated to ${filters.limit} lines`);
+    } else {
+        showToast('success', `Found ${data.total_matched} matches`);
+    }
+}
+
+function applyOutputFormat() {
+    if (currentExtractionLines.length === 0) {
+        showToast('warning', 'No data to format. Please apply filters first.');
+        return;
+    }
+    
     const format = document.querySelector('input[name="outputFormat"]:checked').value;
     let output = '';
     
     if (format === 'raw') {
-        output = data.lines.join('\n');
-    } else if (format === 'oneline') {
-        output = data.lines.join('\n');
+        output = currentExtractionLines.join('\n');
     } else if (format === 'pretty') {
-        output = data.lines.map(line => {
+        output = currentExtractionLines.map(line => {
             try {
                 return JSON.stringify(JSON.parse(line), null, 2);
             } catch {
@@ -3136,12 +3360,7 @@ async function applyExtraction() {
     }
     
     document.getElementById('extractorOutput').value = output;
-    
-    if (data.truncated) {
-        showToast('warning', `Results truncated to ${filters.limit} lines`);
-    } else {
-        showToast('success', `Found ${data.total_matched} matches`);
-    }
+    showToast('success', 'Output format applied');
 }
 
 function getCheckedValues(selector) {
@@ -3181,4 +3400,9 @@ function clearExtractFilters() {
     document.getElementById('extractDateTo').value = '';
     document.querySelectorAll('.event-type, .component, .severity, .operation')
         .forEach(cb => cb.checked = false);
+    
+    // Clear stored data and output
+    currentExtractionLines = [];
+    document.getElementById('extractorOutput').value = '';
+    document.getElementById('matchCount').textContent = '0';
 }

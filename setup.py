@@ -1,9 +1,18 @@
 from setuptools import setup, find_packages
-from pepi.version import __version__
+import os
+
+# Read version from version.py without importing the package
+def get_version():
+    version_file = os.path.join(os.path.dirname(__file__), 'pepi', 'version.py')
+    with open(version_file, 'r') as f:
+        for line in f:
+            if line.startswith('__version__'):
+                return line.split('=')[1].strip().strip('"\'')
+    return "1.0.0"  # fallback
 
 setup(
     name="pepi",
-    version=__version__,
+    version=get_version(),
     description="A fast, user-friendly MongoDB log analysis tool",
     author="Your Name",
     author_email="your.email@example.com",
