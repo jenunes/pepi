@@ -158,6 +158,41 @@ pepi --fetch /path/to/mongod.log --connections --compare 127.0.0.1 --compare 192
 pepi --fetch /path/to/mongod.log --connections --stats --sort-by opened --compare 127.0.0.1 --compare 192.168.1.100
 ```
 
+### Sampling Control
+
+Pepi includes intelligent sampling to handle large log files efficiently:
+
+#### Automatic Sampling
+When no `--sample` flag is specified, Pepi automatically applies sampling to large files:
+- **< 50,000 lines**: No sampling (process all lines)
+- **50,000 - 200,000 lines**: Every 5th line (20% sampling)
+- **200,000 - 500,000 lines**: Every 10th line (10% sampling)  
+- **> 500,000 lines**: Every 20th line (5% sampling)
+
+#### Manual Sampling Control
+```bash
+# Analyze with 50% sampling for faster processing of large files
+pepi --fetch /path/to/mongod.log --connections --sample 50
+
+# Web UI with 25% sampling
+pepi --fetch /path/to/mongod.log --web-ui --sample 25
+
+# Default (100%, with auto-sampling for very large files)
+pepi --fetch /path/to/mongod.log --web-ui
+
+# Process only 10% of lines (every 10th line)
+pepi --fetch /path/to/mongod.log --queries --sample 10
+
+# Skip all lines (0% - useful for testing)
+pepi --fetch /path/to/mongod.log --sample 0
+```
+
+#### Sampling Behavior
+- **Systematic Sampling**: Uses every Nth line approach (industry standard for log analysis)
+- **Temporal Distribution**: Maintains chronological order of events
+- **Performance Warnings**: Alerts when processing 100% of very large files
+- **Representative Results**: Sampled data provides statistically valid insights
+
 ### Query Analysis
 
 The `--queries` flag analyzes query patterns and provides performance statistics:

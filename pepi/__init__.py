@@ -33,6 +33,64 @@ def get_file_hash(filepath):
             hash_sha256.update(chunk)
     return hash_sha256.hexdigest()
 
+# Performance optimization functions
+def should_sample_data(total_lines, threshold=50000, user_sample_percentage=None):
+    """Determine if we should sample data based on file size or user preference."""
+    if user_sample_percentage is not None:
+        return user_sample_percentage < 100
+    return total_lines > threshold
+
+def get_sample_rate_from_percentage(sample_percentage, total_lines=None):
+    """Convert percentage to sample rate and handle auto-sampling for large files."""
+    if sample_percentage == 100:
+        # Check if auto-sampling should kick in for large files
+        if total_lines and total_lines > 50000:
+            return get_sample_rate(total_lines)
+        return 1  # No sampling
+    elif sample_percentage == 0:
+        return float('inf')  # Skip all
+    else:
+        # Convert percentage to sample rate: 50% = every 2nd line
+        return int(100 / sample_percentage)
+
+def get_sample_rate(total_lines):
+    """Calculate sample rate for large files."""
+    if total_lines < 50000:
+        return 1  # No sampling
+    elif total_lines < 200000:
+        return 5  # Every 5th line
+    elif total_lines < 500000:
+        return 10  # Every 10th line
+    else:
+        return 20  # Every 20th line
+
+def get_sampling_metadata(total_lines, user_sample_percentage=None):
+    """Get metadata about sampling for large files."""
+    if user_sample_percentage is not None:
+        sample_rate = get_sample_rate_from_percentage(user_sample_percentage, total_lines)
+        is_sampled = sample_rate > 1
+        is_user_forced = user_sample_percentage < 100
+    else:
+        sample_rate = get_sample_rate(total_lines)
+        is_sampled = sample_rate > 1
+        is_user_forced = False
+    
+    # Calculate actual lines processed
+    if is_sampled:
+        sampled_lines = total_lines // sample_rate
+    else:
+        sampled_lines = total_lines
+    
+    return {
+        'total_lines': total_lines,
+        'is_sampled': is_sampled,
+        'sample_rate': sample_rate,
+        'sampled_lines': sampled_lines,
+        'estimated_original_size': total_lines if not is_sampled else total_lines * sample_rate,
+        'is_user_forced': is_user_forced,
+        'user_percentage': user_sample_percentage
+    }
+
 def get_cache_key(filepath, analysis_type):
     """Generate cache key for specific analysis type."""
     file_hash = get_file_hash(filepath)
@@ -295,7 +353,7 @@ class CustomCommand(click.Command):
                 return 1
             raise
 
-def parse_connections(logfile):
+def parse_connections(logfile, sample_percentage=None):
     """Parse connection information from MongoDB log file."""
     # Check cache first
     cache_key = get_cache_key(logfile, 'connections')
@@ -315,8 +373,26 @@ def parse_connections(logfile):
     # Count lines for progress bar
     total_lines = count_lines(logfile)
     
+    # Determine if we should sample data for performance
+    if sample_percentage is not None:
+        sample_rate = get_sample_rate_from_percentage(sample_percentage, total_lines)
+        is_sampled = sample_rate > 1
+        if is_sampled:
+            click.echo(f"Sampling {sample_percentage}% of file ({total_lines:,} lines). Processing every {sample_rate} lines...")
+    else:
+        sample_rate = get_sample_rate(total_lines)
+        is_sampled = sample_rate > 1
+        if is_sampled:
+            click.echo(f"Large file detected ({total_lines:,} lines). Sampling every {sample_rate} lines for performance...")
+    
     with open(logfile, 'r') as f:
+        line_count = 0
         for line in tqdm(f, total=total_lines, desc="Parsing connections", unit="lines"):
+            line_count += 1
+            
+            # Skip lines based on sampling rate
+            if is_sampled and line_count % sample_rate != 0:
+                continue
             try:
                 entry = json.loads(line)
                 
@@ -380,7 +456,8 @@ def parse_connections(logfile):
     cache_data = {
         'connections': dict(connections),
         'total_opened': total_opened,
-        'total_closed': total_closed
+        'total_closed': total_closed,
+        'sampling_metadata': get_sampling_metadata(total_lines, sample_percentage)
     }
     save_to_cache(cache_key, cache_data)
     
@@ -1003,7 +1080,7 @@ def parse_connection_events(logfile):
     
     return connection_events
 
-def parse_queries(logfile):
+def parse_queries(logfile, sample_percentage=None):
     """Parse query patterns and statistics from MongoDB log file, grouped by pattern."""
     # Check cache first
     cache_key = get_cache_key(logfile, 'queries')
@@ -1037,8 +1114,26 @@ def parse_queries(logfile):
     # Count lines for progress bar
     total_lines = count_lines(logfile)
     
+    # Determine if we should sample data for performance
+    if sample_percentage is not None:
+        sample_rate = get_sample_rate_from_percentage(sample_percentage, total_lines)
+        is_sampled = sample_rate > 1
+        if is_sampled:
+            click.echo(f"Sampling {sample_percentage}% of file ({total_lines:,} lines). Processing every {sample_rate} lines...")
+    else:
+        sample_rate = get_sample_rate(total_lines)
+        is_sampled = sample_rate > 1
+        if is_sampled:
+            click.echo(f"Large file detected ({total_lines:,} lines). Sampling every {sample_rate} lines for performance...")
+    
     with open(logfile, 'r') as f:
+        line_count = 0
         for line in tqdm(f, total=total_lines, desc="Parsing queries", unit="lines"):
+            line_count += 1
+            
+            # Skip lines based on sampling rate
+            if is_sampled and line_count % sample_rate != 0:
+                continue
             try:
                 entry = json.loads(line)
                 # Accept both 'command' and 'Slow query' as valid query log entries
@@ -1089,7 +1184,10 @@ def parse_queries(logfile):
             'pattern': value['pattern'],
             'indexes': list(value['indexes'])
         }
-    cache_data = {'queries': queries_dict}
+    cache_data = {
+        'queries': queries_dict,
+        'sampling_metadata': get_sampling_metadata(total_lines, sample_percentage)
+    }
     save_to_cache(cache_key, cache_data)
     
     return queries
@@ -1389,8 +1487,8 @@ def trim_log_file(logfile, start_dt, end_dt):
     
     return filtered_lines, total_lines, skipped_lines
 
-def launch_web_ui(logfile=None):
-    """Launch the web interface with optional pre-loaded file."""
+def launch_web_ui(logfile=None, sample_percentage=100):
+    """Launch the web interface with optional pre-loaded file and sampling."""
     import subprocess
     import sys
     import time
@@ -1418,6 +1516,11 @@ def launch_web_ui(logfile=None):
     if logfile:
         env['PEPI_PRELOAD_FILE'] = str(Path(logfile).absolute())
         click.echo(f"📁 Pre-loading file: {logfile}")
+    
+    # Pass sampling percentage to web interface
+    env['PEPI_SAMPLE_PERCENTAGE'] = str(sample_percentage)
+    if sample_percentage != 100:
+        click.echo(f"📊 Sampling: {sample_percentage}% of log lines")
     
     try:
         # Start the web server in a subprocess using module execution
@@ -1548,7 +1651,9 @@ def launch_web_ui(logfile=None):
               help='Show version information and exit.')
 @click.option('--upgrade', is_flag=True,
               help='Check for updates and upgrade Pepi.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache, trim, from_date, until_date, web_ui, version, upgrade):
+@click.option('--sample', type=click.IntRange(0, 100), default=100,
+              help='Percentage of log lines to sample (0-100). Default: 100 (no sampling)')
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache, trim, from_date, until_date, web_ui, version, upgrade, sample):
     """pepi: MongoDB log analysis tool."""
     
     # Handle version flag
@@ -1570,7 +1675,7 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
     
     # Launch web UI if requested
     if web_ui:
-        launch_web_ui(logfile)
+        launch_web_ui(logfile, sample)
         return
     
     # Check for updates in background (non-blocking)
@@ -1804,8 +1909,20 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
             click.echo("No replica set state transitions found in the log.")
         return
     elif connections:
+        # Check for large file warning when using --sample 100
+        if sample == 100:
+            try:
+                with open(logfile, 'r') as f:
+                    line_count = sum(1 for _ in f)
+                if line_count > 50000:
+                    click.echo(f"⚠️  Warning: Processing 100% of a large file ({line_count:,} lines) may be slow.", err=True)
+                    click.echo(f"   Consider using --sample 50 for faster analysis.", err=True)
+                    click.echo()
+            except Exception:
+                pass  # If we can't count lines, just proceed
+        
         # Get connection data
-        connections_data, total_opened, total_closed = parse_connections(logfile)
+        connections_data, total_opened, total_closed = parse_connections(logfile, sample_percentage=sample)
         
         # Calculate statistics if requested
         overall_stats = None
@@ -2002,8 +2119,20 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
             click.echo("No client/driver information found in the log.")
         return
     elif queries:
+        # Check for large file warning when using --sample 100
+        if sample == 100:
+            try:
+                with open(logfile, 'r') as f:
+                    line_count = sum(1 for _ in f)
+                if line_count > 50000:
+                    click.echo(f"⚠️  Warning: Processing 100% of a large file ({line_count:,} lines) may be slow.", err=True)
+                    click.echo(f"   Consider using --sample 50 for faster analysis.", err=True)
+                    click.echo()
+            except Exception:
+                pass  # If we can't count lines, just proceed
+        
         # Get query data
-        queries_data = parse_queries(logfile)
+        queries_data = parse_queries(logfile, sample_percentage=sample)
         
         # Calculate statistics
         query_stats = calculate_query_stats(queries_data)

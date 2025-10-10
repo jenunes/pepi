@@ -2,6 +2,84 @@
 let currentFileId = null;
 let charts = {};
 let currentSort = { table: null, column: null, direction: 'asc' };
+let cliSamplePercentage = null;
+
+// Performance optimization functions
+function downsampleTimeSeriesData(data, maxPoints = 1000) {
+    if (data.length <= maxPoints) return data;
+    
+    const step = Math.ceil(data.length / maxPoints);
+    const downsampled = [];
+    
+    for (let i = 0; i < data.length; i += step) {
+        // Use min/max/avg aggregation for the bucket
+        const bucket = data.slice(i, i + step);
+        downsampled.push({
+            timestamp: bucket[0].timestamp,
+            value: bucket.reduce((sum, item) => sum + item.value, 0) / bucket.length,
+            min: Math.min(...bucket.map(item => item.value)),
+            max: Math.max(...bucket.map(item => item.value))
+        });
+    }
+    
+    return downsampled;
+}
+
+function downsampleArray(arr, maxPoints) {
+    if (arr.length <= maxPoints) return arr;
+    
+    const step = Math.ceil(arr.length / maxPoints);
+    const downsampled = [];
+    
+    for (let i = 0; i < arr.length; i += step) {
+        downsampled.push(arr[i]);
+    }
+    
+    return downsampled;
+}
+
+// Debounce function for chart updates
+function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+        const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+    };
+}
+
+// Create debounced chart update functions
+const debouncedChartUpdate = debounce((plotId, data) => {
+    Plotly.react(plotId, data.traces, data.layout, data.config);
+}, 300);
+
+const debouncedChartNew = debounce((plotId, traces, layout, config) => {
+    Plotly.newPlot(plotId, traces, layout, config);
+}, 300);
+
+// Progressive rendering function
+function renderChartProgressively(plotId, traces, layout, config = {}) {
+    // For now, use regular Plotly rendering to avoid loading issues
+    // TODO: Implement proper progressive rendering later
+    try {
+        Plotly.newPlot(plotId, traces, layout, config);
+    } catch (error) {
+        console.error('Chart rendering failed:', error);
+        const element = document.getElementById(plotId);
+        if (element) {
+            element.innerHTML = '<p style="text-align: center; padding: 20px; color: #d63031;">Chart rendering failed. Please try again.</p>';
+        }
+    }
+}
+
+// Show loading skeleton for charts (currently not used)
+function showChartSkeleton(plotId) {
+    // Disabled for now to avoid loading issues
+    return;
+}
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
@@ -197,10 +275,28 @@ async function loadUploadedFiles() {
             
             // Auto-select the first file if no file is currently selected
             if (preloadedFile && !currentFileId) {
+                // Store CLI sample percentage BEFORE selecting the file
+                if (preloadedFile.sample_percentage !== undefined && preloadedFile.sample_percentage !== null) {
+                    cliSamplePercentage = preloadedFile.sample_percentage;
+                }
+                
                 setTimeout(() => {
                     selectFile(preloadedFile.file_id);
                     showToast('success', `Auto-loaded: ${preloadedFile.filename}`);
-                }, 500);
+                    
+                    // Also try to set the UI input field
+                    if (preloadedFile.sample_percentage !== undefined && preloadedFile.sample_percentage !== null) {
+                        const setSamplingValue = () => {
+                            const sampleInput = document.getElementById('samplePercentage');
+                            if (sampleInput) {
+                                sampleInput.value = preloadedFile.sample_percentage;
+                            } else {
+                                setTimeout(setSamplingValue, 100);
+                            }
+                        };
+                        setSamplingValue();
+                    }
+                }, 1000);
             }
         } else {
             filesSection.style.display = 'none';
@@ -390,7 +486,9 @@ async function analyzeBasicInfo() {
     showLoading('Analyzing basic information...');
     
     try {
-        const response = await fetch(`/api/analyze/${currentFileId}/basic`, { method: 'POST' });
+        // Get sampling percentage from CLI or UI
+        const samplePercentage = cliSamplePercentage || document.getElementById('samplePercentage')?.value || 100;
+        const response = await fetch(`/api/analyze/${currentFileId}/basic?sample=${samplePercentage}`, { method: 'POST' });
         const result = await response.json();
         
         if (result.status === 'success') {
@@ -408,6 +506,7 @@ async function analyzeBasicInfo() {
 function displayBasicInfo(data) {
     const fileInfo = document.getElementById('fileInfo');
     const mongoInfo = document.getElementById('mongoInfo');
+    const samplingInfo = document.getElementById('samplingInfo');
     
     fileInfo.innerHTML = `
         <p><strong>Filename:</strong> ${data.filename}</p>
@@ -435,6 +534,32 @@ function displayBasicInfo(data) {
             ${startupOptionsHtml}
         </div>
     `;
+    
+    // Display sampling information
+    if (data.sampling_metadata) {
+        const sampling = data.sampling_metadata;
+        const samplingType = sampling.is_user_forced ? 'Manual' : 'Automatic';
+        const samplingPercentage = sampling.user_percentage !== null ? sampling.user_percentage : 
+            (sampling.is_sampled ? Math.round(100 / sampling.sample_rate) : 100);
+        
+        samplingInfo.innerHTML = `
+            <div class="sampling-header">
+                <strong><i class="fas fa-percentage"></i> Sampling Information</strong>
+            </div>
+            <p><strong>Sampling Type:</strong> ${samplingType}</p>
+            <p><strong>Sampling Rate:</strong> ${samplingPercentage}%</p>
+            <p><strong>Lines Processed:</strong> ${sampling.sampled_lines ? sampling.sampled_lines.toLocaleString() : 'N/A'}</p>
+            <p><strong>Total Lines:</strong> ${sampling.total_lines ? sampling.total_lines.toLocaleString() : 'N/A'}</p>
+            ${sampling.is_sampled ? `<p><strong>Sample Rate:</strong> Every ${sampling.sample_rate} line${sampling.sample_rate > 1 ? 's' : ''}</p>` : ''}
+            <p class="sampling-note">
+                <em>${sampling.is_user_forced ? 'User-specified sampling percentage' : 
+                  sampling.is_sampled ? 'Automatically applied for performance' : 
+                  'No sampling applied (processing all lines)'}</em>
+            </p>
+        `;
+    } else {
+        samplingInfo.innerHTML = '<p>No sampling data available</p>';
+    }
 }
 
 async function analyzeConnections() {
@@ -442,8 +567,11 @@ async function analyzeConnections() {
     
     showLoading('Analyzing connections...');
     
+    // Get sampling percentage from CLI or UI
+    const samplePercentage = cliSamplePercentage || document.getElementById('samplePercentage')?.value || 100;
+    
     try {
-        const response = await fetch(`/api/analyze/${currentFileId}/connections`, { method: 'POST' });
+        const response = await fetch(`/api/analyze/${currentFileId}/connections?sample=${samplePercentage}`, { method: 'POST' });
         const result = await response.json();
         
         if (result.status === 'success') {
@@ -472,28 +600,56 @@ function displayConnectionsData(data) {
     
     // Display stats
     statsGrid.innerHTML = `
-        <div class="stat-card">
+        <div class="stat-card data-quality-card">
             <h3>${data.total_opened.toLocaleString()}</h3>
-            <p>Connections Opened</p>
+            <p>Connections Opened <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${data.total_opened > 0 ? 'Active' : 'None'}</small>
+            <div class="info-content" style="display: none;">
+                <p>Total number of network connections that were established to the MongoDB server during the log period. Each connection represents a client application connecting to the database.</p>
+            </div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card data-quality-card">
             <h3>${data.total_closed.toLocaleString()}</h3>
-            <p>Connections Closed</p>
+            <p>Connections Closed <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${data.total_closed > 0 ? 'Terminated' : 'None'}</small>
+            <div class="info-content" style="display: none;">
+                <p>Total number of network connections that were terminated during the log period. This includes both normal disconnections and connection timeouts.</p>
+            </div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card data-quality-card">
             <h3>${Object.keys(data.connections).length}</h3>
-            <p>Unique IPs</p>
+            <p>Unique IPs <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${Object.keys(data.connections).length > 0 ? 'Distinct' : 'None'}</small>
+            <div class="info-content" style="display: none;">
+                <p>Number of unique IP addresses that connected to the MongoDB server. This helps identify how many different client applications or servers are accessing the database.</p>
+            </div>
         </div>
         ${data.overall_stats ? `
-        <div class="stat-card">
+        <div class="stat-card data-quality-card">
             <h3>${data.overall_stats.avg.toFixed(1)}s</h3>
-            <p>Avg Duration</p>
+            <p>Avg Duration <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${data.overall_stats.avg > 0 ? 'Measured' : 'None'}</small>
+            <div class="info-content" style="display: none;">
+                <p>Average time that connections remained open before being closed. Longer durations may indicate persistent connections or potential connection leaks.</p>
+            </div>
         </div>` : ''}
         ${data.data_quality ? `
         <div class="stat-card data-quality-card">
-            <h3><i class="fas fa-chart-line"></i> ${(data.data_quality.quality_score * 100).toFixed(0)}%</h3>
-            <p>Data Quality</p>
+            <h3>${(data.data_quality.quality_score * 100).toFixed(0)}%</h3>
+            <p>Data Quality <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
             <small>${data.data_quality.is_consistent ? 'Consistent' : 'Inconsistent'}</small>
+            <div class="info-content" style="display: none;">
+                <p>Measures the consistency and reliability of connection data. Higher scores indicate more reliable data for analysis. Inconsistent data may suggest parsing issues or log format problems.</p>
+            </div>
+        </div>` : ''}
+        ${data.sampling_metadata && data.sampling_metadata.is_sampled ? `
+        <div class="stat-card sampling-card">
+            <h3>${data.sampling_metadata.sample_rate}x</h3>
+            <p>Sampling Rate <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${data.sampling_metadata.total_lines.toLocaleString()} lines</small>
+            <div class="info-content" style="display: none;">
+                <p>Data sampling is applied to large log files for performance. This shows every ${data.sampling_metadata.sample_rate}th line was processed. Results are representative but not complete for very large datasets.</p>
+            </div>
         </div>` : ''}
     `;
     
@@ -619,9 +775,15 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
         
         const sortedBuckets = Object.values(timeBuckets).sort((a, b) => a.timestamp - b.timestamp);
         
+        // Apply downsampling for performance
+        const downsampledBuckets = downsampleTimeSeriesData(sortedBuckets.map(b => ({
+            timestamp: b.timestamp,
+            value: b.connection_count
+        })), 1000);
+        
         const trace = {
-            x: sortedBuckets.map(b => b.timestamp),
-            y: sortedBuckets.map(b => b.connection_count),
+            x: downsampledBuckets.map(b => b.timestamp),
+            y: downsampledBuckets.map(b => b.value),
             mode: 'lines',
             type: 'scatter',
             name: 'Active Connections',
@@ -655,12 +817,15 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
             displaylogo: false
         };
         
-        Plotly.newPlot('connectionsTimeSeriesPlot', [trace], layout, config);
+        renderChartProgressively('connectionsTimeSeriesPlot', [trace], layout, config);
         
-        // Add zoom sync event
-        document.getElementById('connectionsTimeSeriesPlot').on('plotly_relayout', function(eventData) {
-            syncConnectionsZoom('connectionsTimeSeriesPlot', eventData);
-        });
+        // Add zoom sync event after chart is rendered
+        setTimeout(() => {
+            const plot = document.getElementById('connectionsTimeSeriesPlot');
+            plot.on('plotly_relayout', function(eventData) {
+                syncConnectionsZoom('connectionsTimeSeriesPlot', eventData);
+            });
+        }, 100);
         return;
     }
     
@@ -678,9 +843,15 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
             // Sort by timestamp
             const sortedData = timeSeries.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
             
+            // Apply downsampling for performance
+            const downsampledData = downsampleTimeSeriesData(sortedData.map(d => ({
+                timestamp: new Date(d.timestamp),
+                value: d.connection_count
+            })), 1000);
+            
             const trace = {
-                x: sortedData.map(d => new Date(d.timestamp)),
-                y: sortedData.map(d => d.connection_count),
+                x: downsampledData.map(d => d.timestamp),
+                y: downsampledData.map(d => d.value),
                 mode: 'lines',
                 type: 'scatter',
                 name: ip,
@@ -730,15 +901,18 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
         displaylogo: false
     };
     
-    Plotly.newPlot('connectionsTimeSeriesPlot', traces, layout, config);
+    renderChartProgressively('connectionsTimeSeriesPlot', traces, layout, config);
     
-    // Add zoom sync event
-    document.getElementById('connectionsTimeSeriesPlot').on('plotly_relayout', function(eventData) {
-        syncConnectionsZoom('connectionsTimeSeriesPlot', eventData);
-        
-        // Update table based on zoom/range selection
-        updateConnectionsTableForRange(eventData, connectionsByIPData);
-    });
+    // Add zoom sync event after chart is rendered
+    setTimeout(() => {
+        const plot = document.getElementById('connectionsTimeSeriesPlot');
+        plot.on('plotly_relayout', function(eventData) {
+            syncConnectionsZoom('connectionsTimeSeriesPlot', eventData);
+            
+            // Update table based on zoom/range selection
+            updateConnectionsTableForRange(eventData, connectionsByIPData);
+        });
+    }, 100);
 }
 
 function createConnectionEventsTimeline(connectionEvents) {
@@ -781,9 +955,11 @@ function createConnectionEventsTimeline(connectionEvents) {
     Object.entries(eventsByIP).forEach(([ip, events]) => {
         // Create trace for opened events
         if (events.opened.length > 0) {
+            // Apply downsampling for performance
+            const downsampledOpened = downsampleArray(events.opened, 1000);
             const openedTrace = {
-                x: events.opened.map(e => new Date(e.timestamp)),
-                y: events.opened.map((e, i) => i + 1), // Sequential numbering
+                x: downsampledOpened.map(e => new Date(e.timestamp)),
+                y: downsampledOpened.map((e, i) => i + 1), // Sequential numbering
                 mode: 'markers',
                 type: 'scatter',
                 name: `${ip} (Opened)`,
@@ -794,16 +970,18 @@ function createConnectionEventsTimeline(connectionEvents) {
                     opacity: 0.8
                 },
                 hovertemplate: '<extra></extra>',
-                customdata: events.opened.map(e => e._index) // Store event index for click handling
+                customdata: downsampledOpened.map(e => e._index) // Store event index for click handling
             };
             traces.push(openedTrace);
         }
         
         // Create trace for closed events
         if (events.closed.length > 0) {
+            // Apply downsampling for performance
+            const downsampledClosed = downsampleArray(events.closed, 1000);
             const closedTrace = {
-                x: events.closed.map(e => new Date(e.timestamp)),
-                y: events.closed.map((e, i) => i + 1), // Sequential numbering
+                x: downsampledClosed.map(e => new Date(e.timestamp)),
+                y: downsampledClosed.map((e, i) => i + 1), // Sequential numbering
                 mode: 'markers',
                 type: 'scatter',
                 name: `${ip} (Closed)`,
@@ -814,7 +992,7 @@ function createConnectionEventsTimeline(connectionEvents) {
                     opacity: 0.8
                 },
                 hovertemplate: '<extra></extra>',
-                customdata: events.closed.map(e => e._index) // Store event index for click handling
+                customdata: downsampledClosed.map(e => e._index) // Store event index for click handling
             };
             traces.push(closedTrace);
         }
@@ -854,24 +1032,26 @@ function createConnectionEventsTimeline(connectionEvents) {
         displaylogo: false
     };
     
-    Plotly.newPlot('connectionEventsPlot', traces, layout, config);
+    renderChartProgressively('connectionEventsPlot', traces, layout, config);
     
-    // Add zoom sync event
-    document.getElementById('connectionEventsPlot').on('plotly_relayout', function(eventData) {
-        syncConnectionsZoom('connectionEventsPlot', eventData);
-    });
-    
-    // Add click event handler
-    document.getElementById('connectionEventsPlot').on('plotly_click', function(eventData) {
-        if (eventData.points && eventData.points.length > 0) {
-            const point = eventData.points[0];
-            const eventIndex = point.customdata;
-            
-            if (eventIndex !== undefined && connectionEventsData && connectionEventsData[eventIndex]) {
-                displayConnectionEventDetails(connectionEventsData[eventIndex]);
+    // Add events after chart is rendered
+    setTimeout(() => {
+        const plot = document.getElementById('connectionEventsPlot');
+        plot.on('plotly_relayout', function(eventData) {
+            syncConnectionsZoom('connectionEventsPlot', eventData);
+        });
+        
+        plot.on('plotly_click', function(eventData) {
+            if (eventData.points && eventData.points.length > 0) {
+                const point = eventData.points[0];
+                const eventIndex = point.customdata;
+                
+                if (eventIndex !== undefined && connectionEventsData && connectionEventsData[eventIndex]) {
+                    displayConnectionEventDetails(connectionEventsData[eventIndex]);
+                }
             }
-        }
-    });
+        });
+    }, 100);
 }
 
 function displayConnectionEventDetails(event) {
@@ -922,9 +1102,15 @@ function createTotalConnectionsPlot(connectionsData) {
     
     const sortedBuckets = Object.values(timeBuckets).sort((a, b) => a.timestamp - b.timestamp);
     
+    // Apply downsampling for performance
+    const downsampledBuckets = downsampleTimeSeriesData(sortedBuckets.map(b => ({
+        timestamp: b.timestamp,
+        value: b.connection_count
+    })), 1000);
+    
     const trace = {
-        x: sortedBuckets.map(b => b.timestamp),
-        y: sortedBuckets.map(b => b.connection_count),
+        x: downsampledBuckets.map(b => b.timestamp),
+        y: downsampledBuckets.map(b => b.value),
         mode: 'lines',
         type: 'scatter',
         name: 'Total Connections',
@@ -958,12 +1144,15 @@ function createTotalConnectionsPlot(connectionsData) {
         displaylogo: false
     };
     
-    Plotly.newPlot('connectionsPlot', [trace], layout, config);
+    renderChartProgressively('connectionsPlot', [trace], layout, config);
     
-    // Add zoom sync event
-    document.getElementById('connectionsPlot').on('plotly_relayout', function(eventData) {
-        syncConnectionsZoom('connectionsPlot', eventData);
-    });
+    // Add zoom sync event after chart is rendered
+    setTimeout(() => {
+        const plot = document.getElementById('connectionsPlot');
+        plot.on('plotly_relayout', function(eventData) {
+            syncConnectionsZoom('connectionsPlot', eventData);
+        });
+    }, 100);
 }
 
 // Global flag to prevent infinite zoom sync loops for connections
@@ -1209,6 +1398,11 @@ async function analyzeQueries() {
         const params = new URLSearchParams();
         if (namespace) params.append('namespace', namespace);
         if (operation) params.append('operation', operation);
+        
+        // Add sampling parameter
+        const samplePercentage = cliSamplePercentage || document.getElementById('samplePercentage')?.value || 100;
+        params.append('sample', samplePercentage);
+        
         if (params.toString()) url += '?' + params.toString();
         
         const response = await fetch(url, { method: 'POST' });
@@ -1245,25 +1439,45 @@ function displayQueriesData(data) {
     
     // Display stats
     statsGrid.innerHTML = `
-        <div class="stat-card">
+        <div class="stat-card data-quality-card">
             <h3>${data.total_patterns}</h3>
-            <p>Query Patterns</p>
+            <p>Query Patterns <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${data.total_patterns > 0 ? 'Unique' : 'None'}</small>
+            <div class="info-content" style="display: none;">
+                <p>Total count of unique query patterns (grouped by namespace, operation, and normalized structure)</p>
+            </div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card data-quality-card">
             <h3>${totalQueries.toLocaleString()}</h3>
-            <p>Total Queries</p>
+            <p>Total Queries <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${totalQueries > 0 ? 'Executed' : 'None'}</small>
+            <div class="info-content" style="display: none;">
+                <p>Sum of all query executions across all patterns</p>
+            </div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card data-quality-card">
             <h3>${avgExecutionTime.toFixed(1)}ms</h3>
-            <p>Avg Execution Time</p>
+            <p>Avg Execution Time <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${avgExecutionTime > 0 ? 'Measured' : 'None'}</small>
+            <div class="info-content" style="display: none;">
+                <p>Average of mean execution times across all query patterns</p>
+            </div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card data-quality-card">
             <h3>${slowestQuery.toFixed(1)}ms</h3>
-            <p>Slowest Query</p>
+            <p>Slowest Query <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${slowestQuery > 0 ? 'Peak' : 'None'}</small>
+            <div class="info-content" style="display: none;">
+                <p>Maximum execution time found across all query patterns</p>
+            </div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card data-quality-card">
             <h3>${collscans}</h3>
-            <p>Collection Scans</p>
+            <p>Collection Scans <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${collscans > 0 ? 'Inefficient' : 'None'}</small>
+            <div class="info-content" style="display: none;">
+                <p>Count of query patterns that perform collection scans (COLLSCAN) without using an index</p>
+            </div>
         </div>
     `;
     
@@ -1412,6 +1626,22 @@ function formatIndexes(indexes) {
 function truncateText(text, maxLength) {
     if (text.length <= maxLength) return text;
     return text.substring(0, maxLength) + '...';
+}
+
+function toggleInfo(element) {
+    // Find the info content div within the same stat card
+    const statCard = element.closest('.stat-card');
+    const infoContent = statCard.querySelector('.info-content');
+    
+    if (infoContent.style.display === 'none') {
+        // Show the info content
+        infoContent.style.display = 'block';
+        element.style.transform = 'rotate(180deg)';
+    } else {
+        // Hide the info content
+        infoContent.style.display = 'none';
+        element.style.transform = 'rotate(0deg)';
+    }
 }
 
 async function analyzeReplicaSet() {
@@ -2260,23 +2490,27 @@ function createSlowQueriesPlot(slowQueries) {
     
     Plotly.newPlot('slowQueriesPlot', traces, layout, config);
     
-    // Add click event to show query details
-    document.getElementById('slowQueriesPlot').on('plotly_click', function(eventData) {
-        const point = eventData.points[0];
-        const customdata = point.customdata;
-        displayQueryDetails(
-            point.x,
-            point.y,
-            customdata.namespace,
-            customdata.command,
-            customdata.plan_summary
-        );
-    });
-    
-    // Add zoom sync event
-    document.getElementById('slowQueriesPlot').on('plotly_relayout', function(eventData) {
-        syncTimeSeriesZoom('slowQueriesPlot', eventData);
-    });
+    // Add events after chart is rendered
+    setTimeout(() => {
+        const plot = document.getElementById('slowQueriesPlot');
+        // Add click event to show query details
+        plot.on('plotly_click', function(eventData) {
+            const point = eventData.points[0];
+            const customdata = point.customdata;
+            displayQueryDetails(
+                point.x,
+                point.y,
+                customdata.namespace,
+                customdata.command,
+                customdata.plan_summary
+            );
+        });
+        
+        // Add zoom sync event
+        plot.on('plotly_relayout', function(eventData) {
+            syncTimeSeriesZoom('slowQueriesPlot', eventData);
+        });
+    }, 100);
 }
 
 function createConnectionsPlot(connections) {
@@ -2321,12 +2555,15 @@ function createConnectionsPlot(connections) {
         displaylogo: false
     };
     
-    Plotly.newPlot('connectionsPlot', [trace], layout, config);
+    renderChartProgressively('connectionsPlot', [trace], layout, config);
     
-    // Add zoom sync event
-    document.getElementById('connectionsPlot').on('plotly_relayout', function(eventData) {
-        syncTimeSeriesZoom('connectionsPlot', eventData);
-    });
+    // Add zoom sync event after chart is rendered
+    setTimeout(() => {
+        const plot = document.getElementById('connectionsPlot');
+        plot.on('plotly_relayout', function(eventData) {
+            syncTimeSeriesZoom('connectionsPlot', eventData);
+        });
+    }, 100);
 }
 
 function createErrorsPlot(errors) {
@@ -2386,10 +2623,13 @@ function createErrorsPlot(errors) {
     
     Plotly.newPlot('errorsPlot', traces, layout, config);
     
-    // Add zoom sync event
-    document.getElementById('errorsPlot').on('plotly_relayout', function(eventData) {
-        syncTimeSeriesZoom('errorsPlot', eventData);
-    });
+    // Add zoom sync event after chart is rendered
+    setTimeout(() => {
+        const plot = document.getElementById('errorsPlot');
+        plot.on('plotly_relayout', function(eventData) {
+            syncTimeSeriesZoom('errorsPlot', eventData);
+        });
+    }, 100);
 }
 
 // Global flag to prevent infinite zoom sync loops

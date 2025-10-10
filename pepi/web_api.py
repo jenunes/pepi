@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 import tempfile
@@ -43,6 +44,9 @@ async def lifespan(app: FastAPI):
     # Shutdown (nothing to do for now)
 
 app = FastAPI(title="Pepi MongoDB Log Analyzer", version="1.0.0", lifespan=lifespan)
+
+# Enable GZip compression for better performance
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Enable CORS for development
 app.add_middleware(
@@ -152,7 +156,9 @@ async def list_uploaded_files():
                 "file_id": file_id,
                 "filename": info['original_name'],
                 "size": info['size'],
-                "lines": info['lines']
+                "lines": info['lines'],
+                "is_preloaded": info.get('is_preloaded', False),
+                "sample_percentage": info.get('sample_percentage', 100)
             })
         else:
             # Clean up missing files
@@ -160,7 +166,7 @@ async def list_uploaded_files():
     return {"files": files}
 
 @app.post("/api/analyze/{file_id}/basic")
-async def analyze_basic_info(file_id: str):
+async def analyze_basic_info(file_id: str, sample: Optional[int] = 100):
     """Get basic log file information."""
     if file_id not in upload_store:
         raise HTTPException(status_code=404, detail="File not found")
@@ -213,6 +219,11 @@ async def analyze_basic_info(file_id: str):
             except:
                 continue
         
+        # Get sampling metadata
+        from . import get_sampling_metadata, count_lines
+        total_lines = count_lines(file_path)
+        sampling_metadata = get_sampling_metadata(total_lines, sample)
+        
         return AnalysisResult(
             status="success",
             data={
@@ -224,23 +235,28 @@ async def analyze_basic_info(file_id: str):
                 "os_version": os_version,
                 "kernel_version": kernel_version,
                 "db_version": db_version,
-                "startup_options": cmd_options
+                "startup_options": cmd_options,
+                "sampling_metadata": sampling_metadata
             }
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 @app.post("/api/analyze/{file_id}/connections")
-async def analyze_connections(file_id: str):
+async def analyze_connections(file_id: str, sample: Optional[int] = 100):
     """Analyze connection information with time series data."""
     if file_id not in upload_store:
         raise HTTPException(status_code=404, detail="File not found")
     
     file_path = upload_store[file_id]['path']
     
+    # Validate sample parameter
+    if sample is not None and (sample < 0 or sample > 100):
+        raise HTTPException(status_code=400, detail="Sample percentage must be between 0 and 100")
+    
     try:
         # Get both aggregate data and time series data
-        connections_data, total_opened, total_closed = parse_connections(file_path)
+        connections_data, total_opened, total_closed = parse_connections(file_path, sample_percentage=sample)
         overall_stats, ip_stats = calculate_connection_stats(connections_data)
         
         # Get time series data for connections
@@ -272,6 +288,11 @@ async def analyze_connections(file_id: str):
                 'durations': data['durations']
             }
         
+        # Get sampling metadata from the parse_connections function
+        from . import get_sampling_metadata, count_lines
+        total_lines = count_lines(file_path)
+        sampling_metadata = get_sampling_metadata(total_lines, sample)
+        
         return AnalysisResult(
             status="success",
             data={
@@ -283,6 +304,7 @@ async def analyze_connections(file_id: str):
                 "connections_timeseries": connections_timeseries,
                 "connections_by_ip_timeseries": connections_by_ip_timeseries,
                 "connection_events": connection_events,
+                "sampling_metadata": sampling_metadata,
                 "data_quality": {
                     "validation_results": validation_results,
                     "warnings": validation_results.get('warnings', []),
@@ -296,15 +318,19 @@ async def analyze_connections(file_id: str):
         raise HTTPException(status_code=500, detail=f"Connection analysis failed: {str(e)}")
 
 @app.post("/api/analyze/{file_id}/queries")
-async def analyze_queries(file_id: str, namespace: Optional[str] = None, operation: Optional[str] = None):
+async def analyze_queries(file_id: str, namespace: Optional[str] = None, operation: Optional[str] = None, sample: Optional[int] = 100):
     """Analyze query patterns and performance."""
     if file_id not in upload_store:
         raise HTTPException(status_code=404, detail="File not found")
     
     file_path = upload_store[file_id]['path']
     
+    # Validate sample parameter
+    if sample is not None and (sample < 0 or sample > 100):
+        raise HTTPException(status_code=400, detail="Sample percentage must be between 0 and 100")
+    
     try:
-        queries_data = parse_queries(file_path)
+        queries_data = parse_queries(file_path, sample_percentage=sample)
         query_stats = calculate_query_stats(queries_data)
         
         # Apply filters if specified
@@ -778,12 +804,15 @@ def preload_file():
             original_name = os.path.basename(preload_path)
             file_size = os.path.getsize(temp_file.name)
             
+            sample_percentage = int(os.environ.get('PEPI_SAMPLE_PERCENTAGE', '100'))
+            
             upload_store[file_id] = {
                 'path': temp_file.name,
                 'original_name': original_name,
                 'size': file_size,
                 'lines': count_lines(temp_file.name),
-                'is_preloaded': True  # Mark as pre-loaded
+                'is_preloaded': True,  # Mark as pre-loaded
+                'sample_percentage': sample_percentage  # Store CLI sample percentage
             }
             
             print(f"📁 Pre-loaded file: {original_name} (ID: {file_id})")

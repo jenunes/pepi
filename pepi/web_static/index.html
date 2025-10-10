@@ -45,6 +45,18 @@
                         <i class="fas fa-cloud-upload-alt"></i>
                         <h3>Drop Your MongoDB Log File Here</h3>
                         <p>Supports .log, .txt, and .json files</p>
+                        
+                        <!-- Sampling Control -->
+                        <div class="sampling-control">
+                            <label for="samplePercentage">
+                                <i class="fas fa-percentage"></i> Sampling: 
+                            </label>
+                            <input type="number" id="samplePercentage" min="0" max="100" value="100" 
+                                   title="Percentage of log lines to process (0-100)">
+                            <span class="sampling-help" title="100% = process all lines, 50% = every 2nd line, etc.">
+                                <i class="fas fa-info-circle"></i>
+                            </span>
+                        </div>
                     </div>
                 </div>
                 
@@ -93,6 +105,9 @@
                                 <h3><i class="fas fa-file"></i> File Information</h3>
                                 <div class="info-details" id="fileInfo">
                                     <p>Select a file to view information</p>
+                                </div>
+                                <div class="info-details" id="samplingInfo" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e9ecef;">
+                                    <p>No sampling data available</p>
                                 </div>
                             </div>
                             
@@ -394,6 +409,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=1.0.7"></script>
 </body>
 </html> 
