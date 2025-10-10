@@ -56,10 +56,10 @@
             <nav class="tabs">
                 <button class="tab-btn active" data-tab="basic"><i class="fas fa-info-circle"></i> Basic Info</button>
                 <button class="tab-btn" data-tab="connections"><i class="fas fa-network-wired"></i> Connections</button>
+                <button class="tab-btn" data-tab="clients"><i class="fas fa-users"></i> Clients</button>
                 <button class="tab-btn" data-tab="queries"><i class="fas fa-search"></i> Queries</button>
                 <button class="tab-btn" data-tab="timeseries"><i class="fas fa-chart-line"></i> Time Series</button>
                 <button class="tab-btn" data-tab="replica-set"><i class="fas fa-server"></i> Replica Set</button>
-                <button class="tab-btn" data-tab="clients"><i class="fas fa-users"></i> Clients</button>
             </nav>
 
             <!-- Tab Content -->
@@ -137,11 +137,6 @@
                         </div>
                         
                         <div class="chart-section">
-                            <h3><i class="fas fa-plug"></i> Connections Over Time</h3>
-                            <div id="connectionsPlot" class="plotly-chart"></div>
-                        </div>
-                        
-                        <div class="chart-section">
                             <h3><i class="fas fa-exclamation-triangle"></i> Errors & Warnings Over Time</h3>
                             <div id="errorsPlot" class="plotly-chart"></div>
                         </div>
@@ -172,17 +167,61 @@
 
                 <!-- Connections Tab -->
                 <div class="tab-pane" id="connections">
+        <div class="analysis-header">
+            <h2><i class="fas fa-network-wired"></i> Connection Analysis</h2>
+            <div class="query-controls">
+                <button class="btn btn-primary" onclick="analyzeConnections()">
+                    <i class="fas fa-play"></i> Analyze Connections
+                </button>
+            </div>
+        </div>
+                    <div class="stats-grid" id="connectionStats"></div>
+                    
+                    <!-- Connection Time Series Charts -->
+                    <div class="timeseries-charts">
+                        <div class="chart-section">
+                            <h3>
+                                <i class="fas fa-chart-line"></i> Connections Over Time
+                                <i class="fas fa-info-circle help-icon" title="Shows individual IP connection counts over time. Click legend items to toggle IPs on/off. Data may be incomplete if connection events are missing from the log."></i>
+                            </h3>
+                            <div id="connectionsTimeSeriesPlot" class="plotly-chart"></div>
+                        </div>
+                        
+                        <div class="chart-section">
+                            <h3>
+                                <i class="fas fa-plug"></i> Total Connections Over Time
+                                <i class="fas fa-info-circle help-icon" title="Shows MongoDB's authoritative total connection count. This is the most accurate source as it comes directly from MongoDB's internal counter."></i>
+                            </h3>
+                            <div id="connectionsPlot" class="plotly-chart"></div>
+                        </div>
+                        
+                        <div class="chart-section">
+                            <h3>
+                                <i class="fas fa-clock"></i> Connection Events Timeline
+                                <i class="fas fa-info-circle help-icon" title="Shows individual connection open/close events as scatter points. Circles = opened, X marks = closed. Each IP gets a unique color. Click legend to toggle IPs and event types."></i>
+                            </h3>
+                            <div id="connectionEventsPlot" class="plotly-chart"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Connection Event Details -->
+                    <div class="event-details" id="connectionEventDetails" style="display: none;">
+                        <h3><i class="fas fa-info-circle"></i> Connection Event Details</h3>
+                        <div class="event-details-content" id="eventDetailsContent"></div>
+                    </div>
+                    
+                    <div class="table-container" id="connectionsTable"></div>
+                </div>
+
+                <!-- Clients Tab -->
+                <div class="tab-pane" id="clients">
                     <div class="analysis-header">
-                        <h2><i class="fas fa-network-wired"></i> Connection Analysis</h2>
-                        <button class="btn btn-primary" onclick="analyzeConnections()">
-                            <i class="fas fa-play"></i> Analyze Connections
+                        <h2><i class="fas fa-users"></i> Client Analysis</h2>
+                        <button class="btn btn-primary" onclick="analyzeClients()">
+                            <i class="fas fa-play"></i> Analyze Clients
                         </button>
                     </div>
-                    <div class="stats-grid" id="connectionStats"></div>
-                    <div class="chart-container">
-                        <canvas id="connectionsChart"></canvas>
-                    </div>
-                    <div class="table-container" id="connectionsTable"></div>
+                    <div id="clientsContent"></div>
                 </div>
 
                 <!-- Queries Tab -->
@@ -220,17 +259,6 @@
                         </button>
                     </div>
                     <div id="replicaSetContent"></div>
-                </div>
-
-                <!-- Clients Tab -->
-                <div class="tab-pane" id="clients">
-                    <div class="analysis-header">
-                        <h2><i class="fas fa-users"></i> Client Analysis</h2>
-                        <button class="btn btn-primary" onclick="analyzeClients()">
-                            <i class="fas fa-play"></i> Analyze Clients
-                        </button>
-                    </div>
-                    <div id="clientsContent"></div>
                 </div>
 
             </div>

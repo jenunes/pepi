@@ -367,7 +367,15 @@ async function analyzeConnections() {
 
 function displayConnectionsData(data) {
     const statsGrid = document.getElementById('connectionStats');
-    const tableContainer = document.getElementById('connectionsTable');
+    
+    // Store original data for dynamic table updates
+    originalConnectionsData = data;
+    connectionEventsData = data.connection_events;
+    
+    // Display data quality warnings if any
+    if (data.data_quality && data.data_quality.warnings && data.data_quality.warnings.length > 0) {
+        displayDataQualityWarnings(data.data_quality);
+    }
     
     // Display stats
     statsGrid.innerHTML = `
@@ -388,54 +396,55 @@ function displayConnectionsData(data) {
             <h3>${data.overall_stats.avg.toFixed(1)}s</h3>
             <p>Avg Duration</p>
         </div>` : ''}
+        ${data.data_quality ? `
+        <div class="stat-card data-quality-card">
+            <h3><i class="fas fa-chart-line"></i> ${(data.data_quality.quality_score * 100).toFixed(0)}%</h3>
+            <p>Data Quality</p>
+            <small>${data.data_quality.is_consistent ? 'Consistent' : 'Inconsistent'}</small>
+        </div>` : ''}
     `;
     
-    // Create connections chart
-    createConnectionsChart(data.connections);
+    // IP filter dropdown removed - using interactive legend instead
     
-    // Create connections table
-    const table = document.createElement('table');
-    table.className = 'data-table';
-    
-    const headers = ['IP Address', 'Opened', 'Closed', 'Balance'];
-    if (data.overall_stats) {
-        headers.push('Avg Duration', 'Min Duration', 'Max Duration');
+    // Create time series plots
+    if (data.connections_timeseries && data.connections_timeseries.length > 0) {
+        createConnectionsTimeSeriesPlot(data.connections_timeseries, data.connections_by_ip_timeseries);
+        createConnectionEventsTimeline(data.connection_events);
+        createTotalConnectionsPlot(data.connections_timeseries);
+    } else {
+        // Fallback to old chart if no time series data
+        createConnectionsChart(data.connections);
     }
     
-    table.innerHTML = `
-        <thead>
-            <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
-        </thead>
-        <tbody>
-            ${Object.entries(data.connections).map(([ip, conn]) => {
-                let row = `
-                    <tr>
-                        <td>${ip}</td>
-                        <td>${conn.opened}</td>
-                        <td>${conn.closed}</td>
-                        <td>${conn.opened - conn.closed}</td>
-                `;
-                
-                if (data.ip_stats && data.ip_stats[ip]) {
-                    const stats = data.ip_stats[ip];
-                    row += `
-                        <td>${stats.avg.toFixed(1)}s</td>
-                        <td>${stats.min.toFixed(1)}s</td>
-                        <td>${stats.max.toFixed(1)}s</td>
-                    `;
-                }
-                
-                row += '</tr>';
-                return row;
-            }).join('')}
-        </tbody>
+    // Create initial connections table with all data
+    updateConnectionsTable(data);
+}
+
+function displayDataQualityWarnings(dataQuality) {
+    const warningsContainer = document.getElementById('connectionStats');
+    
+    // Create warning banner
+    const warningBanner = document.createElement('div');
+    warningBanner.className = 'data-quality-warning';
+    warningBanner.innerHTML = `
+        <div class="warning-header">
+            <i class="fas fa-exclamation-triangle"></i>
+            <strong>Data Quality Notice</strong>
+            <span class="quality-score">${(dataQuality.quality_score * 100).toFixed(0)}% Quality</span>
+        </div>
+        <div class="warning-content">
+            ${dataQuality.warnings.map(warning => `<p>• ${warning}</p>`).join('')}
+            ${dataQuality.recommendations.length > 0 ? `
+                <div class="recommendations">
+                    <strong>Recommendations:</strong>
+                    ${dataQuality.recommendations.map(rec => `<p>• ${rec}</p>`).join('')}
+                </div>
+            ` : ''}
+        </div>
     `;
     
-    tableContainer.innerHTML = '';
-    tableContainer.appendChild(table);
-    
-    // Make table sortable
-    makeSortable(table, 'connections');
+    // Insert warning at the top of stats grid
+    warningsContainer.insertBefore(warningBanner, warningsContainer.firstChild);
 }
 
 function createConnectionsChart(connections) {
@@ -486,6 +495,611 @@ function createConnectionsChart(connections) {
                 }
             }
         }
+    });
+}
+
+// New Plotly-based connection charts
+function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
+    if (!connectionsByIPData || Object.keys(connectionsByIPData).length === 0) {
+        // Fallback to old method if no IP-specific data
+        if (!connectionsData || connectionsData.length === 0) {
+            document.getElementById('connectionsTimeSeriesPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection data found in the log file.</p>';
+            return;
+        }
+        
+        // Group data by time buckets (e.g., every 5 minutes)
+        const timeBuckets = {};
+        const bucketSize = 5 * 60 * 1000; // 5 minutes in milliseconds
+        
+        connectionsData.forEach(conn => {
+            const timestamp = new Date(conn.timestamp).getTime();
+            const bucket = Math.floor(timestamp / bucketSize) * bucketSize;
+            
+            if (!timeBuckets[bucket]) {
+                timeBuckets[bucket] = {
+                    timestamp: new Date(bucket),
+                    connection_count: 0
+                };
+            }
+            timeBuckets[bucket].connection_count = Math.max(timeBuckets[bucket].connection_count, conn.connection_count);
+        });
+        
+        const sortedBuckets = Object.values(timeBuckets).sort((a, b) => a.timestamp - b.timestamp);
+        
+        const trace = {
+            x: sortedBuckets.map(b => b.timestamp),
+            y: sortedBuckets.map(b => b.connection_count),
+            mode: 'lines',
+            type: 'scatter',
+            name: 'Active Connections',
+            line: {
+                color: '#667eea',
+                width: 2
+            },
+            fill: 'tozeroy',
+            fillcolor: 'rgba(102, 126, 234, 0.2)'
+        };
+        
+        const layout = {
+            title: '',
+            xaxis: {
+                title: 'Timestamp',
+                type: 'date',
+                rangeslider: { visible: false }
+            },
+            yaxis: {
+                title: 'Connection Count',
+                type: 'linear'
+            },
+            hovermode: 'x unified',
+            showlegend: false,
+            margin: { t: 20, r: 20, b: 80, l: 60 }
+        };
+        
+        const config = {
+            responsive: true,
+            displayModeBar: true,
+            displaylogo: false
+        };
+        
+        Plotly.newPlot('connectionsTimeSeriesPlot', [trace], layout, config);
+        
+        // Add zoom sync event
+        document.getElementById('connectionsTimeSeriesPlot').on('plotly_relayout', function(eventData) {
+            syncConnectionsZoom('connectionsTimeSeriesPlot', eventData);
+        });
+        return;
+    }
+    
+    // Create traces for each IP
+    const traces = [];
+    const colorPalette = [
+        '#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a', 
+        '#ffecd2', '#a8edea', '#d299c2', '#ff9a9e', '#fecfef',
+        '#ff9a8b', '#a8c8ec', '#fad0c4', '#ffd1ff', '#a1c4fd'
+    ];
+    
+    let colorIndex = 0;
+    Object.entries(connectionsByIPData).forEach(([ip, timeSeries]) => {
+        if (timeSeries && timeSeries.length > 0) {
+            // Sort by timestamp
+            const sortedData = timeSeries.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            
+            const trace = {
+                x: sortedData.map(d => new Date(d.timestamp)),
+                y: sortedData.map(d => d.connection_count),
+                mode: 'lines',
+                type: 'scatter',
+                name: ip,
+                line: {
+                    color: colorPalette[colorIndex % colorPalette.length],
+                    width: 2
+                },
+                hovertemplate: `<b>${ip}</b><br>` +
+                              'Time: %{x}<br>' +
+                              'Connections: %{y}<br>' +
+                              '<extra></extra>'
+            };
+            
+            traces.push(trace);
+            colorIndex++;
+        }
+    });
+    
+    if (traces.length === 0) {
+        document.getElementById('connectionsTimeSeriesPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No IP-specific connection data found in the log file.</p>';
+        return;
+    }
+    
+    const layout = {
+        title: '',
+        xaxis: {
+            title: 'Timestamp',
+            type: 'date',
+            rangeslider: { visible: false }
+        },
+        yaxis: {
+            title: 'Connection Count',
+            type: 'linear'
+        },
+        hovermode: 'x unified',
+        showlegend: true,
+        legend: {
+            itemclick: 'toggle',
+            itemdoubleclick: 'toggleothers'
+        },
+        margin: { t: 20, r: 20, b: 80, l: 60 }
+    };
+    
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        displaylogo: false
+    };
+    
+    Plotly.newPlot('connectionsTimeSeriesPlot', traces, layout, config);
+    
+    // Add zoom sync event
+    document.getElementById('connectionsTimeSeriesPlot').on('plotly_relayout', function(eventData) {
+        syncConnectionsZoom('connectionsTimeSeriesPlot', eventData);
+        
+        // Update table based on zoom/range selection
+        updateConnectionsTableForRange(eventData, connectionsByIPData);
+    });
+}
+
+function createConnectionEventsTimeline(connectionEvents) {
+    if (!connectionEvents || connectionEvents.length === 0) {
+        document.getElementById('connectionEventsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection events found in the log file.</p>';
+        return;
+    }
+    
+    // Group events by IP and event type
+    const eventsByIP = {};
+    const eventTypes = new Set();
+    
+    connectionEvents.forEach((event, index) => {
+        const ip = event.ip || 'unknown';
+        if (!eventsByIP[ip]) {
+            eventsByIP[ip] = { opened: [], closed: [] };
+        }
+        
+        // Add index to event for click tracking
+        event._index = index;
+        
+        if (event.event_type === 'opened') {
+            eventsByIP[ip].opened.push(event);
+        } else if (event.event_type === 'closed') {
+            eventsByIP[ip].closed.push(event);
+        }
+        
+        eventTypes.add(event.event_type);
+    });
+    
+    // Create traces for each IP and event type
+    const traces = [];
+    const colorPalette = [
+        '#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a', 
+        '#ffecd2', '#a8edea', '#d299c2', '#ff9a9e', '#fecfef',
+        '#ff9a8b', '#a8c8ec', '#fad0c4', '#ffd1ff', '#a1c4fd'
+    ];
+    
+    let colorIndex = 0;
+    Object.entries(eventsByIP).forEach(([ip, events]) => {
+        // Create trace for opened events
+        if (events.opened.length > 0) {
+            const openedTrace = {
+                x: events.opened.map(e => new Date(e.timestamp)),
+                y: events.opened.map((e, i) => i + 1), // Sequential numbering
+                mode: 'markers',
+                type: 'scatter',
+                name: `${ip} (Opened)`,
+                marker: {
+                    color: colorPalette[colorIndex % colorPalette.length],
+                    size: 8,
+                    symbol: 'circle',
+                    opacity: 0.8
+                },
+                hovertemplate: '<extra></extra>',
+                customdata: events.opened.map(e => e._index) // Store event index for click handling
+            };
+            traces.push(openedTrace);
+        }
+        
+        // Create trace for closed events
+        if (events.closed.length > 0) {
+            const closedTrace = {
+                x: events.closed.map(e => new Date(e.timestamp)),
+                y: events.closed.map((e, i) => i + 1), // Sequential numbering
+                mode: 'markers',
+                type: 'scatter',
+                name: `${ip} (Closed)`,
+                marker: {
+                    color: colorPalette[colorIndex % colorPalette.length],
+                    size: 8,
+                    symbol: 'x',
+                    opacity: 0.8
+                },
+                hovertemplate: '<extra></extra>',
+                customdata: events.closed.map(e => e._index) // Store event index for click handling
+            };
+            traces.push(closedTrace);
+        }
+        
+        colorIndex++;
+    });
+    
+    if (traces.length === 0) {
+        document.getElementById('connectionEventsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection events found in the log file.</p>';
+        return;
+    }
+    
+    const layout = {
+        title: '',
+        xaxis: {
+            title: 'Timestamp',
+            type: 'date',
+            rangeslider: { visible: false }
+        },
+        yaxis: {
+            title: 'Event Sequence',
+            type: 'linear',
+            showgrid: true
+        },
+        hovermode: 'closest',
+        showlegend: true,
+        legend: {
+            itemclick: 'toggle',
+            itemdoubleclick: 'toggleothers'
+        },
+        margin: { t: 20, r: 20, b: 80, l: 60 }
+    };
+    
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        displaylogo: false
+    };
+    
+    Plotly.newPlot('connectionEventsPlot', traces, layout, config);
+    
+    // Add zoom sync event
+    document.getElementById('connectionEventsPlot').on('plotly_relayout', function(eventData) {
+        syncConnectionsZoom('connectionEventsPlot', eventData);
+    });
+    
+    // Add click event handler
+    document.getElementById('connectionEventsPlot').on('plotly_click', function(eventData) {
+        if (eventData.points && eventData.points.length > 0) {
+            const point = eventData.points[0];
+            const eventIndex = point.customdata;
+            
+            if (eventIndex !== undefined && connectionEventsData && connectionEventsData[eventIndex]) {
+                displayConnectionEventDetails(connectionEventsData[eventIndex]);
+            }
+        }
+    });
+}
+
+function displayConnectionEventDetails(event) {
+    const detailsContainer = document.getElementById('connectionEventDetails');
+    const contentContainer = document.getElementById('eventDetailsContent');
+    
+    if (!detailsContainer || !contentContainer) return;
+    
+    // Create a formatted display with event details and log message
+    const eventInfo = `Event Type: ${event.event_type}
+IP Address: ${event.ip}
+Connection ID: ${event.connection_id}
+Timestamp: ${event.timestamp}
+Total Connections: ${event.total_connections}
+
+Log Message:
+${event.log_message || 'No log message available'}`;
+    
+    contentContainer.textContent = eventInfo;
+    detailsContainer.style.display = 'block';
+    
+    // Scroll to the details section
+    detailsContainer.scrollIntoView({ behavior: 'smooth' });
+}
+
+function createTotalConnectionsPlot(connectionsData) {
+    if (!connectionsData || connectionsData.length === 0) {
+        document.getElementById('connectionsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection data found in the log file.</p>';
+        return;
+    }
+    
+    // Group data by time buckets (e.g., every 5 minutes)
+    const timeBuckets = {};
+    const bucketSize = 5 * 60 * 1000; // 5 minutes in milliseconds
+    
+    connectionsData.forEach(conn => {
+        const timestamp = new Date(conn.timestamp).getTime();
+        const bucket = Math.floor(timestamp / bucketSize) * bucketSize;
+        
+        if (!timeBuckets[bucket]) {
+            timeBuckets[bucket] = {
+                timestamp: new Date(bucket),
+                connection_count: 0
+            };
+        }
+        timeBuckets[bucket].connection_count = Math.max(timeBuckets[bucket].connection_count, conn.connection_count);
+    });
+    
+    const sortedBuckets = Object.values(timeBuckets).sort((a, b) => a.timestamp - b.timestamp);
+    
+    const trace = {
+        x: sortedBuckets.map(b => b.timestamp),
+        y: sortedBuckets.map(b => b.connection_count),
+        mode: 'lines',
+        type: 'scatter',
+        name: 'Total Connections',
+        line: {
+            color: '#667eea',
+            width: 2
+        },
+        fill: 'tozeroy',
+        fillcolor: 'rgba(102, 126, 234, 0.2)'
+    };
+    
+    const layout = {
+        title: '',
+        xaxis: {
+            title: 'Timestamp',
+            type: 'date',
+            rangeslider: { visible: false }
+        },
+        yaxis: {
+            title: 'Total Connection Count',
+            type: 'linear'
+        },
+        hovermode: 'x unified',
+        showlegend: false,
+        margin: { t: 20, r: 20, b: 80, l: 60 }
+    };
+    
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        displaylogo: false
+    };
+    
+    Plotly.newPlot('connectionsPlot', [trace], layout, config);
+    
+    // Add zoom sync event
+    document.getElementById('connectionsPlot').on('plotly_relayout', function(eventData) {
+        syncConnectionsZoom('connectionsPlot', eventData);
+    });
+}
+
+// Global flag to prevent infinite zoom sync loops for connections
+let isConnectionsSyncing = false;
+
+// Store original connections data for dynamic table updates
+let originalConnectionsData = null;
+let connectionEventsData = null;
+
+function updateConnectionsTableForRange(eventData, connectionsByIPData) {
+    // Check if this is a zoom/range change
+    const hasXRange = eventData['xaxis.range[0]'] || eventData['xaxis.range'] || 
+                      (eventData.xaxis && eventData.xaxis.range);
+    const hasAutoScale = eventData['xaxis.autorange'];
+    
+    if (!hasXRange && !hasAutoScale) return;
+    
+    // Get the time range from the event data
+    let startTime, endTime;
+    
+    if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
+        startTime = new Date(eventData['xaxis.range[0]']);
+        endTime = new Date(eventData['xaxis.range[1]']);
+    } else if (eventData['xaxis.range']) {
+        startTime = new Date(eventData['xaxis.range'][0]);
+        endTime = new Date(eventData['xaxis.range'][1]);
+    } else if (eventData.xaxis && eventData.xaxis.range) {
+        startTime = new Date(eventData.xaxis.range[0]);
+        endTime = new Date(eventData.xaxis.range[1]);
+    } else if (hasAutoScale) {
+        // Reset to show all data
+        updateConnectionsTable(originalConnectionsData);
+        return;
+    }
+    
+    if (!startTime || !endTime) return;
+    
+    // Filter connections data based on time range using actual events
+    const filteredConnections = {};
+    let totalOpened = 0;
+    let totalClosed = 0;
+    
+    Object.entries(connectionsByIPData).forEach(([ip, timeSeries]) => {
+        if (!timeSeries || timeSeries.length === 0) return;
+        
+        // Count actual open/close events in the time range
+        let opened = 0;
+        let closed = 0;
+        const durations = [];
+        let connectionStartTime = null;
+        
+        // Process events in chronological order
+        timeSeries.forEach((point, index) => {
+            const pointTime = new Date(point.timestamp);
+            
+            // Only process events within the selected time range
+            if (pointTime >= startTime && pointTime <= endTime) {
+                // Check if this represents a connection open event
+                if (index === 0 || point.connection_count > timeSeries[index - 1].connection_count) {
+                    opened++;
+                    connectionStartTime = pointTime;
+                }
+                
+                // Check if this represents a connection close event
+                if (index > 0 && point.connection_count < timeSeries[index - 1].connection_count) {
+                    closed++;
+                    
+                    // Calculate duration if we have a start time
+                    if (connectionStartTime) {
+                        const duration = (pointTime - connectionStartTime) / 1000; // Convert to seconds
+                        if (duration > 0) {
+                            durations.push(duration);
+                        }
+                    }
+                }
+            }
+        });
+        
+        // If we have any activity in this time range, include this IP
+        if (opened > 0 || closed > 0) {
+            filteredConnections[ip] = {
+                opened: opened,
+                closed: closed,
+                durations: durations
+            };
+            
+            totalOpened += opened;
+            totalClosed += closed;
+        }
+    });
+    
+    // Create filtered data object
+    const filteredData = {
+        connections: filteredConnections,
+        total_opened: totalOpened,
+        total_closed: totalClosed,
+        time_range: {
+            start: startTime.toISOString(),
+            end: endTime.toISOString()
+        }
+    };
+    
+    // Update the table with filtered data
+    updateConnectionsTable(filteredData);
+}
+
+function updateConnectionsTable(data) {
+    const tableContainer = document.getElementById('connectionsTable');
+    
+    if (!data || !data.connections) {
+        tableContainer.innerHTML = '<p>No connection data available for the selected time range.</p>';
+        return;
+    }
+    
+    // Create connections table
+    const table = document.createElement('table');
+    table.className = 'data-table';
+    
+    const headers = ['IP Address', 'Opened', 'Closed', 'Balance'];
+    if (data.overall_stats) {
+        headers.push('Avg Duration', 'Min Duration', 'Max Duration');
+    }
+    
+    table.innerHTML = `
+        <thead>
+            <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
+        </thead>
+        <tbody>
+            ${Object.entries(data.connections).map(([ip, conn]) => {
+                let row = `
+                    <tr>
+                        <td>${ip}</td>
+                        <td>${conn.opened}</td>
+                        <td>${conn.closed}</td>
+                        <td>${conn.opened - conn.closed}</td>
+                `;
+                
+                if (data.ip_stats && data.ip_stats[ip]) {
+                    const stats = data.ip_stats[ip];
+                    row += `
+                        <td>${stats.avg.toFixed(1)}s</td>
+                        <td>${stats.min.toFixed(1)}s</td>
+                        <td>${stats.max.toFixed(1)}s</td>
+                    `;
+                }
+                
+                row += '</tr>';
+                return row;
+            }).join('')}
+        </tbody>
+    `;
+    
+    tableContainer.innerHTML = '';
+    tableContainer.appendChild(table);
+    
+    // Make table sortable
+    makeSortable(table, 'connections');
+    
+    // Add time range info if available
+    if (data.time_range) {
+        const rangeInfo = document.createElement('div');
+        rangeInfo.className = 'time-range-info';
+        rangeInfo.innerHTML = `
+            <small style="color: #666; font-style: italic;">
+                Showing data for: ${new Date(data.time_range.start).toLocaleString()} - ${new Date(data.time_range.end).toLocaleString()}
+            </small>
+        `;
+        tableContainer.appendChild(rangeInfo);
+    }
+}
+
+function syncConnectionsZoom(sourceId, eventData) {
+    // Prevent infinite loop when syncing
+    if (isConnectionsSyncing) return;
+    
+    // Check if this is a relevant event (zoom, pan, autoscale, reset)
+    const hasXRange = eventData['xaxis.range[0]'] || eventData['xaxis.range'] || 
+                      (eventData.xaxis && eventData.xaxis.range);
+    const hasAutoScale = eventData['xaxis.autorange'];
+    
+    if (!hasXRange && !hasAutoScale) return;
+    
+    isConnectionsSyncing = true;
+    
+    // Build the relayout object based on what changed
+    let relayoutData = {};
+    
+    // Handle zoom/pan (explicit range)
+    if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
+        relayoutData['xaxis.range'] = [eventData['xaxis.range[0]'], eventData['xaxis.range[1]']];
+    } else if (eventData['xaxis.range']) {
+        relayoutData['xaxis.range'] = eventData['xaxis.range'];
+    } else if (eventData.xaxis && eventData.xaxis.range) {
+        relayoutData['xaxis.range'] = eventData.xaxis.range;
+    }
+    
+    // Handle autorange (reset/double-click)
+    if (eventData['xaxis.autorange'] !== undefined) {
+        relayoutData['xaxis.autorange'] = eventData['xaxis.autorange'];
+    }
+    
+    // If no relevant changes, exit
+    if (Object.keys(relayoutData).length === 0) {
+        isConnectionsSyncing = false;
+        return;
+    }
+    
+        // Update all connection plots except the source
+        const plotIds = ['connectionsTimeSeriesPlot', 'connectionEventsPlot', 'connectionsPlot'];
+    let syncPromises = [];
+    
+    plotIds.forEach(plotId => {
+        if (plotId !== sourceId) {
+            const plotElement = document.getElementById(plotId);
+            if (plotElement && plotElement.data) {
+                syncPromises.push(
+                    Plotly.relayout(plotId, relayoutData).catch(err => {
+                        console.warn(`Failed to sync ${plotId}:`, err);
+                    })
+                );
+            }
+        }
+    });
+    
+    // Wait for all sync operations to complete
+    Promise.all(syncPromises).finally(() => {
+        setTimeout(() => {
+            isConnectionsSyncing = false;
+        }, 100);
     });
 }
 

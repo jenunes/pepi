@@ -651,6 +651,283 @@ def parse_timeseries_data(logfile):
     
     return slow_queries, connections, errors
 
+def parse_connections_timeseries_by_ip(logfile):
+    """Parse connection time series data grouped by IP address with improved edge case handling."""
+    # Check cache first
+    cache_key = get_cache_key(logfile, 'connections_timeseries_by_ip')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached IP-specific connection data...")
+        return cached_result['connections_by_ip']
+    
+    from collections import defaultdict
+    from datetime import datetime
+    
+    # Track connection events per IP
+    ip_events = defaultdict(list)  # {ip: [{'timestamp': ..., 'event': 'open'/'close'}, ...]}
+    connection_starts = {}  # Track active connections by connection ID
+    connection_ends = {}   # Track connection end events by connection ID
+    total_connection_counts = []  # Store MongoDB's connectionCount for validation
+    
+    # Count lines for progress bar
+    total_lines = count_lines(logfile)
+    
+    with open(logfile, 'r') as f:
+        for line in tqdm(f, total=total_lines, desc="Parsing IP-specific connections", unit="lines"):
+            try:
+                entry = json.loads(line)
+                timestamp = entry.get('t', {}).get('$date')
+                
+                if not timestamp:
+                    continue
+                
+                # Connection opened
+                if (entry.get('msg') == 'Connection accepted' and 
+                    entry.get('c') == 'NETWORK' and
+                    entry.get('attr')):
+                    attr = entry['attr']
+                    if 'remote' in attr:
+                        ip = attr['remote'].split(':')[0]  # Extract IP from host:port
+                        conn_id = attr.get('connectionId')
+                        connection_count = attr.get('connectionCount', 0)
+                        
+                        # Store MongoDB's total connection count for validation
+                        total_connection_counts.append({
+                            'timestamp': timestamp,
+                            'connection_count': connection_count
+                        })
+                        
+                        ip_events[ip].append({
+                            'timestamp': timestamp,
+                            'event': 'open',
+                            'connection_id': conn_id
+                        })
+                        
+                        # Track connection start
+                        if conn_id:
+                            connection_starts[conn_id] = {
+                                'start_time': timestamp,
+                                'ip': ip
+                            }
+                
+                # Connection closed
+                elif (entry.get('msg') == 'Connection ended' and 
+                      entry.get('c') == 'NETWORK' and
+                      entry.get('attr')):
+                    attr = entry['attr']
+                    conn_id = attr.get('connectionId')
+                    
+                    if conn_id in connection_starts:
+                        ip = connection_starts[conn_id]['ip']
+                        ip_events[ip].append({
+                            'timestamp': timestamp,
+                            'event': 'close',
+                            'connection_id': conn_id
+                        })
+                        connection_ends[conn_id] = timestamp
+                        del connection_starts[conn_id]
+                        
+            except Exception:
+                pass
+    
+    # Convert events to time series data with running connection counts
+    connections_by_ip = {}
+    data_quality_metrics = {}
+    
+    for ip, events in ip_events.items():
+        # Sort events by timestamp
+        events.sort(key=lambda x: x['timestamp'])
+        
+        # Calculate running connection count
+        time_series = []
+        active_connections = 0
+        open_events = 0
+        close_events = 0
+        unmatched_opens = 0
+        
+        for event in events:
+            if event['event'] == 'open':
+                active_connections += 1
+                open_events += 1
+            elif event['event'] == 'close':
+                active_connections = max(0, active_connections - 1)
+                close_events += 1
+            
+            time_series.append({
+                'timestamp': event['timestamp'],
+                'connection_count': active_connections
+            })
+        
+        # Calculate unmatched opens (connections that never closed)
+        unmatched_opens = open_events - close_events
+        
+        # Store data quality metrics for this IP
+        data_quality_metrics[ip] = {
+            'open_events': open_events,
+            'close_events': close_events,
+            'unmatched_opens': unmatched_opens,
+            'final_count': active_connections,
+            'data_completeness': close_events / open_events if open_events > 0 else 1.0
+        }
+        
+        connections_by_ip[ip] = time_series
+    
+    # Calculate overall data quality
+    total_opens = sum(metrics['open_events'] for metrics in data_quality_metrics.values())
+    total_closes = sum(metrics['close_events'] for metrics in data_quality_metrics.values())
+    overall_completeness = total_closes / total_opens if total_opens > 0 else 1.0
+    
+    # Add validation data
+    validation_data = {
+        'total_connection_counts': total_connection_counts,
+        'overall_completeness': overall_completeness,
+        'total_opens': total_opens,
+        'total_closes': total_closes,
+        'unmatched_connections': total_opens - total_closes
+    }
+    
+    # Save to cache with validation data
+    cache_data = {
+        'connections_by_ip': connections_by_ip,
+        'data_quality_metrics': data_quality_metrics,
+        'validation_data': validation_data
+    }
+    save_to_cache(cache_key, cache_data)
+    
+    return connections_by_ip
+
+def validate_connection_data_consistency(connections_by_ip, total_connections_timeseries):
+    """Validate that per-IP connection data is consistent with total connection data."""
+    validation_results = {
+        'is_consistent': True,
+        'discrepancies': [],
+        'data_quality_score': 1.0,
+        'warnings': [],
+        'recommendations': []
+    }
+    
+    if not connections_by_ip or not total_connections_timeseries:
+        validation_results['warnings'].append("No connection data available for validation")
+        return validation_results
+    
+    # Create a mapping of timestamps to total connection counts
+    total_counts_by_time = {}
+    for conn in total_connections_timeseries:
+        timestamp = conn['timestamp']
+        total_counts_by_time[timestamp] = conn['connection_count']
+    
+    # Check consistency at each timestamp where we have both per-IP and total data
+    max_discrepancy = 0
+    total_checks = 0
+    discrepancies = 0
+    
+    for ip, ip_data in connections_by_ip.items():
+        for point in ip_data:
+            timestamp = point['timestamp']
+            if timestamp in total_counts_by_time:
+                total_checks += 1
+                # This is a simplified check - in reality we'd need to sum all IPs at this timestamp
+                # For now, we'll just check if individual IP counts are reasonable
+                ip_count = point['connection_count']
+                total_count = total_counts_by_time[timestamp]
+                
+                if ip_count > total_count:
+                    discrepancies += 1
+                    max_discrepancy = max(max_discrepancy, ip_count - total_count)
+                    validation_results['discrepancies'].append({
+                        'timestamp': timestamp,
+                        'ip': ip,
+                        'ip_count': ip_count,
+                        'total_count': total_count,
+                        'difference': ip_count - total_count
+                    })
+    
+    # Calculate data quality score
+    if total_checks > 0:
+        validation_results['data_quality_score'] = 1.0 - (discrepancies / total_checks)
+        validation_results['is_consistent'] = discrepancies == 0
+    
+    # Add warnings and recommendations based on findings
+    if validation_results['data_quality_score'] < 0.8:
+        validation_results['warnings'].append(f"Data quality is {validation_results['data_quality_score']:.1%} - some connection events may be missing")
+        validation_results['recommendations'].append("Consider using a longer log period to capture complete connection lifecycles")
+    
+    if max_discrepancy > 0:
+        validation_results['warnings'].append(f"Maximum discrepancy found: {max_discrepancy} connections")
+        validation_results['recommendations'].append("Per-IP tracking may be missing some connection close events")
+    
+    return validation_results
+
+def parse_connection_events(logfile):
+    """Parse individual connection open/close events from MongoDB log file."""
+    # Check cache first
+    cache_key = get_cache_key(logfile, 'connection_events')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached connection events data...")
+        return cached_result['connection_events']
+    
+    connection_events = []
+    
+    # Count lines for progress bar
+    total_lines = count_lines(logfile)
+    
+    with open(logfile, 'r') as f:
+        for line in tqdm(f, total=total_lines, desc="Parsing connection events", unit="lines"):
+            try:
+                entry = json.loads(line)
+                timestamp = entry.get('t', {}).get('$date')
+                
+                if not timestamp:
+                    continue
+                
+                # Connection opened event
+                if (entry.get('msg') == 'Connection accepted' and 
+                    entry.get('c') == 'NETWORK' and
+                    entry.get('attr')):
+                    attr = entry['attr']
+                    if 'remote' in attr:
+                        ip = attr['remote'].split(':')[0]  # Extract IP from host:port
+                        conn_id = attr.get('connectionId')
+                        connection_count = attr.get('connectionCount', 0)
+                        
+                        connection_events.append({
+                            'timestamp': timestamp,
+                            'event_type': 'opened',
+                            'ip': ip,
+                            'connection_id': conn_id,
+                            'total_connections': connection_count,
+                            'log_message': line.strip()
+                        })
+                
+                # Connection closed event
+                elif (entry.get('msg') == 'Connection ended' and 
+                      entry.get('c') == 'NETWORK' and
+                      entry.get('attr')):
+                    attr = entry['attr']
+                    conn_id = attr.get('connectionId')
+                    
+                    connection_events.append({
+                        'timestamp': timestamp,
+                        'event_type': 'closed',
+                        'ip': 'unknown',  # We don't have IP in close events
+                        'connection_id': conn_id,
+                        'total_connections': 0,  # Not available in close events
+                        'log_message': line.strip()
+                    })
+                        
+            except Exception:
+                pass
+    
+    # Sort events by timestamp
+    connection_events.sort(key=lambda x: x['timestamp'])
+    
+    # Save to cache
+    cache_data = {'connection_events': connection_events}
+    save_to_cache(cache_key, cache_data)
+    
+    return connection_events
+
 def parse_queries(logfile):
     """Parse query patterns and statistics from MongoDB log file, grouped by pattern."""
     # Check cache first

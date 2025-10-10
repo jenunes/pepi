@@ -18,7 +18,9 @@ from contextlib import asynccontextmanager
 from . import (
     parse_connections, parse_replica_set_config, parse_replica_set_state,
     parse_clients, parse_queries, calculate_query_stats, calculate_connection_stats,
-    count_lines, get_date_range, trim_log_file, parse_timeseries_data
+    count_lines, get_date_range, trim_log_file, parse_timeseries_data,
+    parse_connections_timeseries_by_ip, validate_connection_data_consistency,
+    parse_connection_events
 )
 from .index_advisor import IndexAdvisor
 
@@ -216,15 +218,36 @@ async def analyze_basic_info(file_id: str):
 
 @app.post("/api/analyze/{file_id}/connections")
 async def analyze_connections(file_id: str):
-    """Analyze connection information."""
+    """Analyze connection information with time series data."""
     if file_id not in upload_store:
         raise HTTPException(status_code=404, detail="File not found")
     
     file_path = upload_store[file_id]['path']
     
     try:
+        # Get both aggregate data and time series data
         connections_data, total_opened, total_closed = parse_connections(file_path)
         overall_stats, ip_stats = calculate_connection_stats(connections_data)
+        
+        # Get time series data for connections
+        slow_queries, connections_timeseries, errors = parse_timeseries_data(file_path)
+        
+        # Get IP-specific connection time series data
+        try:
+            connections_by_ip_timeseries = parse_connections_timeseries_by_ip(file_path)
+        except Exception as e:
+            print(f"Warning: Failed to parse IP-specific connections: {e}")
+            connections_by_ip_timeseries = {}
+        
+        # Validate data consistency and get quality metrics
+        validation_results = validate_connection_data_consistency(connections_by_ip_timeseries, connections_timeseries)
+        
+        # Get individual connection events
+        try:
+            connection_events = parse_connection_events(file_path)
+        except Exception as e:
+            print(f"Warning: Failed to parse connection events: {e}")
+            connection_events = []
         
         # Convert defaultdict to regular dict for JSON serialization
         connections_dict = {}
@@ -242,7 +265,17 @@ async def analyze_connections(file_id: str):
                 "total_opened": total_opened,
                 "total_closed": total_closed,
                 "overall_stats": overall_stats,
-                "ip_stats": ip_stats
+                "ip_stats": ip_stats,
+                "connections_timeseries": connections_timeseries,
+                "connections_by_ip_timeseries": connections_by_ip_timeseries,
+                "connection_events": connection_events,
+                "data_quality": {
+                    "validation_results": validation_results,
+                    "warnings": validation_results.get('warnings', []),
+                    "recommendations": validation_results.get('recommendations', []),
+                    "quality_score": validation_results.get('data_quality_score', 1.0),
+                    "is_consistent": validation_results.get('is_consistent', True)
+                }
             }
         )
     except Exception as e:
