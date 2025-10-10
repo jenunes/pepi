@@ -2,4 +2,4 @@
 # Pepi launcher script
 PEPI_DIR="$HOME/.pepi"
 cd "$PEPI_DIR"
-python -m pepi "$@"
+python pepi/__init__.py "$@"
