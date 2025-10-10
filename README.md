@@ -34,11 +34,41 @@ A fast, user-friendly MongoDB log analysis tool for extracting insights from Mon
 
 ## Installation
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/jenunes/pepi.git
-   cd pepi
-   ```
+### Quick Install (Recommended)
+
+Install Pepi to your home directory:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/jenunes/pepi/main/install.sh | bash
+```
+
+This installs Pepi to `~/.pepi/` and adds it to your PATH.
+
+### Manual Installation
+
+```bash
+git clone https://github.com/jenunes/pepi.git ~/.pepi
+cd ~/.pepi
+pip install -r requirements.txt
+ln -s ~/.pepi/pepi.sh ~/.local/bin/pepi
+```
+
+## Upgrading
+
+Check for updates and upgrade:
+
+```bash
+pepi --upgrade
+```
+
+Pepi will automatically check for new versions and prompt you to upgrade.
+
+## Uninstallation
+
+```bash
+rm -rf ~/.pepi
+rm ~/.local/bin/pepi
+```
 
 ## Performance
 

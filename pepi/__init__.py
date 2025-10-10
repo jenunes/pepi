@@ -11,6 +11,10 @@ import pickle
 from pathlib import Path
 import time
 from datetime import datetime, date
+import subprocess
+import requests
+from packaging import version as pkg_version
+from pepi.version import __version__
 
 # Cache management
 CACHE_DIR = Path.home() / '.pepi_cache'
@@ -65,6 +69,77 @@ def save_to_cache(cache_key, data):
     except Exception:
         # If cache write fails, continue without caching
         pass
+
+def check_for_updates():
+    """Check GitHub for newer version."""
+    try:
+        response = requests.get(
+            "https://api.github.com/repos/jenunes/pepi/tags",
+            timeout=5
+        )
+        if response.status_code == 200:
+            tags = response.json()
+            if tags:
+                latest_version = tags[0]['name'].lstrip('v')
+                current_version = __version__
+                
+                if pkg_version.parse(latest_version) > pkg_version.parse(current_version):
+                    return latest_version
+    except:
+        pass
+    return None
+
+def perform_upgrade():
+    """Upgrade Pepi to latest version."""
+    install_dir = Path.home() / '.pepi'
+    
+    if not install_dir.exists():
+        click.echo("❌ Pepi not installed in ~/.pepi/")
+        click.echo("Please reinstall using the installation script")
+        return
+    
+    click.echo("🔍 Checking for updates...")
+    
+    latest_version = check_for_updates()
+    if not latest_version:
+        click.echo(f"✅ Already up to date (v{__version__})")
+        return
+    
+    click.echo(f"📦 New version available: v{latest_version}")
+    click.echo(f"   Current version: v{__version__}")
+    
+    if click.confirm("Upgrade now?"):
+        click.echo("⬇️  Downloading latest version...")
+        
+        try:
+            # Git pull latest changes
+            subprocess.run(
+                ["git", "pull", "origin", "main"],
+                cwd=install_dir,
+                check=True,
+                capture_output=True
+            )
+            
+            # Update dependencies
+            click.echo("📦 Updating dependencies...")
+            subprocess.run(
+                ["pip", "install", "-r", "requirements.txt"],
+                cwd=install_dir,
+                check=True,
+                capture_output=True
+            )
+            
+            click.echo(f"✅ Successfully upgraded to v{latest_version}")
+            click.echo("   Restart pepi to use the new version")
+        except subprocess.CalledProcessError as e:
+            click.echo(f"❌ Upgrade failed: {e}")
+
+def check_version_async():
+    """Background check for updates."""
+    latest = check_for_updates()
+    if latest:
+        click.echo(f"💡 New version available: v{latest} (current: v{__version__})")
+        click.echo("   Run 'pepi --upgrade' to update")
 
 class CustomCommand(click.Command):
     def format_help(self, ctx, formatter):
@@ -1471,14 +1546,21 @@ def launch_web_ui(logfile=None):
               help='Launch web interface with the specified log file pre-loaded.')
 @click.option('--version', is_flag=True,
               help='Show version information and exit.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache, trim, from_date, until_date, web_ui, version):
+@click.option('--upgrade', is_flag=True,
+              help='Check for updates and upgrade Pepi.')
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache, trim, from_date, until_date, web_ui, version, upgrade):
     """pepi: MongoDB log analysis tool."""
     
     # Handle version flag
     if version:
-        click.echo("pepi version 1.0.0")
+        click.echo(f"pepi version {__version__}")
         click.echo("MongoDB log analysis tool")
         click.echo("https://github.com/jenunes/pepi")
+        return
+    
+    # Handle upgrade flag
+    if upgrade:
+        perform_upgrade()
         return
     
     # Check if logfile is provided
@@ -1490,6 +1572,12 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
     if web_ui:
         launch_web_ui(logfile)
         return
+    
+    # Check for updates in background (non-blocking)
+    if not web_ui and not upgrade:
+        import threading
+        thread = threading.Thread(target=check_version_async, daemon=True)
+        thread.start()
     
     # Clear cache if requested
     if clear_cache:

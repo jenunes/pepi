@@ -1,8 +1,9 @@
 from setuptools import setup, find_packages
+from pepi.version import __version__
 
 setup(
     name="pepi",
-    version="1.0.0",
+    version=__version__,
     description="A fast, user-friendly MongoDB log analysis tool",
     author="Your Name",
     author_email="your.email@example.com",
@@ -21,6 +22,8 @@ setup(
         "python-multipart>=0.0.6",
         "psutil>=5.9.0",
         "python-dateutil>=2.8.0",
+        "requests>=2.28.0",
+        "packaging>=21.0",
     ],
     entry_points={
         "console_scripts": [
