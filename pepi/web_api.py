@@ -11,7 +11,6 @@ import json
 import asyncio
 import time
 from pathlib import Path
-import shutil
 import socket
 from contextlib import asynccontextmanager
 
@@ -780,48 +779,48 @@ async def download_file(file_id: str):
 
 @app.delete("/api/files/{file_id}")
 async def delete_file(file_id: str):
-    """Delete an uploaded file."""
+    """Delete an uploaded file. For preloaded files, only removes from store (does not delete the original file)."""
     if file_id not in upload_store:
         raise HTTPException(status_code=404, detail="File not found")
     
-    file_path = upload_store[file_id]['path']
-    if os.path.exists(file_path):
-        os.unlink(file_path)
+    info = upload_store[file_id]
+    file_path = info['path']
+    if not info.get('is_preloaded', False):
+        if os.path.exists(file_path):
+            os.unlink(file_path)
     
     del upload_store[file_id]
     
     return {"message": "File deleted successfully"}
 
 def preload_file():
-    """Pre-load a file if specified via environment variable."""
+    """Pre-load a file if specified via environment variable. Uses the original path (no copy)."""
     preload_path = os.environ.get('PEPI_PRELOAD_FILE')
-    if preload_path and os.path.exists(preload_path):
-        try:
-            # Copy the file to a temporary location
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.log')
-            shutil.copy2(preload_path, temp_file.name)
-            temp_file.close()
-            
-            # Store file info
-            file_id = os.path.basename(temp_file.name)
-            original_name = os.path.basename(preload_path)
-            file_size = os.path.getsize(temp_file.name)
-            
-            sample_percentage = int(os.environ.get('PEPI_SAMPLE_PERCENTAGE', '100'))
-            
-            upload_store[file_id] = {
-                'path': temp_file.name,
-                'original_name': original_name,
-                'size': file_size,
-                'lines': count_lines(temp_file.name),
-                'is_preloaded': True,  # Mark as pre-loaded
-                'sample_percentage': sample_percentage  # Store CLI sample percentage
-            }
-            
-            print(f"📁 Pre-loaded file: {original_name} (ID: {file_id})")
-            return file_id
-        except Exception as e:
-            print(f"❌ Failed to pre-load file {preload_path}: {str(e)}")
+    if not preload_path:
+        return None
+    preload_path = os.path.abspath(os.path.expanduser(preload_path))
+    if not os.path.exists(preload_path):
+        return None
+    try:
+        original_name = os.path.basename(preload_path)
+        file_size = os.path.getsize(preload_path)
+        sample_percentage = int(os.environ.get('PEPI_SAMPLE_PERCENTAGE', '100'))
+        # Stable file_id so the same preload is identifiable; pid avoids collisions
+        file_id = f"{original_name}_{os.getpid()}"
+        if file_id in upload_store:
+            file_id = f"{original_name}_{os.getpid()}_{id(preload_path)}"
+        upload_store[file_id] = {
+            'path': preload_path,
+            'original_name': original_name,
+            'size': file_size,
+            'lines': count_lines(preload_path),
+            'is_preloaded': True,
+            'sample_percentage': sample_percentage,
+        }
+        print(f"📁 Pre-loaded file: {original_name} (ID: {file_id})")
+        return file_id
+    except Exception as e:
+        print(f"❌ Failed to pre-load file {preload_path}: {str(e)}")
     return None
 
 @app.post("/api/analyze/{file_id}/extract")
