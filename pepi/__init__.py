@@ -300,6 +300,15 @@ class CustomCommand(click.Command):
                 formatter.write_text("")
                 formatter.write_text("The web interface will open in your default browser at http://localhost:8000")
         
+        elif option == '--ftdc':
+            with formatter.section("FTDC Viewer"):
+                formatter.write_text("--ftdc PATH         Launch FTDC Viewer for a specific diagnostic.data path")
+                formatter.write_text("")
+                formatter.write_text("Usage:")
+                formatter.write_text("  pepi.py --ftdc /path/to/diagnostic.data")
+                formatter.write_text("")
+                formatter.write_text("The FTDC viewer will start Docker containers and open Grafana in your browser.")
+        
         else:
             formatter.write_text(f"Unknown option: {option}")
             formatter.write_text("Use --help to see all available options.")
@@ -325,6 +334,7 @@ class CustomCommand(click.Command):
             formatter.write_text("--clients           Print client/driver information")
             formatter.write_text("--queries           Print query pattern statistics and performance analysis")
             formatter.write_text("--connections       Print connection information and statistics")
+            formatter.write_text("--ftdc              Launch FTDC Viewer for a given diagnostic.data path")
         
         # Write log file operations
         with formatter.section("Log File Operations"):
@@ -343,6 +353,7 @@ class CustomCommand(click.Command):
             formatter.write_text("  --queries --help")
             formatter.write_text("  --trim --help")
             formatter.write_text("  --web-ui --help")
+            formatter.write_text("  --ftdc --help")
 
     def main(self, args=None, prog_name=None, complete_var=None, standalone_mode=True, **kwargs):
         try:
@@ -1432,18 +1443,127 @@ def get_date_range(from_str, until_str):
     
     return start_dt, end_dt
 
+def _parse_timestamp_from_line(line):
+    """Quickly extract and parse timestamp from a log line without full JSON parse if possible."""
+    try:
+        # Try to find timestamp in JSON structure
+        # Look for "$date" pattern which is faster than full JSON parse
+        if '"$date"' not in line and "'$date'" not in line:
+            return None
+        
+        # Parse JSON to get timestamp
+        entry = json.loads(line)
+        timestamp_str = entry.get('t', {}).get('$date')
+        
+        if not timestamp_str:
+            return None
+        
+        # Parse MongoDB timestamp format
+        if timestamp_str.endswith('Z'):
+            log_dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        elif '+' in timestamp_str or '-' in timestamp_str[-6:]:
+            log_dt = datetime.fromisoformat(timestamp_str)
+        else:
+            log_dt = datetime.fromisoformat(timestamp_str)
+        
+        # Remove timezone info for comparison (assume local time)
+        return log_dt.replace(tzinfo=None)
+    except Exception:
+        return None
+
+def _find_start_position(logfile, start_dt):
+    """Use binary search to find the approximate start position in the file."""
+    file_size = os.path.getsize(logfile)
+    if file_size == 0:
+        return 0
+    
+    left = 0
+    right = file_size
+    best_position = 0
+    
+    # Binary search with up to 20 iterations (covers files up to 2^20 * chunk_size)
+    for _ in range(20):
+        if right - left < 1024:  # Stop when range is small enough
+            break
+        
+        mid = (left + right) // 2
+        
+        # Read from this position and find the next complete line
+        with open(logfile, 'rb') as f:
+            f.seek(mid)
+            # Skip to next newline to get a complete line
+            f.readline()  # Discard partial line
+            line_start = f.tell()
+            
+            # Read a few lines to find one with a timestamp
+            for _ in range(10):  # Try up to 10 lines
+                line_bytes = f.readline()
+                if not line_bytes:
+                    break
+                
+                try:
+                    line = line_bytes.decode('utf-8', errors='ignore')
+                    log_dt = _parse_timestamp_from_line(line)
+                    
+                    if log_dt is not None:
+                        if log_dt < start_dt:
+                            # We're before the start, search right half
+                            left = line_start
+                            best_position = line_start
+                        else:
+                            # We're at or after start, search left half
+                            right = line_start
+                        break
+                except Exception:
+                    continue
+            else:
+                # No timestamp found, be conservative and search left
+                right = line_start
+    
+    return best_position
+
 def trim_log_file(logfile, start_dt, end_dt):
-    """Trim log file by date/time range and return filtered lines."""
+    """Trim log file by date/time range and return filtered lines.
+    
+    Optimized with binary search to jump to start date and early exit at end date.
+    """
     filtered_lines = []
     skipped_lines = 0
     total_lines = 0
     
-    # Count total lines first
-    total_file_lines = count_lines(logfile)
+    # Early exit optimization: stop after seeing consecutive lines past end_dt
+    consecutive_past_end = 0
+    max_consecutive_past_end = 1000  # Safety margin for out-of-order entries
     
-    with open(logfile, 'r') as f:
-        for line in tqdm(f, total=total_file_lines, desc="Trimming log file", unit="lines"):
+    # Use binary search to jump to start position if start_dt is specified
+    start_position = 0
+    if start_dt:
+        click.echo("🔍 Finding start position...")
+        start_position = _find_start_position(logfile, start_dt)
+        click.echo(f"📍 Starting from position {start_position:,} bytes")
+    
+    # Open in binary mode to support byte-based seeking, then decode lines
+    with open(logfile, 'rb') as f:
+        # Jump to start position
+        if start_position > 0:
+            f.seek(start_position)
+            # Skip to next complete line (in case we landed in the middle)
+            f.readline()  # Discard partial line
+        
+        # Skip line counting - use None for total to show rate but not percentage
+        for line_bytes in tqdm(f, total=None, desc="Trimming log file", unit="lines"):
+            # Decode the line from bytes to string
+            try:
+                line = line_bytes.decode('utf-8', errors='replace')
+            except Exception:
+                # Skip lines that can't be decoded
+                continue
             total_lines += 1
+            
+            # Early exit: if we've seen many consecutive lines past end_dt, stop
+            if end_dt and consecutive_past_end >= max_consecutive_past_end:
+                break
+            
             try:
                 # Try to parse as JSON to get timestamp
                 entry = json.loads(line)
@@ -1465,25 +1585,38 @@ def trim_log_file(logfile, start_dt, end_dt):
                         
                         # Check if within range
                         include_line = True
+                        
+                        # Check start date (should be rare now since we jumped to start)
                         if start_dt and log_dt < start_dt:
                             include_line = False
+                            consecutive_past_end = 0
+                        
+                        # Check end date
                         if end_dt and log_dt > end_dt:
                             include_line = False
+                            consecutive_past_end += 1
+                        else:
+                            # Reset counter if we're still in range
+                            consecutive_past_end = 0
                         
                         if include_line:
                             filtered_lines.append(line)
+                            consecutive_past_end = 0  # Reset counter on match
                         else:
                             skipped_lines += 1
                     except Exception:
                         # If timestamp parsing fails, include the line
                         filtered_lines.append(line)
+                        consecutive_past_end = 0
                 else:
                     # If no timestamp, include the line
                     filtered_lines.append(line)
+                    consecutive_past_end = 0
                     
             except Exception:
                 # If JSON parsing fails, include the line
                 filtered_lines.append(line)
+                consecutive_past_end = 0
     
     return filtered_lines, total_lines, skipped_lines
 
@@ -1653,7 +1786,9 @@ def launch_web_ui(logfile=None, sample_percentage=100):
               help='Check for updates and upgrade Pepi.')
 @click.option('--sample', type=click.IntRange(0, 100), default=100,
               help='Percentage of log lines to sample (0-100). Default: 100 (no sampling)')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache, trim, from_date, until_date, web_ui, version, upgrade, sample):
+@click.option('--ftdc', type=click.Path(exists=True),
+              help='Launch FTDC Viewer for a given diagnostic.data path.')
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache, trim, from_date, until_date, web_ui, version, upgrade, sample, ftdc):
     """pepi: MongoDB log analysis tool."""
     
     # Handle version flag
@@ -1666,6 +1801,12 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
     # Handle upgrade flag
     if upgrade:
         perform_upgrade()
+        return
+        
+    # Handle ftdc flag
+    if ftdc:
+        from pepi.ftdc import launch_viewer
+        launch_viewer(ftdc)
         return
     
     # Check if logfile is provided

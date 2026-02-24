@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown (nothing to do for now)
 
-app = FastAPI(title="Pepi MongoDB Log Analyzer", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.0.0", lifespan=lifespan)
 
 # Enable GZip compression for better performance
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -96,6 +96,9 @@ class LogFilterRequest(BaseModel):
     date_from: Optional[str] = None
     date_to: Optional[str] = None
     limit: int = 10000  # Max lines to return
+
+class FtdcStartRequest(BaseModel):
+    path: str
 
 # Serve static files
 
@@ -1009,6 +1012,123 @@ async def get_filter_options(file_id: str):
             "namespaces": sorted(list(available_namespaces))[:20]  # Limit to top 20
         }
     }
+
+# --- File System Browsing ---
+@app.get("/api/fs/browse")
+async def browse_fs(path: str = None):
+    """Browse the server file system to select a directory."""
+    if not path:
+        path = os.path.expanduser("~")
+        
+    try:
+        path = os.path.abspath(path)
+        if not os.path.exists(path) or not os.path.isdir(path):
+            return {"status": "error", "message": "Directory does not exist."}
+            
+        directories = []
+        
+        # Add parent directory ".." if not at root
+        parent = os.path.dirname(path)
+        if parent and parent != path:
+            directories.append({"name": "..", "path": parent})
+            
+        with os.scandir(path) as it:
+            for entry in it:
+                if entry.is_dir() and not entry.name.startswith('.'):
+                    directories.append({"name": entry.name, "path": entry.path})
+                    
+        # Sort directories (ignoring "..")
+        sorted_dirs = [d for d in directories if d["name"] == ".."] + sorted([d for d in directories if d["name"] != ".."], key=lambda x: x["name"].lower())
+        
+        return {
+            "status": "success", 
+            "data": {
+                "current_path": path,
+                "directories": sorted_dirs
+            }
+        }
+    except PermissionError:
+        return {"status": "error", "message": "Permission denied."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# --- FTDC Endpoints ---
+
+@app.get("/api/ftdc/list")
+async def list_ftdc_dirs():
+    """Returns some discovered FTDC directories."""
+    dirs = []
+    base_paths = [os.path.expanduser("~/repositories"), os.path.expanduser("~/")]
+    for base in base_paths:
+        if os.path.exists(base):
+            try:
+                for entry in os.scandir(base):
+                    if entry.is_dir():
+                        diag_path = os.path.join(entry.path, "data", "diagnostic.data")
+                        if os.path.exists(diag_path):
+                            dirs.append(diag_path)
+                        diag_path2 = os.path.join(entry.path, "diagnostic.data")
+                        if os.path.exists(diag_path2):
+                            dirs.append(diag_path2)
+            except PermissionError:
+                pass
+    return {"status": "success", "data": {"directories": dirs}}
+
+@app.post("/api/ftdc/start")
+async def start_ftdc(request: FtdcStartRequest):
+    try:
+        from pepi.ftdc import launch_viewer
+        import threading
+        t = threading.Thread(target=launch_viewer, args=(request.path, False))
+        t.start()
+        return {"status": "success", "message": "FTDC Viewer starting"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ftdc/status")
+async def status_ftdc():
+    import urllib.request
+    try:
+        # First check if Grafana is actually responding
+        urllib.request.urlopen("http://localhost:3001/api/health", timeout=1)
+        
+        # If Grafana is up, let's see if the exporter has finished and output the exact URL yet
+        from pepi.ftdc import get_ftdc_dashboard_url
+        url = get_ftdc_dashboard_url()
+        
+        # If it returns the default URL, the exporter isn't done ingesting yet.
+        # We want the frontend to keep checking until we get the exact timestamped URL.
+        if "from=" not in url:
+             return {"status": "success", "data": {"running": False}}
+             
+        # Exporter is done! Return the precise URL.
+        return {"status": "success", "data": {"running": True, "url": url}}
+    except:
+        return {"status": "success", "data": {"running": False}}
+
+@app.post("/api/ftdc/stop")
+async def stop_ftdc():
+    try:
+        import subprocess
+        from pepi.ftdc import get_docker_compose_cmd
+        compose_file = os.path.join(os.path.dirname(__file__), "ftdc", "docker-compose.yml")
+        cmd = get_docker_compose_cmd() + ["-f", compose_file, "down"]
+        
+        env = os.environ.copy()
+        env.setdefault("INPUT_DIR", "/tmp")
+        env.setdefault("PARALLEL", "10")
+        env.setdefault("BATCH_SIZE", "200")
+        env.setdefault("INFLUX_DB_DATA_DIRECTORY", "/tmp")
+        env.setdefault("INFLUX_ADMIN_PASSWORD", "admin")
+        env.setdefault("INFLUX_API_TOKEN", "token")
+        env.setdefault("GRAFANA_ADMIN_PASSWORD", "admin")
+        env.setdefault("INFLUX_ORG", "org")
+        env.setdefault("INFLUX_BUCKET", "bucket")
+
+        subprocess.run(cmd, env=env, check=True)
+        return {"status": "success", "message": "FTDC Viewer stopped"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 def find_available_port(start_port=8000):
     """Find an available port for pepi web-ui, allowing max 3 instances."""

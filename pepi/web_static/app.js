@@ -7,10 +7,10 @@ let cliSamplePercentage = null;
 // Performance optimization functions
 function downsampleTimeSeriesData(data, maxPoints = 1000) {
     if (data.length <= maxPoints) return data;
-    
+
     const step = Math.ceil(data.length / maxPoints);
     const downsampled = [];
-    
+
     for (let i = 0; i < data.length; i += step) {
         // Use min/max/avg aggregation for the bucket
         const bucket = data.slice(i, i + step);
@@ -21,20 +21,20 @@ function downsampleTimeSeriesData(data, maxPoints = 1000) {
             max: Math.max(...bucket.map(item => item.value))
         });
     }
-    
+
     return downsampled;
 }
 
 function downsampleArray(arr, maxPoints) {
     if (arr.length <= maxPoints) return arr;
-    
+
     const step = Math.ceil(arr.length / maxPoints);
     const downsampled = [];
-    
+
     for (let i = 0; i < arr.length; i += step) {
         downsampled.push(arr[i]);
     }
-    
+
     return downsampled;
 }
 
@@ -82,7 +82,7 @@ function showChartSkeleton(plotId) {
 }
 
 // Initialize the application
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     initializeEventListeners();
     loadUploadedFiles();
     initializeDatePickers();
@@ -93,9 +93,9 @@ function initializeEventListeners() {
     const fileInput = document.getElementById('fileInput');
     const uploadArea = document.getElementById('uploadArea');
     const uploadCompact = document.getElementById('uploadCompact');
-    
+
     fileInput.addEventListener('change', handleFileUpload);
-    
+
     // Drag and drop - both compact and expanded areas
     [uploadArea, uploadCompact].forEach(area => {
         if (area) {
@@ -104,7 +104,7 @@ function initializeEventListeners() {
             area.addEventListener('drop', handleFileDrop);
         }
     });
-    
+
     // Tab switching
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', () => switchTab(btn.dataset.tab));
@@ -121,7 +121,7 @@ function initializeDatePickers() {
             allowInput: true,
             placeholder: "Select start date/time"
         });
-        
+
         flatpickr("#untilDate", {
             enableTime: true,
             dateFormat: "d/m/Y H:i:S",
@@ -143,11 +143,11 @@ function handleFileUpload(event) {
 function handleDragOver(event) {
     event.preventDefault();
     event.currentTarget.classList.add('dragover');
-    
+
     // Show expanded area when dragging over compact area
     const uploadArea = document.getElementById('uploadArea');
     const uploadCompact = document.getElementById('uploadCompact');
-    
+
     if (event.currentTarget === uploadCompact) {
         uploadArea.style.display = 'block';
         uploadArea.classList.add('active');
@@ -158,11 +158,11 @@ function handleDragOver(event) {
 function handleDragLeave(event) {
     event.preventDefault();
     event.currentTarget.classList.remove('dragover');
-    
+
     // Hide expanded area after a short delay
     const uploadArea = document.getElementById('uploadArea');
     const uploadCompact = document.getElementById('uploadCompact');
-    
+
     if (event.currentTarget === uploadArea && !event.relatedTarget?.closest('.upload-area')) {
         setTimeout(() => {
             if (!uploadArea.classList.contains('dragover')) {
@@ -177,13 +177,13 @@ function handleDragLeave(event) {
 function handleFileDrop(event) {
     event.preventDefault();
     event.currentTarget.classList.remove('dragover');
-    
+
     const files = event.dataTransfer.files;
-    
+
     // Reset upload areas
     const uploadArea = document.getElementById('uploadArea');
     const uploadCompact = document.getElementById('uploadCompact');
-    
+
     if (uploadArea) {
         uploadArea.style.display = 'none';
         uploadArea.classList.remove('active');
@@ -191,7 +191,7 @@ function handleFileDrop(event) {
     if (uploadCompact) {
         uploadCompact.style.display = 'block';
     }
-    
+
     if (files.length > 0) {
         uploadFile(files[0]);
     }
@@ -200,28 +200,28 @@ function handleFileDrop(event) {
 async function uploadFile(file) {
     const formData = new FormData();
     formData.append('file', file);
-    
+
     showProgress(0, 'Uploading file...');
-    
+
     try {
         const response = await fetch('/api/upload', {
             method: 'POST',
             body: formData
         });
-        
+
         if (!response.ok) {
             throw new Error(`Upload failed: ${response.statusText}`);
         }
-        
+
         const result = await response.json();
         showProgress(100, 'Upload complete!');
-        
+
         setTimeout(() => {
             hideProgress();
             showToast('success', `File uploaded successfully: ${result.filename}`);
             loadUploadedFiles();
         }, 1000);
-        
+
     } catch (error) {
         hideProgress();
         showToast('error', `Upload failed: ${error.message}`);
@@ -232,7 +232,7 @@ function showProgress(percent, text) {
     const container = document.getElementById('progressContainer');
     const fill = document.getElementById('progressFill');
     const textEl = document.getElementById('progressText');
-    
+
     container.style.display = 'block';
     fill.style.width = percent + '%';
     textEl.textContent = text;
@@ -247,43 +247,43 @@ async function loadUploadedFiles() {
     try {
         const response = await fetch('/api/files');
         const data = await response.json();
-        
+
         const filesSection = document.getElementById('filesSection');
         const filesList = document.getElementById('filesList');
         const filesCount = document.getElementById('filesCount');
-        
+
         if (data.files.length > 0) {
             filesSection.style.display = 'block';
             filesList.innerHTML = '';
-            
+
             // Update file count
             if (filesCount) {
                 filesCount.textContent = data.files.length;
             }
-            
+
             let preloadedFile = null;
-            
+
             data.files.forEach(file => {
                 const fileItem = createFileItem(file);
                 filesList.appendChild(fileItem);
-                
+
                 // Check if this is a pre-loaded file (first file loaded)
                 if (!currentFileId && !preloadedFile) {
                     preloadedFile = file;
                 }
             });
-            
+
             // Auto-select the first file if no file is currently selected
             if (preloadedFile && !currentFileId) {
                 // Store CLI sample percentage BEFORE selecting the file
                 if (preloadedFile.sample_percentage !== undefined && preloadedFile.sample_percentage !== null) {
                     cliSamplePercentage = preloadedFile.sample_percentage;
                 }
-                
+
                 setTimeout(() => {
                     selectFile(preloadedFile.file_id);
                     showToast('success', `Auto-loaded: ${preloadedFile.filename}`);
-                    
+
                     // Also try to set the UI input field
                     if (preloadedFile.sample_percentage !== undefined && preloadedFile.sample_percentage !== null) {
                         const setSamplingValue = () => {
@@ -310,10 +310,10 @@ function createFileItem(file) {
     const div = document.createElement('div');
     div.className = 'file-item';
     div.dataset.fileId = file.file_id;
-    
+
     // Calculate time ago
     const timeAgo = getTimeAgo(file.upload_date);
-    
+
     div.innerHTML = `
         <i class="fas fa-file-alt file-icon"></i>
         <span class="file-name" title="${file.filename}">${file.filename}</span>
@@ -333,24 +333,24 @@ function createFileItem(file) {
             </button>
         </div>
     `;
-    
+
     // Add click handler to select file
     div.addEventListener('click', (e) => {
         if (!e.target.closest('.file-actions')) {
             selectFile(file.file_id);
         }
     });
-    
+
     return div;
 }
 
 function getTimeAgo(dateString) {
     if (!dateString) return 'Just now';
-    
+
     const date = new Date(dateString);
     const now = new Date();
     const seconds = Math.floor((now - date) / 1000);
-    
+
     if (seconds < 60) return 'Just now';
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
     if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
@@ -361,7 +361,7 @@ function getTimeAgo(dateString) {
 function toggleFilesSection() {
     const filesSection = document.getElementById('filesSection');
     const toggleIcon = document.getElementById('filesToggleIcon');
-    
+
     filesSection.classList.toggle('collapsed');
     toggleIcon.classList.toggle('fa-chevron-up');
     toggleIcon.classList.toggle('fa-chevron-down');
@@ -394,7 +394,7 @@ function formatDateTime(isoString) {
 // File selection and analysis
 async function selectFile(fileId) {
     currentFileId = fileId;
-    
+
     // Update UI - highlight selected file
     document.querySelectorAll('.file-item').forEach(item => {
         item.classList.remove('selected', 'active');
@@ -403,12 +403,15 @@ async function selectFile(fileId) {
     if (selectedItem) {
         selectedItem.classList.add('selected', 'active');
     }
-    
-    // File selector removed - using side-by-side layout
-    
-    // Show dashboard
-    document.getElementById('dashboard').style.display = 'block';
-    
+
+    // Show dashboard tabs
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.style.display = 'block';
+    });
+
+    // Default to basic tab
+    switchTab('basic');
+
     // Load basic info
     await analyzeBasicInfo();
 }
@@ -417,7 +420,7 @@ async function downloadFile(fileId) {
     try {
         const response = await fetch(`/api/download/${fileId}`);
         if (!response.ok) throw new Error('Download failed');
-        
+
         // Get filename from Content-Disposition header or use default
         let filename = 'log_file.log';
         const contentDisposition = response.headers.get('Content-Disposition');
@@ -427,7 +430,7 @@ async function downloadFile(fileId) {
                 filename = filenameMatch[1];
             }
         }
-        
+
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -442,14 +445,14 @@ async function downloadFile(fileId) {
 
 async function deleteFile(fileId) {
     if (!confirm('Are you sure you want to delete this file?')) return;
-    
+
     try {
         const response = await fetch(`/api/files/${fileId}`, { method: 'DELETE' });
         if (!response.ok) throw new Error('Delete failed');
-        
+
         showToast('success', 'File deleted successfully');
         loadUploadedFiles();
-        
+
         if (currentFileId === fileId) {
             currentFileId = null;
             document.getElementById('dashboard').style.display = 'none';
@@ -466,13 +469,13 @@ function switchTab(tabName) {
         btn.classList.remove('active');
     });
     document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
-    
+
     // Update tab content
     document.querySelectorAll('.tab-pane').forEach(pane => {
         pane.classList.remove('active');
     });
     document.getElementById(tabName).classList.add('active');
-    
+
     // Load filter options when switching to extractor tab
     if (tabName === 'extractor' && currentFileId) {
         loadFilterOptions();
@@ -482,15 +485,15 @@ function switchTab(tabName) {
 // Analysis functions
 async function analyzeBasicInfo() {
     if (!currentFileId) return;
-    
+
     showLoading('Analyzing basic information...');
-    
+
     try {
         // Get sampling percentage from CLI or UI
         const samplePercentage = cliSamplePercentage || document.getElementById('samplePercentage')?.value || 100;
         const response = await fetch(`/api/analyze/${currentFileId}/basic?sample=${samplePercentage}`, { method: 'POST' });
         const result = await response.json();
-        
+
         if (result.status === 'success') {
             displayBasicInfo(result.data);
         } else {
@@ -507,7 +510,7 @@ function displayBasicInfo(data) {
     const fileInfo = document.getElementById('fileInfo');
     const mongoInfo = document.getElementById('mongoInfo');
     const samplingInfo = document.getElementById('samplingInfo');
-    
+
     fileInfo.innerHTML = `
         <p><strong>Filename:</strong> ${data.filename}</p>
         <p><strong>Size:</strong> ${formatFileSize(data.size)}</p>
@@ -515,16 +518,16 @@ function displayBasicInfo(data) {
         <p><strong>Start Date:</strong> ${data.start_date || 'N/A'}</p>
         <p><strong>End Date:</strong> ${data.end_date || 'N/A'}</p>
     `;
-    
-    const startupOptionsHtml = data.startup_options ? 
+
+    const startupOptionsHtml = data.startup_options ?
         `<div class="json-viewer">
             <div class="json-copy-btn" onclick="copyJsonToClipboard('startupOptionsJson')">
                 <i class="fas fa-copy"></i> Copy
             </div>
             <pre id="startupOptionsJson">${syntaxHighlightJson(data.startup_options)}</pre>
-        </div>` : 
+        </div>` :
         '<p><em>No startup options found</em></p>';
-    
+
     mongoInfo.innerHTML = `
         <p><strong>MongoDB Version:</strong> ${data.db_version || 'N/A'}</p>
         <p><strong>OS Version:</strong> ${data.os_version || 'N/A'}</p>
@@ -534,14 +537,14 @@ function displayBasicInfo(data) {
             ${startupOptionsHtml}
         </div>
     `;
-    
+
     // Display sampling information
     if (data.sampling_metadata) {
         const sampling = data.sampling_metadata;
         const samplingType = sampling.is_user_forced ? 'Manual' : 'Automatic';
-        const samplingPercentage = sampling.user_percentage !== null ? sampling.user_percentage : 
+        const samplingPercentage = sampling.user_percentage !== null ? sampling.user_percentage :
             (sampling.is_sampled ? Math.round(100 / sampling.sample_rate) : 100);
-        
+
         samplingInfo.innerHTML = `
             <div class="sampling-header">
                 <strong><i class="fas fa-percentage"></i> Sampling Information</strong>
@@ -552,9 +555,9 @@ function displayBasicInfo(data) {
             <p><strong>Total Lines:</strong> ${sampling.total_lines ? sampling.total_lines.toLocaleString() : 'N/A'}</p>
             ${sampling.is_sampled ? `<p><strong>Sample Rate:</strong> Every ${sampling.sample_rate} line${sampling.sample_rate > 1 ? 's' : ''}</p>` : ''}
             <p class="sampling-note">
-                <em>${sampling.is_user_forced ? 'User-specified sampling percentage' : 
-                  sampling.is_sampled ? 'Automatically applied for performance' : 
-                  'No sampling applied (processing all lines)'}</em>
+                <em>${sampling.is_user_forced ? 'User-specified sampling percentage' :
+                sampling.is_sampled ? 'Automatically applied for performance' :
+                    'No sampling applied (processing all lines)'}</em>
             </p>
         `;
     } else {
@@ -564,16 +567,16 @@ function displayBasicInfo(data) {
 
 async function analyzeConnections() {
     if (!currentFileId) return;
-    
+
     showLoading('Analyzing connections...');
-    
+
     // Get sampling percentage from CLI or UI
     const samplePercentage = cliSamplePercentage || document.getElementById('samplePercentage')?.value || 100;
-    
+
     try {
         const response = await fetch(`/api/analyze/${currentFileId}/connections?sample=${samplePercentage}`, { method: 'POST' });
         const result = await response.json();
-        
+
         if (result.status === 'success') {
             displayConnectionsData(result.data);
         } else {
@@ -588,16 +591,16 @@ async function analyzeConnections() {
 
 function displayConnectionsData(data) {
     const statsGrid = document.getElementById('connectionStats');
-    
+
     // Store original data for dynamic table updates
     originalConnectionsData = data;
     connectionEventsData = data.connection_events;
-    
+
     // Display data quality warnings if any
     if (data.data_quality && data.data_quality.warnings && data.data_quality.warnings.length > 0) {
         displayDataQualityWarnings(data.data_quality);
     }
-    
+
     // Display stats
     statsGrid.innerHTML = `
         <div class="stat-card data-quality-card">
@@ -652,9 +655,9 @@ function displayConnectionsData(data) {
             </div>
         </div>` : ''}
     `;
-    
+
     // IP filter dropdown removed - using interactive legend instead
-    
+
     // Create time series plots
     if (data.connections_timeseries && data.connections_timeseries.length > 0) {
         createConnectionsTimeSeriesPlot(data.connections_timeseries, data.connections_by_ip_timeseries);
@@ -664,14 +667,14 @@ function displayConnectionsData(data) {
         // Fallback to old chart if no time series data
         createConnectionsChart(data.connections);
     }
-    
+
     // Create initial connections table with all data
     updateConnectionsTable(data);
 }
 
 function displayDataQualityWarnings(dataQuality) {
     const warningsContainer = document.getElementById('connectionStats');
-    
+
     // Create warning banner
     const warningBanner = document.createElement('div');
     warningBanner.className = 'data-quality-warning';
@@ -691,23 +694,23 @@ function displayDataQualityWarnings(dataQuality) {
             ` : ''}
         </div>
     `;
-    
+
     // Insert warning at the top of stats grid
     warningsContainer.insertBefore(warningBanner, warningsContainer.firstChild);
 }
 
 function createConnectionsChart(connections) {
     const ctx = document.getElementById('connectionsChart').getContext('2d');
-    
+
     // Destroy existing chart if it exists
     if (charts.connections) {
         charts.connections.destroy();
     }
-    
+
     const ips = Object.keys(connections).slice(0, 10); // Top 10 IPs
     const opened = ips.map(ip => connections[ip].opened);
     const closed = ips.map(ip => connections[ip].closed);
-    
+
     charts.connections = new Chart(ctx, {
         type: 'bar',
         data: {
@@ -755,15 +758,15 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
             document.getElementById('connectionsTimeSeriesPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection data found in the log file.</p>';
             return;
         }
-        
+
         // Group data by time buckets (e.g., every 5 minutes)
         const timeBuckets = {};
         const bucketSize = 5 * 60 * 1000; // 5 minutes in milliseconds
-        
+
         connectionsData.forEach(conn => {
             const timestamp = new Date(conn.timestamp).getTime();
             const bucket = Math.floor(timestamp / bucketSize) * bucketSize;
-            
+
             if (!timeBuckets[bucket]) {
                 timeBuckets[bucket] = {
                     timestamp: new Date(bucket),
@@ -772,15 +775,15 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
             }
             timeBuckets[bucket].connection_count = Math.max(timeBuckets[bucket].connection_count, conn.connection_count);
         });
-        
+
         const sortedBuckets = Object.values(timeBuckets).sort((a, b) => a.timestamp - b.timestamp);
-        
+
         // Apply downsampling for performance
         const downsampledBuckets = downsampleTimeSeriesData(sortedBuckets.map(b => ({
             timestamp: b.timestamp,
             value: b.connection_count
         })), 1000);
-        
+
         const trace = {
             x: downsampledBuckets.map(b => b.timestamp),
             y: downsampledBuckets.map(b => b.value),
@@ -794,7 +797,7 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
             fill: 'tozeroy',
             fillcolor: 'rgba(102, 126, 234, 0.2)'
         };
-        
+
         const layout = {
             title: '',
             xaxis: {
@@ -810,45 +813,45 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
             showlegend: false,
             margin: { t: 20, r: 20, b: 80, l: 60 }
         };
-        
+
         const config = {
             responsive: true,
             displayModeBar: true,
             displaylogo: false
         };
-        
+
         renderChartProgressively('connectionsTimeSeriesPlot', [trace], layout, config);
-        
+
         // Add zoom sync event after chart is rendered
         setTimeout(() => {
             const plot = document.getElementById('connectionsTimeSeriesPlot');
-            plot.on('plotly_relayout', function(eventData) {
+            plot.on('plotly_relayout', function (eventData) {
                 syncConnectionsZoom('connectionsTimeSeriesPlot', eventData);
             });
         }, 100);
         return;
     }
-    
+
     // Create traces for each IP
     const traces = [];
     const colorPalette = [
-        '#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a', 
+        '#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a',
         '#ffecd2', '#a8edea', '#d299c2', '#ff9a9e', '#fecfef',
         '#ff9a8b', '#a8c8ec', '#fad0c4', '#ffd1ff', '#a1c4fd'
     ];
-    
+
     let colorIndex = 0;
     Object.entries(connectionsByIPData).forEach(([ip, timeSeries]) => {
         if (timeSeries && timeSeries.length > 0) {
             // Sort by timestamp
             const sortedData = timeSeries.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-            
+
             // Apply downsampling for performance
             const downsampledData = downsampleTimeSeriesData(sortedData.map(d => ({
                 timestamp: new Date(d.timestamp),
                 value: d.connection_count
             })), 1000);
-            
+
             const trace = {
                 x: downsampledData.map(d => d.timestamp),
                 y: downsampledData.map(d => d.value),
@@ -860,21 +863,21 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
                     width: 2
                 },
                 hovertemplate: `<b>${ip}</b><br>` +
-                              'Time: %{x}<br>' +
-                              'Connections: %{y}<br>' +
-                              '<extra></extra>'
+                    'Time: %{x}<br>' +
+                    'Connections: %{y}<br>' +
+                    '<extra></extra>'
             };
-            
+
             traces.push(trace);
             colorIndex++;
         }
     });
-    
+
     if (traces.length === 0) {
         document.getElementById('connectionsTimeSeriesPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No IP-specific connection data found in the log file.</p>';
         return;
     }
-    
+
     const layout = {
         title: '',
         xaxis: {
@@ -894,21 +897,21 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
         },
         margin: { t: 20, r: 20, b: 80, l: 60 }
     };
-    
+
     const config = {
         responsive: true,
         displayModeBar: true,
         displaylogo: false
     };
-    
+
     renderChartProgressively('connectionsTimeSeriesPlot', traces, layout, config);
-    
+
     // Add zoom sync event after chart is rendered
     setTimeout(() => {
         const plot = document.getElementById('connectionsTimeSeriesPlot');
-        plot.on('plotly_relayout', function(eventData) {
+        plot.on('plotly_relayout', function (eventData) {
             syncConnectionsZoom('connectionsTimeSeriesPlot', eventData);
-            
+
             // Update table based on zoom/range selection
             updateConnectionsTableForRange(eventData, connectionsByIPData);
         });
@@ -920,37 +923,37 @@ function createConnectionEventsTimeline(connectionEvents) {
         document.getElementById('connectionEventsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection events found in the log file.</p>';
         return;
     }
-    
+
     // Group events by IP and event type
     const eventsByIP = {};
     const eventTypes = new Set();
-    
+
     connectionEvents.forEach((event, index) => {
         const ip = event.ip || 'unknown';
         if (!eventsByIP[ip]) {
             eventsByIP[ip] = { opened: [], closed: [] };
         }
-        
+
         // Add index to event for click tracking
         event._index = index;
-        
+
         if (event.event_type === 'opened') {
             eventsByIP[ip].opened.push(event);
         } else if (event.event_type === 'closed') {
             eventsByIP[ip].closed.push(event);
         }
-        
+
         eventTypes.add(event.event_type);
     });
-    
+
     // Create traces for each IP and event type
     const traces = [];
     const colorPalette = [
-        '#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a', 
+        '#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a',
         '#ffecd2', '#a8edea', '#d299c2', '#ff9a9e', '#fecfef',
         '#ff9a8b', '#a8c8ec', '#fad0c4', '#ffd1ff', '#a1c4fd'
     ];
-    
+
     let colorIndex = 0;
     Object.entries(eventsByIP).forEach(([ip, events]) => {
         // Create trace for opened events
@@ -974,7 +977,7 @@ function createConnectionEventsTimeline(connectionEvents) {
             };
             traces.push(openedTrace);
         }
-        
+
         // Create trace for closed events
         if (events.closed.length > 0) {
             // Apply downsampling for performance
@@ -996,15 +999,15 @@ function createConnectionEventsTimeline(connectionEvents) {
             };
             traces.push(closedTrace);
         }
-        
+
         colorIndex++;
     });
-    
+
     if (traces.length === 0) {
         document.getElementById('connectionEventsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection events found in the log file.</p>';
         return;
     }
-    
+
     const layout = {
         title: '',
         xaxis: {
@@ -1025,27 +1028,27 @@ function createConnectionEventsTimeline(connectionEvents) {
         },
         margin: { t: 20, r: 20, b: 80, l: 60 }
     };
-    
+
     const config = {
         responsive: true,
         displayModeBar: true,
         displaylogo: false
     };
-    
+
     renderChartProgressively('connectionEventsPlot', traces, layout, config);
-    
+
     // Add events after chart is rendered
     setTimeout(() => {
         const plot = document.getElementById('connectionEventsPlot');
-        plot.on('plotly_relayout', function(eventData) {
+        plot.on('plotly_relayout', function (eventData) {
             syncConnectionsZoom('connectionEventsPlot', eventData);
         });
-        
-        plot.on('plotly_click', function(eventData) {
+
+        plot.on('plotly_click', function (eventData) {
             if (eventData.points && eventData.points.length > 0) {
                 const point = eventData.points[0];
                 const eventIndex = point.customdata;
-                
+
                 if (eventIndex !== undefined && connectionEventsData && connectionEventsData[eventIndex]) {
                     displayConnectionEventDetails(connectionEventsData[eventIndex]);
                 }
@@ -1057,9 +1060,9 @@ function createConnectionEventsTimeline(connectionEvents) {
 function displayConnectionEventDetails(event) {
     const detailsContainer = document.getElementById('connectionEventDetails');
     const contentContainer = document.getElementById('eventDetailsContent');
-    
+
     if (!detailsContainer || !contentContainer) return;
-    
+
     // Create a formatted display with event details and log message
     const eventInfo = `Event Type: ${event.event_type}
 IP Address: ${event.ip}
@@ -1069,10 +1072,10 @@ Total Connections: ${event.total_connections}
 
 Log Message:
 ${event.log_message || 'No log message available'}`;
-    
+
     contentContainer.textContent = eventInfo;
     detailsContainer.style.display = 'block';
-    
+
     // Scroll to the details section
     detailsContainer.scrollIntoView({ behavior: 'smooth' });
 }
@@ -1082,15 +1085,15 @@ function createTotalConnectionsPlot(connectionsData) {
         document.getElementById('connectionsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection data found in the log file.</p>';
         return;
     }
-    
+
     // Group data by time buckets (e.g., every 5 minutes)
     const timeBuckets = {};
     const bucketSize = 5 * 60 * 1000; // 5 minutes in milliseconds
-    
+
     connectionsData.forEach(conn => {
         const timestamp = new Date(conn.timestamp).getTime();
         const bucket = Math.floor(timestamp / bucketSize) * bucketSize;
-        
+
         if (!timeBuckets[bucket]) {
             timeBuckets[bucket] = {
                 timestamp: new Date(bucket),
@@ -1099,15 +1102,15 @@ function createTotalConnectionsPlot(connectionsData) {
         }
         timeBuckets[bucket].connection_count = Math.max(timeBuckets[bucket].connection_count, conn.connection_count);
     });
-    
+
     const sortedBuckets = Object.values(timeBuckets).sort((a, b) => a.timestamp - b.timestamp);
-    
+
     // Apply downsampling for performance
     const downsampledBuckets = downsampleTimeSeriesData(sortedBuckets.map(b => ({
         timestamp: b.timestamp,
         value: b.connection_count
     })), 1000);
-    
+
     const trace = {
         x: downsampledBuckets.map(b => b.timestamp),
         y: downsampledBuckets.map(b => b.value),
@@ -1121,7 +1124,7 @@ function createTotalConnectionsPlot(connectionsData) {
         fill: 'tozeroy',
         fillcolor: 'rgba(102, 126, 234, 0.2)'
     };
-    
+
     const layout = {
         title: '',
         xaxis: {
@@ -1137,19 +1140,19 @@ function createTotalConnectionsPlot(connectionsData) {
         showlegend: false,
         margin: { t: 20, r: 20, b: 80, l: 60 }
     };
-    
+
     const config = {
         responsive: true,
         displayModeBar: true,
         displaylogo: false
     };
-    
+
     renderChartProgressively('connectionsPlot', [trace], layout, config);
-    
+
     // Add zoom sync event after chart is rendered
     setTimeout(() => {
         const plot = document.getElementById('connectionsPlot');
-        plot.on('plotly_relayout', function(eventData) {
+        plot.on('plotly_relayout', function (eventData) {
             syncConnectionsZoom('connectionsPlot', eventData);
         });
     }, 100);
@@ -1164,15 +1167,15 @@ let connectionEventsData = null;
 
 function updateConnectionsTableForRange(eventData, connectionsByIPData) {
     // Check if this is a zoom/range change
-    const hasXRange = eventData['xaxis.range[0]'] || eventData['xaxis.range'] || 
-                      (eventData.xaxis && eventData.xaxis.range);
+    const hasXRange = eventData['xaxis.range[0]'] || eventData['xaxis.range'] ||
+        (eventData.xaxis && eventData.xaxis.range);
     const hasAutoScale = eventData['xaxis.autorange'];
-    
+
     if (!hasXRange && !hasAutoScale) return;
-    
+
     // Get the time range from the event data
     let startTime, endTime;
-    
+
     if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
         startTime = new Date(eventData['xaxis.range[0]']);
         endTime = new Date(eventData['xaxis.range[1]']);
@@ -1187,27 +1190,27 @@ function updateConnectionsTableForRange(eventData, connectionsByIPData) {
         updateConnectionsTable(originalConnectionsData);
         return;
     }
-    
+
     if (!startTime || !endTime) return;
-    
+
     // Filter connections data based on time range using actual events
     const filteredConnections = {};
     let totalOpened = 0;
     let totalClosed = 0;
-    
+
     Object.entries(connectionsByIPData).forEach(([ip, timeSeries]) => {
         if (!timeSeries || timeSeries.length === 0) return;
-        
+
         // Count actual open/close events in the time range
         let opened = 0;
         let closed = 0;
         const durations = [];
         let connectionStartTime = null;
-        
+
         // Process events in chronological order
         timeSeries.forEach((point, index) => {
             const pointTime = new Date(point.timestamp);
-            
+
             // Only process events within the selected time range
             if (pointTime >= startTime && pointTime <= endTime) {
                 // Check if this represents a connection open event
@@ -1215,11 +1218,11 @@ function updateConnectionsTableForRange(eventData, connectionsByIPData) {
                     opened++;
                     connectionStartTime = pointTime;
                 }
-                
+
                 // Check if this represents a connection close event
                 if (index > 0 && point.connection_count < timeSeries[index - 1].connection_count) {
                     closed++;
-                    
+
                     // Calculate duration if we have a start time
                     if (connectionStartTime) {
                         const duration = (pointTime - connectionStartTime) / 1000; // Convert to seconds
@@ -1230,7 +1233,7 @@ function updateConnectionsTableForRange(eventData, connectionsByIPData) {
                 }
             }
         });
-        
+
         // If we have any activity in this time range, include this IP
         if (opened > 0 || closed > 0) {
             filteredConnections[ip] = {
@@ -1238,12 +1241,12 @@ function updateConnectionsTableForRange(eventData, connectionsByIPData) {
                 closed: closed,
                 durations: durations
             };
-            
+
             totalOpened += opened;
             totalClosed += closed;
         }
     });
-    
+
     // Create filtered data object
     const filteredData = {
         connections: filteredConnections,
@@ -1254,63 +1257,63 @@ function updateConnectionsTableForRange(eventData, connectionsByIPData) {
             end: endTime.toISOString()
         }
     };
-    
+
     // Update the table with filtered data
     updateConnectionsTable(filteredData);
 }
 
 function updateConnectionsTable(data) {
     const tableContainer = document.getElementById('connectionsTable');
-    
+
     if (!data || !data.connections) {
         tableContainer.innerHTML = '<p>No connection data available for the selected time range.</p>';
         return;
     }
-    
+
     // Create connections table
     const table = document.createElement('table');
     table.className = 'data-table';
-    
+
     const headers = ['IP Address', 'Opened', 'Closed', 'Balance'];
     if (data.overall_stats) {
         headers.push('Avg Duration', 'Min Duration', 'Max Duration');
     }
-    
+
     table.innerHTML = `
         <thead>
             <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
         </thead>
         <tbody>
             ${Object.entries(data.connections).map(([ip, conn]) => {
-                let row = `
+        let row = `
                     <tr>
                         <td>${ip}</td>
                         <td>${conn.opened}</td>
                         <td>${conn.closed}</td>
                         <td>${conn.opened - conn.closed}</td>
                 `;
-                
-                if (data.ip_stats && data.ip_stats[ip]) {
-                    const stats = data.ip_stats[ip];
-                    row += `
+
+        if (data.ip_stats && data.ip_stats[ip]) {
+            const stats = data.ip_stats[ip];
+            row += `
                         <td>${stats.avg.toFixed(1)}s</td>
                         <td>${stats.min.toFixed(1)}s</td>
                         <td>${stats.max.toFixed(1)}s</td>
                     `;
-                }
-                
-                row += '</tr>';
-                return row;
-            }).join('')}
+        }
+
+        row += '</tr>';
+        return row;
+    }).join('')}
         </tbody>
     `;
-    
+
     tableContainer.innerHTML = '';
     tableContainer.appendChild(table);
-    
+
     // Make table sortable
     makeSortable(table, 'connections');
-    
+
     // Add time range info if available
     if (data.time_range) {
         const rangeInfo = document.createElement('div');
@@ -1327,19 +1330,19 @@ function updateConnectionsTable(data) {
 function syncConnectionsZoom(sourceId, eventData) {
     // Prevent infinite loop when syncing
     if (isConnectionsSyncing) return;
-    
+
     // Check if this is a relevant event (zoom, pan, autoscale, reset)
-    const hasXRange = eventData['xaxis.range[0]'] || eventData['xaxis.range'] || 
-                      (eventData.xaxis && eventData.xaxis.range);
+    const hasXRange = eventData['xaxis.range[0]'] || eventData['xaxis.range'] ||
+        (eventData.xaxis && eventData.xaxis.range);
     const hasAutoScale = eventData['xaxis.autorange'];
-    
+
     if (!hasXRange && !hasAutoScale) return;
-    
+
     isConnectionsSyncing = true;
-    
+
     // Build the relayout object based on what changed
     let relayoutData = {};
-    
+
     // Handle zoom/pan (explicit range)
     if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
         relayoutData['xaxis.range'] = [eventData['xaxis.range[0]'], eventData['xaxis.range[1]']];
@@ -1348,22 +1351,22 @@ function syncConnectionsZoom(sourceId, eventData) {
     } else if (eventData.xaxis && eventData.xaxis.range) {
         relayoutData['xaxis.range'] = eventData.xaxis.range;
     }
-    
+
     // Handle autorange (reset/double-click)
     if (eventData['xaxis.autorange'] !== undefined) {
         relayoutData['xaxis.autorange'] = eventData['xaxis.autorange'];
     }
-    
+
     // If no relevant changes, exit
     if (Object.keys(relayoutData).length === 0) {
         isConnectionsSyncing = false;
         return;
     }
-    
-        // Update all connection plots except the source
-        const plotIds = ['connectionsTimeSeriesPlot', 'connectionEventsPlot', 'connectionsPlot'];
+
+    // Update all connection plots except the source
+    const plotIds = ['connectionsTimeSeriesPlot', 'connectionEventsPlot', 'connectionsPlot'];
     let syncPromises = [];
-    
+
     plotIds.forEach(plotId => {
         if (plotId !== sourceId) {
             const plotElement = document.getElementById(plotId);
@@ -1376,7 +1379,7 @@ function syncConnectionsZoom(sourceId, eventData) {
             }
         }
     });
-    
+
     // Wait for all sync operations to complete
     Promise.all(syncPromises).finally(() => {
         setTimeout(() => {
@@ -1387,27 +1390,27 @@ function syncConnectionsZoom(sourceId, eventData) {
 
 async function analyzeQueries() {
     if (!currentFileId) return;
-    
+
     const namespace = document.getElementById('namespaceFilter').value;
     const operation = document.getElementById('operationFilter').value;
-    
+
     showLoading('Analyzing queries...');
-    
+
     try {
         let url = `/api/analyze/${currentFileId}/queries`;
         const params = new URLSearchParams();
         if (namespace) params.append('namespace', namespace);
         if (operation) params.append('operation', operation);
-        
+
         // Add sampling parameter
         const samplePercentage = cliSamplePercentage || document.getElementById('samplePercentage')?.value || 100;
         params.append('sample', samplePercentage);
-        
+
         if (params.toString()) url += '?' + params.toString();
-        
+
         const response = await fetch(url, { method: 'POST' });
         const result = await response.json();
-        
+
         if (result.status === 'success') {
             displayQueriesData(result.data);
         } else {
@@ -1427,16 +1430,16 @@ let selectedQueryIndex = null;
 function displayQueriesData(data) {
     // Store queries data globally
     currentQueriesData = data;
-    
+
     const statsGrid = document.getElementById('queryStats');
     const tableContainer = document.getElementById('queriesTable');
-    
+
     // Calculate stats
     const totalQueries = data.queries.reduce((sum, q) => sum + q.count, 0);
     const avgExecutionTime = data.queries.reduce((sum, q) => sum + q.mean_ms, 0) / data.queries.length;
     const slowestQuery = Math.max(...data.queries.map(q => q.max_ms));
     const collscans = data.queries.filter(q => q.indexes && q.indexes.includes('COLLSCAN')).length;
-    
+
     // Display stats
     statsGrid.innerHTML = `
         <div class="stat-card data-quality-card">
@@ -1480,14 +1483,14 @@ function displayQueriesData(data) {
             </div>
         </div>
     `;
-    
+
     // Create queries chart
     createQueriesChart(data.queries);
-    
+
     // Create queries table
     const table = document.createElement('table');
     table.className = 'data-table';
-    
+
     table.innerHTML = `
         <thead>
             <tr>
@@ -1528,31 +1531,31 @@ function displayQueriesData(data) {
             `).join('')}
         </tbody>
     `;
-    
+
     tableContainer.innerHTML = '';
     tableContainer.appendChild(table);
-    
+
     // Make table sortable
     makeSortable(table, 'queries');
 }
 
 function createQueriesChart(queries) {
     const ctx = document.getElementById('queriesChart').getContext('2d');
-    
+
     // Destroy existing chart if it exists
     if (charts.queries) {
         charts.queries.destroy();
     }
-    
+
     // Get top 10 queries by count
     const topQueries = queries
         .sort((a, b) => b.count - a.count)
         .slice(0, 10);
-    
+
     const labels = topQueries.map(q => `${q.namespace}.${q.operation}`);
     const counts = topQueries.map(q => q.count);
     const avgTimes = topQueries.map(q => q.mean_ms);
-    
+
     charts.queries = new Chart(ctx, {
         type: 'bar',
         data: {
@@ -1616,7 +1619,7 @@ function formatIndexes(indexes) {
     if (!indexes || indexes.length === 0) {
         return '<span class="index-badge">N/A</span>';
     }
-    
+
     return indexes.map(index => {
         const className = index === 'COLLSCAN' ? 'index-badge collscan' : 'index-badge';
         return `<span class="${className}">${index}</span>`;
@@ -1632,7 +1635,7 @@ function toggleInfo(element) {
     // Find the info content div within the same stat card
     const statCard = element.closest('.stat-card');
     const infoContent = statCard.querySelector('.info-content');
-    
+
     if (infoContent.style.display === 'none') {
         // Show the info content
         infoContent.style.display = 'block';
@@ -1646,13 +1649,13 @@ function toggleInfo(element) {
 
 async function analyzeReplicaSet() {
     if (!currentFileId) return;
-    
+
     showLoading('Analyzing replica set...');
-    
+
     try {
         const response = await fetch(`/api/analyze/${currentFileId}/replica-set`, { method: 'POST' });
         const result = await response.json();
-        
+
         if (result.status === 'success') {
             displayReplicaSetData(result.data);
         } else {
@@ -1667,9 +1670,9 @@ async function analyzeReplicaSet() {
 
 function displayReplicaSetData(data) {
     const container = document.getElementById('replicaSetContent');
-    
+
     let html = '';
-    
+
     // Node status
     if (Object.keys(data.node_status).length > 0) {
         html += `
@@ -1683,7 +1686,7 @@ function displayReplicaSetData(data) {
             </div>
         `;
     }
-    
+
     // Configuration
     if (data.configs.length > 0) {
         const latestConfig = data.configs[data.configs.length - 1];
@@ -1701,7 +1704,7 @@ function displayReplicaSetData(data) {
             </div>
         `;
     }
-    
+
     // State transitions
     if (data.states.length > 0) {
         html += `
@@ -1715,23 +1718,23 @@ function displayReplicaSetData(data) {
             </div>
         `;
     }
-    
+
     if (!html) {
         html = '<p>No replica set information found in the log.</p>';
     }
-    
+
     container.innerHTML = html;
 }
 
 async function analyzeClients() {
     if (!currentFileId) return;
-    
+
     showLoading('Analyzing clients...');
-    
+
     try {
         const response = await fetch(`/api/analyze/${currentFileId}/clients`, { method: 'POST' });
         const result = await response.json();
-        
+
         if (result.status === 'success') {
             displayClientsData(result.data);
         } else {
@@ -1746,12 +1749,12 @@ async function analyzeClients() {
 
 function displayClientsData(data) {
     const container = document.getElementById('clientsContent');
-    
+
     if (Object.keys(data.clients).length === 0) {
         container.innerHTML = '<p>No client information found in the log.</p>';
         return;
     }
-    
+
     const html = Object.entries(data.clients).map(([driverKey, clientInfo]) => `
         <div class="info-card">
             <h3><i class="fas fa-desktop"></i> ${driverKey}</h3>
@@ -1765,24 +1768,24 @@ function displayClientsData(data) {
             </div>
         </div>
     `).join('');
-    
+
     container.innerHTML = html;
 }
 
 // Trim functionality
 async function trimLogFile() {
     if (!currentFileId) return;
-    
+
     const fromDate = document.getElementById('fromDate').value;
     const untilDate = document.getElementById('untilDate').value;
-    
+
     if (!fromDate && !untilDate) {
         showToast('error', 'Please specify at least a from or until date');
         return;
     }
-    
+
     showLoading('Trimming log file...');
-    
+
     try {
         const response = await fetch(`/api/trim/${currentFileId}`, {
             method: 'POST',
@@ -1794,9 +1797,9 @@ async function trimLogFile() {
                 until_date: untilDate || null
             })
         });
-        
+
         const result = await response.json();
-        
+
         if (result.status === 'success') {
             displayTrimResult(result.data);
             showToast('success', 'Log file trimmed successfully');
@@ -1813,7 +1816,7 @@ async function trimLogFile() {
 
 function displayTrimResult(data) {
     const container = document.getElementById('trimResult');
-    
+
     container.innerHTML = `
         <h4><i class="fas fa-check-circle"></i> Trimming Complete</h4>
         <p><strong>New File:</strong> ${data.filename}</p>
@@ -1849,18 +1852,18 @@ function showToast(type, message) {
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    
-    const icon = type === 'success' ? 'fas fa-check-circle' : 
-                 type === 'error' ? 'fas fa-exclamation-circle' : 
-                 'fas fa-info-circle';
-    
+
+    const icon = type === 'success' ? 'fas fa-check-circle' :
+        type === 'error' ? 'fas fa-exclamation-circle' :
+            'fas fa-info-circle';
+
     toast.innerHTML = `
         <i class="${icon}"></i>
         <span>${message}</span>
     `;
-    
+
     container.appendChild(toast);
-    
+
     // Remove toast after 5 seconds
     setTimeout(() => {
         if (toast.parentNode) {
@@ -1874,44 +1877,44 @@ function sortTable(table, columnIndex, tableName) {
     const tbody = table.querySelector('tbody');
     const rows = Array.from(tbody.querySelectorAll('tr'));
     const headers = table.querySelectorAll('th');
-    
+
     // Determine sort direction
     let direction = 'asc';
     if (currentSort.table === tableName && currentSort.column === columnIndex) {
         direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
     }
-    
+
     // Update sort state
     currentSort = { table: tableName, column: columnIndex, direction: direction };
-    
+
     // Clear previous sort indicators
     headers.forEach(header => {
         header.classList.remove('sort-asc', 'sort-desc');
     });
-    
+
     // Add sort indicator to current column
     const currentHeader = headers[columnIndex];
     currentHeader.classList.add(direction === 'asc' ? 'sort-asc' : 'sort-desc');
-    
+
     // Sort rows
     rows.sort((a, b) => {
         const aValue = getCellValue(a, columnIndex);
         const bValue = getCellValue(b, columnIndex);
-        
+
         // Handle numeric values
         const aNum = parseFloat(aValue.replace(/[^\d.-]/g, ''));
         const bNum = parseFloat(bValue.replace(/[^\d.-]/g, ''));
-        
+
         if (!isNaN(aNum) && !isNaN(bNum)) {
             return direction === 'asc' ? aNum - bNum : bNum - aNum;
         }
-        
+
         // Handle string values
-        return direction === 'asc' 
+        return direction === 'asc'
             ? aValue.localeCompare(bValue)
             : bValue.localeCompare(aValue);
     });
-    
+
     // Re-append sorted rows
     rows.forEach(row => tbody.appendChild(row));
 }
@@ -1934,7 +1937,7 @@ function makeSortable(table, tableName) {
 // JSON syntax highlighting and utilities
 function syntaxHighlightJson(obj) {
     const jsonString = JSON.stringify(obj, null, 2);
-    
+
     return jsonString
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
@@ -1959,11 +1962,11 @@ function syntaxHighlightJson(obj) {
 function copyJsonToClipboard(elementId) {
     const element = document.getElementById(elementId);
     const pre = element.querySelector('pre');
-    
+
     if (pre) {
         // Get the text content without HTML tags
         const text = pre.textContent || pre.innerText;
-        
+
         // Use modern clipboard API if available
         if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text).then(() => {
@@ -1987,14 +1990,14 @@ function fallbackCopyToClipboard(text) {
     document.body.appendChild(textArea);
     textArea.focus();
     textArea.select();
-    
+
     try {
         document.execCommand('copy');
         showToast('success', 'Configuration copied to clipboard!');
     } catch (err) {
         showToast('error', 'Failed to copy to clipboard');
     }
-    
+
     document.body.removeChild(textArea);
 }
 
@@ -2004,19 +2007,19 @@ function showQueryExamplesFromElement(element) {
     const operation = element.dataset.operation;
     const encodedPattern = element.dataset.pattern;
     const rowIndex = parseInt(element.dataset.rowIndex);
-    
+
     showQueryExamples(namespace, operation, encodedPattern, rowIndex);
 }
 
 async function showQueryExamples(namespace, operation, encodedPattern, rowIndex) {
     if (!currentFileId) return;
-    
+
     const pattern = decodeURIComponent(encodedPattern);
-    
+
     console.log('🔍 Requesting query examples:', { namespace, operation, pattern });
-    
+
     showLoading('Loading query examples...');
-    
+
     try {
         const response = await fetch(`/api/analyze/${currentFileId}/query-examples`, {
             method: 'POST',
@@ -2029,11 +2032,11 @@ async function showQueryExamples(namespace, operation, encodedPattern, rowIndex)
                 pattern: pattern
             })
         });
-        
+
         const result = await response.json();
-        
+
         console.log('📊 Query examples result:', result);
-        
+
         if (result.status === 'success') {
             displayQueryExamples(result.data, rowIndex);
         } else {
@@ -2058,28 +2061,28 @@ function displayQueryExamples(data, rowIndex) {
             rowIndex: rowIndex
         };
     }
-    
+
     // Store the actual query examples
     currentQueryExamples = data;
-    
+
     // Remove any existing examples
     const existingExamples = document.querySelector('.query-examples');
     if (existingExamples) {
         existingExamples.remove();
     }
-    
+
     // Find the table and insert after the clicked row
     const table = document.querySelector('#queriesTable table');
     const rows = table.querySelectorAll('tbody tr');
     const targetRow = rows[rowIndex];
-    
+
     if (!targetRow) return;
-    
+
     // Create examples container
     const examplesContainer = document.createElement('div');
     examplesContainer.className = 'query-examples';
     examplesContainer.style.position = 'relative';
-    
+
     let examplesHtml = `
         <div class="examples-header">
             <h4>
@@ -2102,7 +2105,7 @@ function displayQueryExamples(data, rowIndex) {
             </div>
         </div>
     `;
-    
+
     if (data.examples.length === 0) {
         examplesHtml += '<p>No query examples found for this pattern.</p>';
     } else {
@@ -2116,7 +2119,7 @@ function displayQueryExamples(data, rowIndex) {
             } catch (e) {
                 fullLogEntry = { error: "Could not parse log entry", raw: example.raw_log_line };
             }
-            
+
             examplesHtml += `
                 <div class="query-example">
                     <div class="query-example-header">
@@ -2145,13 +2148,13 @@ function displayQueryExamples(data, rowIndex) {
         });
         examplesHtml += '</div>';
     }
-    
+
     examplesContainer.innerHTML = examplesHtml;
-    
+
     // Insert after the table
     const tableContainer = document.getElementById('queriesTable');
     tableContainer.appendChild(examplesContainer);
-    
+
     // Scroll to examples
     examplesContainer.scrollIntoView({ behavior: 'smooth' });
 }
@@ -2161,12 +2164,12 @@ function applyQueryExampleFormat() {
         showToast('warning', 'No query examples to format');
         return;
     }
-    
+
     const format = document.querySelector('input[name="queryExampleFormat"]:checked').value;
     const contentDiv = document.getElementById('queryExamplesContent');
-    
+
     if (!contentDiv) return;
-    
+
     let examplesHtml = '';
     currentQueryExamples.examples.forEach((example, index) => {
         const timestamp = new Date(example.timestamp).toLocaleString();
@@ -2176,7 +2179,7 @@ function applyQueryExampleFormat() {
         } catch (e) {
             fullLogEntry = { error: "Could not parse log entry", raw: example.raw_log_line };
         }
-        
+
         let displayContent;
         let cssClass = 'json-viewer-compact';
         if (format === 'raw') {
@@ -2185,7 +2188,7 @@ function applyQueryExampleFormat() {
         } else {
             displayContent = syntaxHighlightJson(fullLogEntry);
         }
-        
+
         examplesHtml += `
             <div class="query-example">
                 <div class="query-example-header">
@@ -2212,7 +2215,7 @@ function applyQueryExampleFormat() {
             </div>
         `;
     });
-    
+
     contentDiv.innerHTML = examplesHtml;
     showToast('success', 'Format applied');
 }
@@ -2222,10 +2225,10 @@ function expandQueryExample(exampleIndex) {
         showToast('error', 'Query example not found');
         return;
     }
-    
+
     const example = currentQueryExamples.examples[exampleIndex];
     const timestamp = new Date(example.timestamp).toLocaleString();
-    
+
     // Parse the full log entry
     let fullLogEntry = {};
     try {
@@ -2233,7 +2236,7 @@ function expandQueryExample(exampleIndex) {
     } catch (e) {
         fullLogEntry = { error: "Could not parse log entry", raw: example.raw_log_line };
     }
-    
+
     // Get current format
     const format = document.querySelector('input[name="queryExampleFormat"]:checked')?.value || 'pretty';
     let displayContent;
@@ -2242,7 +2245,7 @@ function expandQueryExample(exampleIndex) {
     } else {
         displayContent = syntaxHighlightJson(fullLogEntry);
     }
-    
+
     // Create modal
     const modal = document.createElement('div');
     modal.className = 'modal-overlay';
@@ -2256,7 +2259,7 @@ function expandQueryExample(exampleIndex) {
     modal.style.zIndex = '9999';
     modal.style.justifyContent = 'center';
     modal.style.alignItems = 'center';
-    
+
     const content = document.createElement('div');
     content.className = 'modal-content query-example-modal';
     content.innerHTML = `
@@ -2304,13 +2307,13 @@ function expandQueryExample(exampleIndex) {
             </div>
         </div>
     `;
-    
+
     modal.appendChild(content);
     document.body.appendChild(modal);
-    
+
     // Store modal reference for closing
     window.currentQueryExampleModal = modal;
-    
+
     // Close modal when clicking outside
     modal.addEventListener('click', (e) => {
         if (e.target === modal) {
@@ -2332,19 +2335,19 @@ function downloadQueryExample(exampleIndex) {
         showToast('error', 'Query example not found');
         return;
     }
-    
+
     const example = currentQueryExamples.examples[exampleIndex];
     const timestamp = new Date(example.timestamp).toLocaleString();
     const filename = `query-example-${exampleIndex + 1}-${timestamp.replace(/[:.]/g, '-')}.json`;
-    
-    const blob = new Blob([example.raw_log_line], {type: 'application/json'});
+
+    const blob = new Blob([example.raw_log_line], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
-    
+
     showToast('success', 'Query example downloaded');
 }
 
@@ -2359,7 +2362,7 @@ function copyQueryExample(exampleIndex) {
     const element = document.getElementById(`example-${exampleIndex}`);
     if (element) {
         const text = element.textContent || element.innerText;
-        
+
         if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text).then(() => {
                 showToast('success', 'Query copied to clipboard!');
@@ -2375,20 +2378,20 @@ function copyQueryExample(exampleIndex) {
 // Time Series Analysis Functions
 async function analyzeTimeSeries() {
     if (!currentFileId) return;
-    
+
     const namespace = document.getElementById('timeseriesNamespaceFilter').value;
-    
+
     showLoading('Analyzing time-series data...');
-    
+
     try {
         let url = `/api/analyze/${currentFileId}/timeseries`;
         if (namespace) {
             url += `?namespace=${encodeURIComponent(namespace)}`;
         }
-        
+
         const response = await fetch(url, { method: 'POST' });
         const result = await response.json();
-        
+
         if (result.status === 'success') {
             displayTimeSeriesData(result.data);
         } else {
@@ -2411,20 +2414,20 @@ function displayTimeSeriesData(data) {
         option.textContent = ns;
         namespaceFilter.appendChild(option);
     });
-    
+
     // Create slow queries plot
     createSlowQueriesPlot(data.slow_queries);
-    
+
     // Create connections plot
     createConnectionsPlot(data.connections);
-    
+
     // Create errors plot
     createErrorsPlot(data.errors);
-    
+
     // Display aggregated tables
     displayAggregatedQueriesTable(data.aggregated_queries);
     displayAggregatedErrorsTable(data.aggregated_errors);
-    
+
     // Show info if data was sampled
     if (data.sampled) {
         showToast('info', `Displaying 10,000 sampled queries out of ${data.total_slow_queries.toLocaleString()} total`);
@@ -2436,7 +2439,7 @@ function createSlowQueriesPlot(slowQueries) {
         document.getElementById('slowQueriesPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No slow queries found in the log file.</p>';
         return;
     }
-    
+
     // Group by namespace for different traces
     const tracesByNamespace = {};
     slowQueries.forEach(q => {
@@ -2459,9 +2462,9 @@ function createSlowQueriesPlot(slowQueries) {
             namespace: q.namespace
         });
     });
-    
+
     const traces = Object.values(tracesByNamespace);
-    
+
     const layout = {
         title: '',
         xaxis: {
@@ -2481,20 +2484,20 @@ function createSlowQueriesPlot(slowQueries) {
         },
         margin: { t: 20, r: 20, b: 80, l: 60 }
     };
-    
+
     const config = {
         responsive: true,
         displayModeBar: true,
         displaylogo: false
     };
-    
+
     Plotly.newPlot('slowQueriesPlot', traces, layout, config);
-    
+
     // Add events after chart is rendered
     setTimeout(() => {
         const plot = document.getElementById('slowQueriesPlot');
         // Add click event to show query details
-        plot.on('plotly_click', function(eventData) {
+        plot.on('plotly_click', function (eventData) {
             const point = eventData.points[0];
             const customdata = point.customdata;
             displayQueryDetails(
@@ -2505,9 +2508,9 @@ function createSlowQueriesPlot(slowQueries) {
                 customdata.plan_summary
             );
         });
-        
+
         // Add zoom sync event
-        plot.on('plotly_relayout', function(eventData) {
+        plot.on('plotly_relayout', function (eventData) {
             syncTimeSeriesZoom('slowQueriesPlot', eventData);
         });
     }, 100);
@@ -2518,7 +2521,7 @@ function createConnectionsPlot(connections) {
         document.getElementById('connectionsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection data found in the log file.</p>';
         return;
     }
-    
+
     const trace = {
         x: connections.map(c => c.timestamp),
         y: connections.map(c => c.connection_count),
@@ -2532,7 +2535,7 @@ function createConnectionsPlot(connections) {
         fill: 'tozeroy',
         fillcolor: 'rgba(102, 126, 234, 0.2)'
     };
-    
+
     const layout = {
         title: '',
         xaxis: {
@@ -2548,19 +2551,19 @@ function createConnectionsPlot(connections) {
         showlegend: false,
         margin: { t: 20, r: 20, b: 80, l: 60 }
     };
-    
+
     const config = {
         responsive: true,
         displayModeBar: true,
         displaylogo: false
     };
-    
+
     renderChartProgressively('connectionsPlot', [trace], layout, config);
-    
+
     // Add zoom sync event after chart is rendered
     setTimeout(() => {
         const plot = document.getElementById('connectionsPlot');
-        plot.on('plotly_relayout', function(eventData) {
+        plot.on('plotly_relayout', function (eventData) {
             syncTimeSeriesZoom('connectionsPlot', eventData);
         });
     }, 100);
@@ -2571,7 +2574,7 @@ function createErrorsPlot(errors) {
         document.getElementById('errorsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No errors or warnings found in the log file.</p>';
         return;
     }
-    
+
     // Group by message
     const tracesByMessage = {};
     errors.forEach(e => {
@@ -2583,7 +2586,7 @@ function createErrorsPlot(errors) {
                 mode: 'markers',
                 type: 'scatter',
                 name: msgKey.substring(0, 50) + (msgKey.length > 50 ? '...' : ''),
-                marker: { 
+                marker: {
                     size: 10,
                     symbol: 'diamond'
                 }
@@ -2592,9 +2595,9 @@ function createErrorsPlot(errors) {
         tracesByMessage[msgKey].x.push(e.timestamp);
         tracesByMessage[msgKey].y.push(msgKey);
     });
-    
+
     const traces = Object.values(tracesByMessage);
-    
+
     const layout = {
         title: '',
         xaxis: {
@@ -2614,19 +2617,19 @@ function createErrorsPlot(errors) {
         },
         margin: { t: 20, r: 20, b: 80, l: 60 }
     };
-    
+
     const config = {
         responsive: true,
         displayModeBar: true,
         displaylogo: false
     };
-    
+
     Plotly.newPlot('errorsPlot', traces, layout, config);
-    
+
     // Add zoom sync event after chart is rendered
     setTimeout(() => {
         const plot = document.getElementById('errorsPlot');
-        plot.on('plotly_relayout', function(eventData) {
+        plot.on('plotly_relayout', function (eventData) {
             syncTimeSeriesZoom('errorsPlot', eventData);
         });
     }, 100);
@@ -2638,19 +2641,19 @@ let isTimeSeriesSyncing = false;
 function syncTimeSeriesZoom(sourceId, eventData) {
     // Prevent infinite loop when syncing
     if (isTimeSeriesSyncing) return;
-    
+
     // Check if this is a relevant event (zoom, pan, autoscale, reset)
-    const hasXRange = eventData['xaxis.range[0]'] || eventData['xaxis.range'] || 
-                      (eventData.xaxis && eventData.xaxis.range);
+    const hasXRange = eventData['xaxis.range[0]'] || eventData['xaxis.range'] ||
+        (eventData.xaxis && eventData.xaxis.range);
     const hasAutoScale = eventData['xaxis.autorange'];
-    
+
     if (!hasXRange && !hasAutoScale) return;
-    
+
     isTimeSeriesSyncing = true;
-    
+
     // Build the relayout object based on what changed
     let relayoutData = {};
-    
+
     // Handle zoom/pan (explicit range)
     if (eventData['xaxis.range[0]'] && eventData['xaxis.range[1]']) {
         relayoutData['xaxis.range'] = [eventData['xaxis.range[0]'], eventData['xaxis.range[1]']];
@@ -2659,22 +2662,22 @@ function syncTimeSeriesZoom(sourceId, eventData) {
     } else if (eventData.xaxis && eventData.xaxis.range) {
         relayoutData['xaxis.range'] = eventData.xaxis.range;
     }
-    
+
     // Handle autorange (reset/double-click)
     if (eventData['xaxis.autorange'] !== undefined) {
         relayoutData['xaxis.autorange'] = eventData['xaxis.autorange'];
     }
-    
+
     // If no relevant changes, exit
     if (Object.keys(relayoutData).length === 0) {
         isTimeSeriesSyncing = false;
         return;
     }
-    
+
     // Update all plots except the source
     const plotIds = ['slowQueriesPlot', 'connectionsPlot', 'errorsPlot'];
     let syncPromises = [];
-    
+
     plotIds.forEach(plotId => {
         if (plotId !== sourceId) {
             const plotElement = document.getElementById(plotId);
@@ -2687,7 +2690,7 @@ function syncTimeSeriesZoom(sourceId, eventData) {
             }
         }
     });
-    
+
     // Wait for all sync operations to complete
     Promise.all(syncPromises).finally(() => {
         setTimeout(() => {
@@ -2699,7 +2702,7 @@ function syncTimeSeriesZoom(sourceId, eventData) {
 function displayQueryDetails(timestamp, duration, namespace, command, planSummary) {
     const detailsContainer = document.getElementById('queryDetails');
     const detailsContent = document.getElementById('queryDetailsContent');
-    
+
     detailsContent.innerHTML = `
         <div class="info-details">
             <p><strong>Timestamp:</strong> ${new Date(timestamp).toLocaleString()}</p>
@@ -2714,7 +2717,7 @@ function displayQueryDetails(timestamp, duration, namespace, command, planSummar
             <pre id="commandJson">${syntaxHighlightJson(command)}</pre>
         </div>
     `;
-    
+
     detailsContainer.style.display = 'block';
     detailsContainer.scrollIntoView({ behavior: 'smooth' });
 }
@@ -2727,7 +2730,7 @@ function copyCommandToClipboard() {
     const element = document.getElementById('commandJson');
     if (element) {
         const text = element.textContent || element.innerText;
-        
+
         if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text).then(() => {
                 showToast('success', 'Command copied to clipboard!');
@@ -2742,15 +2745,15 @@ function copyCommandToClipboard() {
 
 function displayAggregatedQueriesTable(aggregatedQueries) {
     const container = document.getElementById('aggregatedQueriesTable');
-    
+
     if (!aggregatedQueries || aggregatedQueries.length === 0) {
         container.innerHTML = '<p>No slow queries to aggregate.</p>';
         return;
     }
-    
+
     const table = document.createElement('table');
     table.className = 'timeseries-table';
-    
+
     table.innerHTML = `
         <thead>
             <tr>
@@ -2769,22 +2772,22 @@ function displayAggregatedQueriesTable(aggregatedQueries) {
             `).join('')}
         </tbody>
     `;
-    
+
     container.innerHTML = '';
     container.appendChild(table);
 }
 
 function displayAggregatedErrorsTable(aggregatedErrors) {
     const container = document.getElementById('aggregatedErrorsTable');
-    
+
     if (!aggregatedErrors || aggregatedErrors.length === 0) {
         container.innerHTML = '<p>No errors or warnings to display.</p>';
         return;
     }
-    
+
     const table = document.createElement('table');
     table.className = 'timeseries-table';
-    
+
     table.innerHTML = `
         <thead>
             <tr>
@@ -2801,16 +2804,16 @@ function displayAggregatedErrorsTable(aggregatedErrors) {
             `).join('')}
         </tbody>
     `;
-    
+
     container.innerHTML = '';
     container.appendChild(table);
-} 
+}
 
 function showLLMInstallationModal(statusData) {
     const modal = document.createElement('div');
     modal.className = 'recommendations-modal';
     modal.style.display = 'flex';
-    
+
     let instructionsHTML = '';
     if (statusData.instructions && statusData.instructions.length > 0) {
         instructionsHTML = statusData.instructions.map(instruction => `
@@ -2826,7 +2829,7 @@ function showLLMInstallationModal(statusData) {
             </div>
         `).join('');
     }
-    
+
     modal.innerHTML = `
         <div class="recommendations-content" style="max-width: 700px;">
             <div class="recommendations-header">
@@ -2862,7 +2865,7 @@ function showLLMInstallationModal(statusData) {
             </div>
         </div>
     `;
-    
+
     document.body.appendChild(modal);
 }
 
@@ -2881,15 +2884,15 @@ async function getIndexRecommendationForQuery(queryIndex) {
         alert('No query selected');
         return;
     }
-    
+
     const query = currentQueriesData.queries[queryIndex];
-    
+
     // Check LLM status first
     showLoading('Checking AI system...');
     try {
         const statusResponse = await fetch('/api/llm-status');
         const statusResult = await statusResponse.json();
-        
+
         if (statusResult.status === 'success' && statusResult.data.installation_required) {
             hideLoading();
             showLLMInstallationModal(statusResult.data);
@@ -2899,15 +2902,15 @@ async function getIndexRecommendationForQuery(queryIndex) {
         console.error('Failed to check LLM status:', error);
         // Continue anyway - will use rule-based recommendations
     }
-    
+
     // Use actual query example if available, otherwise use simplified pattern
     let rawLogLine = null;
     if (currentQueryExamples && currentQueryExamples.examples && currentQueryExamples.examples.length > 0) {
         rawLogLine = currentQueryExamples.examples[0].raw_log_line;
     }
-    
+
     showLoading('Analyzing query pattern...');
-    
+
     try {
         // Build single-query payload for the advisor
         const singleQueryData = {
@@ -2924,7 +2927,7 @@ async function getIndexRecommendationForQuery(queryIndex) {
                 indexes: query.indexes || []
             }
         };
-        
+
         // Call the recommendation API with single_query=true for LLM enhancement
         const response = await fetch(`/api/analyze/${currentFileId}/index-recommendations?single_query=true`, {
             method: 'POST',
@@ -2933,15 +2936,15 @@ async function getIndexRecommendationForQuery(queryIndex) {
             },
             body: JSON.stringify(singleQueryData)
         });
-        
+
         const result = await response.json();
-        
+
         console.log('📊 API Response:', result);
-        
+
         if (result.status === 'success') {
             // For single query analysis, we expect exactly one recommendation
             const recommendations = result.data.recommendations;
-            
+
             if (recommendations && recommendations.length > 0) {
                 console.log('✅ Displaying recommendation:', recommendations[0]);
                 displaySingleRecommendation(recommendations[0], query);
@@ -2962,11 +2965,11 @@ async function getIndexRecommendationForQuery(queryIndex) {
 
 
 function toggleExplanation(headerElement) {
-    const content = headerElement.parentElement.parentElement.querySelector('.explanation-content') || 
-                    headerElement.nextElementSibling;
+    const content = headerElement.parentElement.parentElement.querySelector('.explanation-content') ||
+        headerElement.nextElementSibling;
     const icon = headerElement.querySelector('i');
     const hint = headerElement.querySelector('.toggle-hint');
-    
+
     if (content && content.style.display === 'none') {
         content.style.display = 'block';
         icon.className = 'fas fa-chevron-down';
@@ -2980,16 +2983,16 @@ function toggleExplanation(headerElement) {
 
 function formatExplanation(text) {
     if (!text) return '<p>No explanation provided.</p>';
-    
+
     // Convert **Bold Text:** headers to styled divs
     text = text.replace(/\*\*([^*]+):\*\*/g, '<div class="explanation-section"><strong>$1:</strong></div>');
-    
+
     // Convert remaining **bold** text
     text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    
+
     // Convert line breaks to paragraphs
     const paragraphs = text.split('\n\n').filter(p => p.trim());
-    
+
     return paragraphs.map(para => {
         para = para.trim();
         // If it starts with a section header div, don't wrap in <p>
@@ -3002,7 +3005,7 @@ function formatExplanation(text) {
 
 function displayOptimizedQuery(rec, query) {
     const stats = rec.stats || {};
-    
+
     const modal = document.createElement('div');
     modal.className = 'recommendations-modal';
     modal.onclick = (e) => {
@@ -3010,11 +3013,11 @@ function displayOptimizedQuery(rec, query) {
             modal.remove();
         }
     };
-    
+
     const content = document.createElement('div');
     content.className = 'recommendations-content';
     content.onclick = (e) => e.stopPropagation();
-    
+
     content.innerHTML = `
         <div class="recommendations-header">
             <h2><i class="fas fa-check-circle" style="color: #27ae60;"></i> Query Already Optimized</h2>
@@ -3055,7 +3058,7 @@ function displayOptimizedQuery(rec, query) {
             </div>
         </div>
     `;
-    
+
     modal.appendChild(content);
     document.body.appendChild(modal);
 }
@@ -3066,32 +3069,32 @@ function displaySingleRecommendation(rec, query) {
         displayOptimizedQuery(rec, query);
         return;
     }
-    
+
     const priority = rec.priority_level || 'MEDIUM';
     const stats = rec.stats || {};
     const recommendation = rec.recommendation || {};
     const coverage_analysis = rec.coverage_analysis || {};
     const migration_strategy = recommendation.migration_strategy || {};
-    
+
     // Create modal
     const modal = document.createElement('div');
     modal.className = 'recommendations-modal';
     modal.onclick = (e) => {
         if (e.target === modal) closeRecommendations();
     };
-    
+
     const content = document.createElement('div');
     content.className = 'recommendations-content';
     content.onclick = (e) => e.stopPropagation();
-    
+
     const cmdId = 'cmd-single-' + Math.random().toString(36).substr(2, 9);
-    
+
     // Generate coverage analysis HTML
     const coverageHTML = generateCoverageAnalysisHTML(coverage_analysis, rec.current_index_structure);
-    
+
     // Generate migration strategy HTML
     const migrationHTML = generateMigrationStrategyHTML(migration_strategy);
-    
+
     content.innerHTML = `
         <div class="recommendations-header">
             <h2>
@@ -3142,7 +3145,7 @@ function displaySingleRecommendation(rec, query) {
             
         </div>
     `;
-    
+
     modal.appendChild(content);
     document.body.appendChild(modal);
 }
@@ -3153,11 +3156,11 @@ function showNoRecommendationForQuery(query) {
     modal.onclick = (e) => {
         if (e.target === modal) closeRecommendations();
     };
-    
+
     const content = document.createElement('div');
     content.className = 'recommendations-content';
     content.onclick = (e) => e.stopPropagation();
-    
+
     content.innerHTML = `
         <div class="recommendations-header">
             <h2><i class="fas fa-magic"></i> Index Recommendation</h2>
@@ -3178,7 +3181,7 @@ function showNoRecommendationForQuery(query) {
             </p>
         </div>
     `;
-    
+
     modal.appendChild(content);
     document.body.appendChild(modal);
 }
@@ -3193,9 +3196,9 @@ function closeRecommendations() {
 function copyIndexCommand(elementId) {
     const element = document.getElementById(elementId);
     if (!element) return;
-    
+
     const text = element.textContent || element.innerText;
-    
+
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(() => {
             showToast('success', 'Index command copied to clipboard!');
@@ -3211,20 +3214,20 @@ function generateCoverageAnalysisHTML(coverage_analysis, current_index_structure
     if (!coverage_analysis || Object.keys(coverage_analysis).length === 0) {
         return '';
     }
-    
+
     const coverage_score = coverage_analysis.coverage_score || 0;
     const recommendation_type = coverage_analysis.recommendation_type || 'CREATE_NEW';
     const esr_violations = coverage_analysis.esr_violations || [];
     const missing_fields = coverage_analysis.missing_fields || [];
     const improvement_details = coverage_analysis.improvement_details || [];
-    
+
     // Generate current index structure display
-    const currentIndexHTML = current_index_structure && current_index_structure.length > 0 
+    const currentIndexHTML = current_index_structure && current_index_structure.length > 0
         ? `<div class="current-index-structure">
              <strong>Current Index:</strong> {${current_index_structure.map(([field, dir]) => `${field}: ${dir}`).join(', ')}}
            </div>`
         : '<div class="current-index-structure"><strong>Current Index:</strong> COLLSCAN</div>';
-    
+
     // Generate coverage score bar
     const scoreColor = coverage_score >= 80 ? '#27ae60' : coverage_score >= 50 ? '#f39c12' : '#e74c3c';
     const scoreBarHTML = `
@@ -3235,9 +3238,9 @@ function generateCoverageAnalysisHTML(coverage_analysis, current_index_structure
             </div>
         </div>
     `;
-    
+
     // Generate issues list
-    const issuesHTML = improvement_details.length > 0 
+    const issuesHTML = improvement_details.length > 0
         ? `<div class="coverage-issues">
              <h6><i class="fas fa-exclamation-triangle"></i> Issues Found:</h6>
              <ul>
@@ -3245,7 +3248,7 @@ function generateCoverageAnalysisHTML(coverage_analysis, current_index_structure
              </ul>
            </div>`
         : '';
-    
+
     return `
         <div class="coverage-analysis">
             <h5><i class="fas fa-chart-bar"></i> Index Coverage Analysis</h5>
@@ -3260,18 +3263,18 @@ function generateMigrationStrategyHTML(migration_strategy) {
     if (!migration_strategy || Object.keys(migration_strategy).length === 0) {
         return '';
     }
-    
+
     const type = migration_strategy.type || 'CREATE_NEW';
     const commands = migration_strategy.commands || [];
     const warnings = migration_strategy.warnings || [];
     const impact = migration_strategy.estimated_impact || 'low';
-    
+
     // Generate impact badge
     const impactColor = impact === 'high' ? '#e74c3c' : impact === 'medium' ? '#f39c12' : '#27ae60';
     const impactBadge = `<span class="impact-badge" style="background-color: ${impactColor};">${impact.toUpperCase()} IMPACT</span>`;
-    
+
     // Generate warnings
-    const warningsHTML = warnings.length > 0 
+    const warningsHTML = warnings.length > 0
         ? `<div class="migration-warnings">
              <h6><i class="fas fa-exclamation-triangle"></i> Warnings:</h6>
              <ul>
@@ -3279,9 +3282,9 @@ function generateMigrationStrategyHTML(migration_strategy) {
              </ul>
            </div>`
         : '';
-    
+
     // Generate commands
-    const commandsHTML = commands.length > 0 
+    const commandsHTML = commands.length > 0
         ? `<div class="migration-commands">
              <h6><i class="fas fa-terminal"></i> Migration Commands:</h6>
              <div class="command-list">
@@ -3298,7 +3301,7 @@ function generateMigrationStrategyHTML(migration_strategy) {
              </div>
            </div>`
         : '';
-    
+
     return `
         <div class="migration-strategy">
             <h5><i class="fas fa-exchange-alt"></i> Migration Strategy ${impactBadge}</h5>
@@ -3315,14 +3318,14 @@ function displayPerformanceGuidance(namespace, operation, stats, coverage_analys
     modal.onclick = (e) => {
         if (e.target === modal) closeRecommendations();
     };
-    
+
     const content = document.createElement('div');
     content.className = 'recommendations-content';
     content.onclick = (e) => e.stopPropagation();
-    
+
     const coverage_score = coverage_analysis.coverage_score || 0;
     const current_index_structure = coverage_analysis.current_index_structure || [];
-    
+
     content.innerHTML = `
         <div class="recommendations-header">
             <h2>
@@ -3352,10 +3355,10 @@ function displayPerformanceGuidance(namespace, operation, stats, coverage_analys
             <div class="current-index-info">
                 <h5><i class="fas fa-database"></i> Current Index Structure</h5>
                 <div class="index-structure">
-                    ${current_index_structure.length > 0 
-                        ? `{${current_index_structure.map(([field, dir]) => `${field}: ${dir}`).join(', ')}}`
-                        : 'COLLSCAN'
-                    }
+                    ${current_index_structure.length > 0
+            ? `{${current_index_structure.map(([field, dir]) => `${field}: ${dir}`).join(', ')}}`
+            : 'COLLSCAN'
+        }
                 </div>
             </div>
             
@@ -3403,7 +3406,7 @@ function displayPerformanceGuidance(namespace, operation, stats, coverage_analys
             </div>
         </div>
     `;
-    
+
     modal.appendChild(content);
     document.body.appendChild(modal);
 }
@@ -3413,7 +3416,7 @@ let filterOptions = null;
 
 async function loadFilterOptions() {
     if (!currentFileId) return;
-    
+
     try {
         const response = await fetch(`/api/analyze/${currentFileId}/filter-options`);
         const data = await response.json();
@@ -3427,18 +3430,18 @@ async function loadFilterOptions() {
 
 function populateFilterOptions() {
     if (!filterOptions) return;
-    
+
     // Event Types
     const eventTypeContainer = document.getElementById('eventTypeOptions');
     eventTypeContainer.innerHTML = '';
-    
+
     const eventTypeLabels = {
         'COLLSCAN': 'COLLSCAN',
-        'IXSCAN': 'IXSCAN', 
+        'IXSCAN': 'IXSCAN',
         'slow_query': 'Slow Query (>100ms)',
         'error': 'Errors'
     };
-    
+
     Object.entries(filterOptions.event_types).forEach(([key, available]) => {
         if (available) {
             const label = document.createElement('label');
@@ -3446,24 +3449,24 @@ function populateFilterOptions() {
             eventTypeContainer.appendChild(label);
         }
     });
-    
+
     // Components
     const componentContainer = document.getElementById('componentOptions');
     componentContainer.innerHTML = '';
-    
+
     filterOptions.components.forEach(component => {
         const label = document.createElement('label');
         label.innerHTML = `<input type="checkbox" class="component" value="${component}"> ${component}`;
         componentContainer.appendChild(label);
     });
-    
+
     // Severities
     const severityContainer = document.getElementById('severityOptions');
     severityContainer.innerHTML = '';
-    
+
     const severityLabels = {
         'I': 'Info',
-        'W': 'Warning', 
+        'W': 'Warning',
         'E': 'Error',
         'F': 'Fatal',
         'D': 'Debug',
@@ -3473,35 +3476,35 @@ function populateFilterOptions() {
         'D4': 'Debug 4',
         'D5': 'Debug 5'
     };
-    
+
     filterOptions.severities.forEach(severity => {
         const label = document.createElement('label');
         const displayName = severityLabels[severity] || severity;
         label.innerHTML = `<input type="checkbox" class="severity" value="${severity}"> ${displayName}`;
         severityContainer.appendChild(label);
     });
-    
+
     // Operations
     const operationContainer = document.getElementById('operationOptions');
     operationContainer.innerHTML = '';
-    
+
     filterOptions.operations.forEach(operation => {
         const label = document.createElement('label');
         label.innerHTML = `<input type="checkbox" class="operation" value="${operation}"> ${operation}`;
         operationContainer.appendChild(label);
     });
-    
+
     // Namespaces
     const namespaceSelect = document.getElementById('extractNamespace');
     namespaceSelect.innerHTML = '<option value="">All namespaces</option>';
-    
+
     filterOptions.namespaces.forEach(namespace => {
         const option = document.createElement('option');
         option.value = namespace;
         option.textContent = namespace;
         namespaceSelect.appendChild(option);
     });
-    
+
     // Show namespace dropdown if we have namespaces
     if (filterOptions.namespaces.length > 0) {
         namespaceSelect.style.display = 'inline-block';
@@ -3509,13 +3512,13 @@ function populateFilterOptions() {
 }
 
 // Handle namespace toggle
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     const useCustomCheckbox = document.getElementById('useCustomNamespace');
     const namespaceSelect = document.getElementById('extractNamespace');
     const namespaceCustom = document.getElementById('extractNamespaceCustom');
-    
+
     if (useCustomCheckbox) {
-        useCustomCheckbox.addEventListener('change', function() {
+        useCustomCheckbox.addEventListener('change', function () {
             if (this.checked) {
                 namespaceSelect.style.display = 'none';
                 namespaceCustom.style.display = 'inline-block';
@@ -3538,7 +3541,7 @@ async function applyExtraction() {
     } else {
         namespace = document.getElementById('extractNamespace').value;
     }
-    
+
     const filters = {
         text_search: document.getElementById('extractTextSearch').value,
         case_sensitive: document.getElementById('extractCaseSensitive').checked,
@@ -3551,26 +3554,26 @@ async function applyExtraction() {
         date_to: document.getElementById('extractDateTo').value,
         limit: 10000
     };
-    
+
     showToast('info', 'Extracting logs...');
-    
+
     const response = await fetch(`/api/analyze/${currentFileId}/extract`, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(filters)
     });
-    
+
     const data = await response.json();
-    
+
     // Store raw lines for format changes
     currentExtractionLines = data.lines;
-    
+
     // Update match count
     document.getElementById('matchCount').textContent = data.total_matched;
-    
+
     // Apply current format
     applyOutputFormat();
-    
+
     if (data.truncated) {
         showToast('warning', `Results truncated to ${filters.limit} lines`);
     } else {
@@ -3583,10 +3586,10 @@ function applyOutputFormat() {
         showToast('warning', 'No data to format. Please apply filters first.');
         return;
     }
-    
+
     const format = document.querySelector('input[name="outputFormat"]:checked').value;
     let output = '';
-    
+
     if (format === 'raw') {
         output = currentExtractionLines.join('\n');
     } else if (format === 'pretty') {
@@ -3598,7 +3601,7 @@ function applyOutputFormat() {
             }
         }).join('\n---\n');
     }
-    
+
     document.getElementById('extractorOutput').value = output;
     showToast('success', 'Output format applied');
 }
@@ -3617,7 +3620,7 @@ function copyResults() {
 
 function downloadResults() {
     const output = document.getElementById('extractorOutput').value;
-    const blob = new Blob([output], {type: 'text/plain'});
+    const blob = new Blob([output], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -3640,9 +3643,179 @@ function clearExtractFilters() {
     document.getElementById('extractDateTo').value = '';
     document.querySelectorAll('.event-type, .component, .severity, .operation')
         .forEach(cb => cb.checked = false);
-    
+
     // Clear stored data and output
     currentExtractionLines = [];
     document.getElementById('extractorOutput').value = '';
     document.getElementById('matchCount').textContent = '0';
 }
+
+// --- FTDC Viewer ---
+
+let currentFsPath = '';
+
+async function openFsBrowser(path = '') {
+    const currentInputPath = document.getElementById('ftdcPath').value;
+    const modal = document.getElementById('fsBrowserModal');
+    modal.style.display = 'block';
+
+    // Try to open the currently typed path, or fallback to root/home
+    await loadFsDirectory(path || currentInputPath || '');
+}
+
+function closeFsBrowser() {
+    const modal = document.getElementById('fsBrowserModal');
+    modal.style.display = 'none';
+}
+
+async function loadFsDirectory(path) {
+    const listElement = document.getElementById('fsBrowserList');
+    listElement.innerHTML = '<div style="padding: 10px; text-align: center;"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+
+    try {
+        const url = path ? `/api/fs/browse?path=${encodeURIComponent(path)}` : '/api/fs/browse';
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (data.status === 'success') {
+            currentFsPath = data.data.current_path;
+            document.getElementById('fsCurrentPath').textContent = currentFsPath;
+
+            listElement.innerHTML = '';
+            data.data.directories.forEach(dir => {
+                const item = document.createElement('div');
+                item.style.padding = '8px 10px';
+                item.style.borderBottom = '1px solid #f1f3f5';
+                item.style.cursor = 'pointer';
+                item.style.display = 'flex';
+                item.style.alignItems = 'center';
+                item.style.gap = '8px';
+
+                // Add hover effect
+                item.onmouseover = () => item.style.backgroundColor = '#f8f9fa';
+                item.onmouseout = () => item.style.backgroundColor = 'transparent';
+
+                item.innerHTML = `<i class="fas ${dir.name === '..' ? 'fa-level-up-alt' : 'fa-folder'}"></i> <span>${dir.name}</span>`;
+                item.onclick = () => loadFsDirectory(dir.path);
+
+                listElement.appendChild(item);
+            });
+
+            if (data.data.directories.length === 0) {
+                listElement.innerHTML = '<div style="padding: 10px; color: #6c757d;">No subdirectories found.</div>';
+            }
+        } else {
+            listElement.innerHTML = `<div style="padding: 10px; color: #dc3545;">Error: ${data.message}</div>`;
+        }
+    } catch (e) {
+        listElement.innerHTML = `<div style="padding: 10px; color: #dc3545;">Failed to load directory.</div>`;
+    }
+}
+
+function selectCurrentFsPath() {
+    if (currentFsPath) {
+        document.getElementById('ftdcPath').value = currentFsPath;
+        closeFsBrowser();
+    }
+}
+
+async function loadFtdcDirs() {
+    try {
+        const response = await fetch('/api/ftdc/list');
+        const data = await response.json();
+        const list = document.getElementById('ftdcDiscoveredList');
+        if (list) {
+            list.innerHTML = '';
+            if (data.status === 'success' && data.data.directories.length > 0) {
+                data.data.directories.forEach(dir => {
+                    const li = document.createElement('li');
+                    li.style.cursor = 'pointer';
+                    li.style.padding = '5px';
+                    li.style.border = '1px solid #eee';
+                    li.style.borderRadius = '4px';
+                    li.innerHTML = `<i class="fas fa-folder"></i> ${dir}`;
+                    li.onclick = () => {
+                        document.getElementById('ftdcPath').value = dir;
+                    };
+                    list.appendChild(li);
+                });
+            } else {
+                list.innerHTML = '<li>No directories found</li>';
+            }
+        }
+    } catch (e) {
+        console.error("Failed to load FTDC dirs", e);
+    }
+}
+
+async function startFtdcViewer() {
+    const path = document.getElementById('ftdcPath').value;
+    if (!path) {
+        showToast('warning', 'Please enter or select a path');
+        return;
+    }
+    document.getElementById('ftdcStatusText').textContent = 'Starting... (This might take a minute)';
+    document.getElementById('ftdcStatusText').className = 'text-warning';
+
+    try {
+        const response = await fetch('/api/ftdc/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: path })
+        });
+        const data = await response.json();
+        if (data.status === 'success') {
+            showToast('success', 'FTDC Viewer starting');
+            setTimeout(checkFtdcStatus, 3000);
+        } else {
+            showToast('error', data.message || 'Failed to start');
+        }
+    } catch (e) {
+        showToast('error', 'Error starting FTDC viewer');
+    }
+}
+
+async function stopFtdcViewer() {
+    document.getElementById('ftdcStatusText').textContent = 'Stopping...';
+
+    try {
+        const response = await fetch('/api/ftdc/stop', { method: 'POST' });
+        const data = await response.json();
+        if (data.status === 'success') {
+            showToast('success', 'FTDC Viewer stopped');
+            document.getElementById('ftdcStatusText').textContent = 'Stopped';
+            document.getElementById('ftdcStatusText').className = '';
+            document.getElementById('ftdcLinkContainer').style.display = 'none';
+        } else {
+            showToast('error', data.message || 'Failed to stop');
+        }
+    } catch (e) {
+        showToast('error', 'Error stopping FTDC viewer');
+    }
+}
+
+async function checkFtdcStatus() {
+    try {
+        const response = await fetch('/api/ftdc/status');
+        const data = await response.json();
+        if (data.status === 'success' && data.data.running) {
+            document.getElementById('ftdcStatusText').textContent = 'Running';
+            document.getElementById('ftdcStatusText').className = 'text-success';
+            document.getElementById('ftdcLinkContainer').style.display = 'block';
+            document.getElementById('ftdcGrafanaLink').href = data.data.url;
+        } else {
+            document.getElementById('ftdcStatusText').textContent = 'Not Running / Starting...';
+            document.getElementById('ftdcStatusText').className = '';
+            document.getElementById('ftdcLinkContainer').style.display = 'none';
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+// Check status on load and load dirs if FTDC tab clicked
+document.addEventListener('DOMContentLoaded', () => {
+    checkFtdcStatus();
+    loadFtdcDirs();
+});
+setInterval(checkFtdcStatus, 5000); // Check status every 5 seconds

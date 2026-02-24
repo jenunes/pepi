@@ -24,6 +24,7 @@ A fast, user-friendly MongoDB log analysis tool for extracting insights from Mon
 - **File Management**: Download, delete, and manage multiple log files
 
 ### Advanced Features
+- **FTDC Viewer Integration**: Seamlessly launch Grafana and InfluxDB to analyze MongoDB `diagnostic.data` metrics directly from Pepi.
 - **Progress Bars**: Visual feedback during large file processing for all analysis modes
 - **Connection Duration Statistics**: Average, minimum, and maximum connection durations
 - **Sorting Options**: Sort connections by opened/closed counts
@@ -135,6 +136,9 @@ pepi --fetch /path/to/mongod.log --clients
 
 # Show query pattern statistics and performance analysis
 pepi --fetch /path/to/mongod.log --queries
+
+# Launch the integrated FTDC Viewer for metric analysis
+pepi --ftdc /path/to/diagnostic.data
 ```
 
 ### Connection Analysis
@@ -375,6 +379,7 @@ test.users | delete    | [{"limit": "?", "q": {"status": "?"}}]                 
 - `--queries`: Print query pattern statistics and performance analysis
 - `--report-full-patterns <file>`: Write complete query patterns to file (requires output file path)
 - `--clear-cache`: Clear all cached data and re-parse files
+- `--ftdc PATH`: Launch the FTDC Viewer (Grafana + InfluxDB) for the given `diagnostic.data` path
 
 ### Connection Analysis
 - `--connections`: Print connection information and statistics
@@ -479,6 +484,7 @@ pepi --web-ui --help
 - **Auto Browser Launch**: Automatically opens in your default browser
 - **File Pre-loading**: Files specified with `--fetch` are automatically loaded and ready for analysis
 - **Full Feature Set**: All CLI functionality available through intuitive web interface
+- **FTDC Viewer Integration**: Launch and monitor the FTDC Grafana dashboard directly from the web interface
 - **Interactive Charts**: Visual charts for connection patterns and query performance
 - **Real-time Processing**: Live progress updates during analysis
 
@@ -517,6 +523,7 @@ For more details, see the **[FAQ page](/pepi/web_static/faq.html)** in the web U
 
 ## Version History
 
+- **v2.0.0**: 🚀 Integrated native FTDC Viewer support! Launch a full Grafana + InfluxDB stack to analyze `diagnostic.data` directly from the CLI or Web UI.
 - **v1.0.0**: 🎉 Major release with intelligent index recommendations! Includes rule-based ESR analysis, index coverage scoring, synchronized time series interactions, and comprehensive FAQ page
 - **v0.0.2.3**: Re-added Index column and synchronized zoom for Time Series
 - **v0.0.2.2**: Added Time Series visualization tab with interactive Plotly charts for slow queries, connections, and errors over time

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -11,6 +12,7 @@
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
+
 <body>
     <div class="container">
         <!-- Header -->
@@ -38,28 +40,28 @@
                         </span>
                     </div>
                 </div>
-                
+
                 <!-- Expanded Upload Area (shows on hover/drag) -->
                 <div class="upload-area upload-expanded" id="uploadArea" style="display: none;">
                     <div class="upload-content">
                         <i class="fas fa-cloud-upload-alt"></i>
                         <h3>Drop Your MongoDB Log File Here</h3>
                         <p>Supports .log, .txt, and .json files</p>
-                        
+
                         <!-- Sampling Control -->
                         <div class="sampling-control">
                             <label for="samplePercentage">
-                                <i class="fas fa-percentage"></i> Sampling: 
+                                <i class="fas fa-percentage"></i> Sampling:
                             </label>
-                            <input type="number" id="samplePercentage" min="0" max="100" value="100" 
-                                   title="Percentage of log lines to process (0-100)">
+                            <input type="number" id="samplePercentage" min="0" max="100" value="100"
+                                title="Percentage of log lines to process (0-100)">
                             <span class="sampling-help" title="100% = process all lines, 50% = every 2nd line, etc.">
                                 <i class="fas fa-info-circle"></i>
                             </span>
                         </div>
                     </div>
                 </div>
-                
+
                 <!-- Progress Bar -->
                 <div class="progress-container" id="progressContainer" style="display: none;">
                     <div class="progress-bar">
@@ -82,22 +84,31 @@
         </section>
 
         <!-- Analysis Dashboard -->
-        <div class="dashboard" id="dashboard" style="display: none;">
+        <div class="dashboard" id="dashboard" style="display: block;">
             <!-- Navigation Tabs -->
-            <nav class="tabs">
-                <button class="tab-btn active" data-tab="basic"><i class="fas fa-info-circle"></i> Basic Info</button>
-                <button class="tab-btn" data-tab="extractor"><i class="fas fa-filter"></i> Raw Extractor</button>
-                <button class="tab-btn" data-tab="connections"><i class="fas fa-network-wired"></i> Connections</button>
-                <button class="tab-btn" data-tab="clients"><i class="fas fa-users"></i> Clients</button>
-                <button class="tab-btn" data-tab="queries"><i class="fas fa-search"></i> Queries</button>
-                <button class="tab-btn" data-tab="timeseries"><i class="fas fa-chart-line"></i> Time Series</button>
-                <button class="tab-btn" data-tab="replica-set"><i class="fas fa-server"></i> Replica Set</button>
+            <nav class="tabs" id="mainTabs">
+                <button class="tab-btn active" data-tab="basic" style="display: none;"><i
+                        class="fas fa-info-circle"></i> Basic Info</button>
+                <button class="tab-btn" data-tab="extractor" style="display: none;"><i class="fas fa-filter"></i> Raw
+                    Extractor</button>
+                <button class="tab-btn" data-tab="connections" style="display: none;"><i
+                        class="fas fa-network-wired"></i> Connections</button>
+                <button class="tab-btn" data-tab="clients" style="display: none;"><i class="fas fa-users"></i>
+                    Clients</button>
+                <button class="tab-btn" data-tab="queries" style="display: none;"><i class="fas fa-search"></i>
+                    Queries</button>
+                <button class="tab-btn" data-tab="timeseries" style="display: none;"><i class="fas fa-chart-line"></i>
+                    Time Series</button>
+                <button class="tab-btn" data-tab="replica-set" style="display: none;"><i class="fas fa-server"></i>
+                    Replica Set</button>
+                <button class="tab-btn active" data-tab="ftdc-viewer"><i class="fas fa-chart-pie"></i> FTDC
+                    Viewer</button>
             </nav>
 
             <!-- Tab Content -->
             <div class="tab-content">
                 <!-- Basic Info Tab -->
-                <div class="tab-pane active" id="basic">
+                <div class="tab-pane" id="basic">
                     <div class="info-grid" id="basicInfo">
                         <!-- Left Column: File Information and Trim -->
                         <div class="info-column">
@@ -106,11 +117,12 @@
                                 <div class="info-details" id="fileInfo">
                                     <p>Select a file to view information</p>
                                 </div>
-                                <div class="info-details" id="samplingInfo" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e9ecef;">
+                                <div class="info-details" id="samplingInfo"
+                                    style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e9ecef;">
                                     <p>No sampling data available</p>
                                 </div>
                             </div>
-                            
+
                             <!-- Trim Log Section -->
                             <div class="info-card" style="margin-top: 20px;">
                                 <h3><i class="fas fa-cut"></i> Trim Log File</h3>
@@ -118,26 +130,28 @@
                                     <div class="trim-form">
                                         <div class="form-group">
                                             <label for="fromDate">From Date/Time:</label>
-                                            <input type="text" id="fromDate" class="flatpickr-input" placeholder="Select start date/time">
+                                            <input type="text" id="fromDate" class="flatpickr-input"
+                                                placeholder="Select start date/time">
                                             <small>Click to open calendar or type manually</small>
                                         </div>
-                                        
+
                                         <div class="form-group">
                                             <label for="untilDate">Until Date/Time:</label>
-                                            <input type="text" id="untilDate" class="flatpickr-input" placeholder="Select end date/time">
+                                            <input type="text" id="untilDate" class="flatpickr-input"
+                                                placeholder="Select end date/time">
                                             <small>Click to open calendar or type manually</small>
                                         </div>
-                                        
+
                                         <button class="btn btn-primary" onclick="trimLogFile()">
                                             <i class="fas fa-cut"></i> Trim Log File
                                         </button>
                                     </div>
-                                    
+
                                     <div id="trimResult" class="trim-result"></div>
                                 </div>
                             </div>
                         </div>
-                        
+
                         <!-- Right Column: MongoDB Information -->
                         <div class="info-column">
                             <div class="info-card">
@@ -163,20 +177,20 @@
                             </button>
                         </div>
                     </div>
-                    
+
                     <!-- Plotly Charts Container -->
                     <div class="timeseries-charts">
                         <div class="chart-section">
                             <h3><i class="fas fa-clock"></i> Slow Queries Over Time</h3>
                             <div id="slowQueriesPlot" class="plotly-chart"></div>
                         </div>
-                        
+
                         <div class="chart-section">
                             <h3><i class="fas fa-exclamation-triangle"></i> Errors & Warnings Over Time</h3>
                             <div id="errorsPlot" class="plotly-chart"></div>
                         </div>
                     </div>
-                    
+
                     <!-- Query Details Display -->
                     <div id="queryDetails" class="query-details" style="display: none;">
                         <button class="close-details" onclick="closeQueryDetails()">
@@ -185,14 +199,14 @@
                         <h4><i class="fas fa-info-circle"></i> Query Details</h4>
                         <div id="queryDetailsContent"></div>
                     </div>
-                    
+
                     <!-- Aggregated Tables -->
                     <div class="timeseries-tables">
                         <div class="table-section">
                             <h3><i class="fas fa-table"></i> Slow Queries by Namespace</h3>
                             <div id="aggregatedQueriesTable"></div>
                         </div>
-                        
+
                         <div class="table-section">
                             <h3><i class="fas fa-bug"></i> Errors & Warnings Summary</h3>
                             <div id="aggregatedErrorsTable"></div>
@@ -204,14 +218,14 @@
                 <div class="tab-pane" id="extractor">
                     <div class="extractor-filters">
                         <h3>🔧 Filter Options</h3>
-                        
+
                         <!-- Text Search -->
                         <div class="filter-row">
                             <label>Text Search:</label>
                             <input type="text" id="extractTextSearch" placeholder="e.g., COLLSCAN, userId, error">
                             <label><input type="checkbox" id="extractCaseSensitive"> Case Sensitive</label>
                         </div>
-                        
+
                         <!-- Event Type -->
                         <div class="filter-row">
                             <label>Event Type:</label>
@@ -219,7 +233,7 @@
                                 <!-- Dynamically populated -->
                             </div>
                         </div>
-                        
+
                         <!-- Component -->
                         <div class="filter-row">
                             <label>Component:</label>
@@ -227,7 +241,7 @@
                                 <!-- Dynamically populated -->
                             </div>
                         </div>
-                        
+
                         <!-- Severity -->
                         <div class="filter-row">
                             <label>Severity:</label>
@@ -235,7 +249,7 @@
                                 <!-- Dynamically populated -->
                             </div>
                         </div>
-                        
+
                         <!-- Operation -->
                         <div class="filter-row">
                             <label>Operation:</label>
@@ -243,30 +257,31 @@
                                 <!-- Dynamically populated -->
                             </div>
                         </div>
-                        
+
                         <!-- Namespace -->
                         <div class="filter-row">
                             <label>Namespace/Collection:</label>
                             <select id="extractNamespace" style="display: none;">
                                 <option value="">All namespaces</option>
                             </select>
-                            <input type="text" id="extractNamespaceCustom" placeholder="e.g., cprng_proddb.cpr_Bids" style="display: none;">
+                            <input type="text" id="extractNamespaceCustom" placeholder="e.g., cprng_proddb.cpr_Bids"
+                                style="display: none;">
                             <label><input type="checkbox" id="useCustomNamespace"> Custom namespace</label>
                         </div>
-                        
+
                         <!-- Time Range -->
                         <div class="filter-row">
                             <label>Time Range:</label>
                             From: <input type="text" id="extractDateFrom" placeholder="2024-10-10T07:00:00">
                             To: <input type="text" id="extractDateTo" placeholder="2024-10-10T08:00:00">
                         </div>
-                        
+
                         <div class="filter-actions">
                             <button class="btn btn-primary" onclick="applyExtraction()">Apply Filters</button>
                             <button class="btn btn-secondary" onclick="clearExtractFilters()">Clear All</button>
                         </div>
                     </div>
-                    
+
                     <!-- Results -->
                     <div class="extractor-results">
                         <h3>📊 Results</h3>
@@ -276,7 +291,7 @@
                             <button class="btn-small" onclick="downloadResults()">Download</button>
                             <button class="btn-small" onclick="selectAllResults()">Select All</button>
                         </div>
-                        
+
                         <!-- Output format -->
                         <div class="output-format">
                             <label>Output Format:</label>
@@ -284,56 +299,59 @@
                             <label><input type="radio" name="outputFormat" value="pretty"> Pretty JSON</label>
                             <button class="btn-small" onclick="applyOutputFormat()">Apply Format</button>
                         </div>
-                        
+
                         <textarea id="extractorOutput" readonly></textarea>
                     </div>
                 </div>
 
                 <!-- Connections Tab -->
                 <div class="tab-pane" id="connections">
-        <div class="analysis-header">
-            <h2><i class="fas fa-network-wired"></i> Connection Analysis</h2>
-            <div class="query-controls">
-                <button class="btn btn-primary" onclick="analyzeConnections()">
-                    <i class="fas fa-play"></i> Analyze Connections
-                </button>
-            </div>
-        </div>
+                    <div class="analysis-header">
+                        <h2><i class="fas fa-network-wired"></i> Connection Analysis</h2>
+                        <div class="query-controls">
+                            <button class="btn btn-primary" onclick="analyzeConnections()">
+                                <i class="fas fa-play"></i> Analyze Connections
+                            </button>
+                        </div>
+                    </div>
                     <div class="stats-grid" id="connectionStats"></div>
-                    
+
                     <!-- Connection Time Series Charts -->
                     <div class="timeseries-charts">
                         <div class="chart-section">
                             <h3>
                                 <i class="fas fa-chart-line"></i> Connections Over Time
-                                <i class="fas fa-info-circle help-icon" title="Shows individual IP connection counts over time. Click legend items to toggle IPs on/off. Data may be incomplete if connection events are missing from the log."></i>
+                                <i class="fas fa-info-circle help-icon"
+                                    title="Shows individual IP connection counts over time. Click legend items to toggle IPs on/off. Data may be incomplete if connection events are missing from the log."></i>
                             </h3>
                             <div id="connectionsTimeSeriesPlot" class="plotly-chart"></div>
                         </div>
-                        
+
                         <div class="chart-section">
                             <h3>
                                 <i class="fas fa-plug"></i> Total Connections Over Time
-                                <i class="fas fa-info-circle help-icon" title="Shows MongoDB's authoritative total connection count. This is the most accurate source as it comes directly from MongoDB's internal counter."></i>
+                                <i class="fas fa-info-circle help-icon"
+                                    title="Shows MongoDB's authoritative total connection count. This is the most accurate source as it comes directly from MongoDB's internal counter."></i>
                             </h3>
                             <div id="connectionsPlot" class="plotly-chart"></div>
                         </div>
-                        
+
                         <div class="chart-section">
                             <h3>
                                 <i class="fas fa-clock"></i> Connection Events Timeline
-                                <i class="fas fa-info-circle help-icon" title="Shows individual connection open/close events as scatter points. Circles = opened, X marks = closed. Each IP gets a unique color. Click legend to toggle IPs and event types."></i>
+                                <i class="fas fa-info-circle help-icon"
+                                    title="Shows individual connection open/close events as scatter points. Circles = opened, X marks = closed. Each IP gets a unique color. Click legend to toggle IPs and event types."></i>
                             </h3>
                             <div id="connectionEventsPlot" class="plotly-chart"></div>
                         </div>
                     </div>
-                    
+
                     <!-- Connection Event Details -->
                     <div class="event-details" id="connectionEventDetails" style="display: none;">
                         <h3><i class="fas fa-info-circle"></i> Connection Event Details</h3>
                         <div class="event-details-content" id="eventDetailsContent"></div>
                     </div>
-                    
+
                     <div class="table-container" id="connectionsTable"></div>
                 </div>
 
@@ -385,6 +403,51 @@
                     <div id="replicaSetContent"></div>
                 </div>
 
+                <!-- FTDC Viewer Tab -->
+                <div class="tab-pane active" id="ftdc-viewer">
+                    <div class="analysis-header">
+                        <h2><i class="fas fa-chart-pie"></i> FTDC Viewer Integration</h2>
+                    </div>
+                    <div class="ftdc-container"
+                        style="padding: 20px; background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+                        <p>Launch the FTDC Viewer (Grafana + InfluxDB + Exporter) to analyze MongoDB diagnostic.data.
+                        </p>
+
+                        <div class="form-group" style="margin-top: 15px;">
+                            <label>FTDC Directory or File Path:</label>
+                            <div style="display: flex; gap: 10px;">
+                                <input type="text" id="ftdcPath" placeholder="e.g., /path/to/diagnostic.data"
+                                    style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 4px;">
+                                <button class="btn btn-secondary" onclick="openFsBrowser()">
+                                    <i class="fas fa-folder-open"></i> Browse
+                                </button>
+                                <button class="btn btn-primary" onclick="startFtdcViewer()">Start Viewer</button>
+                                <button class="btn btn-secondary" onclick="stopFtdcViewer()"
+                                    style="background-color: #e74c3c;">Stop Viewer</button>
+                            </div>
+                        </div>
+
+                        <div id="ftdcStatus"
+                            style="margin-top: 20px; padding: 15px; border-radius: 4px; background: #f8f9fa;">
+                            <strong>Status:</strong> <span id="ftdcStatusText">Checking...</span>
+                            <div id="ftdcLinkContainer" style="display: none; margin-top: 10px;">
+                                <a id="ftdcGrafanaLink" href="#" target="_blank" class="btn btn-success btn-sm"><i
+                                        class="fas fa-external-link-alt"></i> Open Grafana Dashboard</a>
+                            </div>
+                        </div>
+
+                        <div id="ftdcHelp" style="margin-top: 20px; font-size: 0.9em; color: #666;">
+                            <p><strong>Note:</strong> This requires Docker and Docker Compose to be installed and
+                                running on your system.</p>
+                            <p>You can also quickly select from discovered directories:</p>
+                            <ul id="ftdcDiscoveredList" class="discovered-list"
+                                style="list-style-type: none; padding-left: 0; display: flex; flex-direction: column; gap: 5px; max-height: 200px; overflow-y: auto;">
+                                <li>Loading...</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </div>
 
@@ -393,6 +456,35 @@
             <div class="loading-content">
                 <div class="spinner"></div>
                 <p id="loadingText">Processing...</p>
+            </div>
+        </div>
+
+        <!-- File System Browser Modal -->
+        <div id="fsBrowserModal" class="modal"
+            style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
+            <div class="modal-content"
+                style="background-color: #fefefe; margin: 10% auto; padding: 20px; border: 1px solid #888; width: 60%; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);">
+                <div
+                    style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid #ccc; padding-bottom: 10px;">
+                    <h3 style="margin: 0;"><i class="fas fa-folder-open"></i> Select FTDC Directory</h3>
+                    <span class="close-modal" onclick="closeFsBrowser()"
+                        style="color: #aaa; font-size: 28px; font-weight: bold; cursor: pointer;">&times;</span>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <strong>Current Path:</strong>
+                    <div id="fsCurrentPath"
+                        style="padding: 10px; background: #e9ecef; border-radius: 4px; border: 1px solid #ced4da; font-family: monospace; overflow-x: auto; white-space: nowrap;">
+                        Loading...</div>
+                </div>
+                <div id="fsBrowserList"
+                    style="max-height: 400px; overflow-y: auto; border: 1px solid #ced4da; border-radius: 4px; padding: 5px; background: white;">
+                    <!-- Directories will be populated here -->
+                </div>
+                <div
+                    style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 15px; border-top: 1px solid #ccc; padding-top: 15px;">
+                    <button class="btn btn-secondary" onclick="closeFsBrowser()">Cancel</button>
+                    <button class="btn btn-primary" onclick="selectCurrentFsPath()">Select This Directory</button>
+                </div>
             </div>
         </div>
 
@@ -405,10 +497,11 @@
                 <i class="fas fa-question-circle"></i> FAQ
             </a>
             <span class="footer-separator">•</span>
-            <span class="footer-version">v1.0</span>
+            <span class="footer-version">v2.0</span>
         </div>
     </div>
 
-    <script src="/static/app.js?v=1.0.7"></script>
+    <script src="/static/app.js?v=1.1.1"></script>
 </body>
-</html> 
+
+</html>
