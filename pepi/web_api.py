@@ -179,7 +179,7 @@ def _is_accepted_log_filename(filename: str) -> bool:
 
 def _get_size_thresholds() -> PreflightThresholds:
     return PreflightThresholds(
-        warning_gb=float(os.environ.get("PEPI_FILE_WARN_GB", "1")),
+        warning_gb=float(os.environ.get("PEPI_FILE_WARN_GB", "0.5")),
         confirm_gb=float(os.environ.get("PEPI_FILE_CONFIRM_GB", "2")),
         block_gb=float(os.environ.get("PEPI_FILE_BLOCK_GB", "4")),
     )
@@ -200,7 +200,10 @@ def _build_preflight_data(file_id: str, size_bytes: int) -> PreflightData:
         requires_confirmation = True
     elif size_gb >= thresholds.warning_gb:
         tier = "warning"
-    message = "Large file detected. To avoid slow analysis, trim the file to the specific period you need."
+    message = (
+        "File is large and can impact performance. "
+        "Suggestion: trim around the target time window for faster analysis."
+    )
     return PreflightData(
         file_id=file_id,
         size_bytes=size_bytes,

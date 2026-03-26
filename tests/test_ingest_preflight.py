@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+import pepi.web_api as web_api
+
 
 def test_preflight_endpoint_available(client, sample_log_file) -> None:
     with sample_log_file.open("rb") as f:
@@ -17,7 +19,7 @@ def test_preflight_endpoint_available(client, sample_log_file) -> None:
     payload = preflight.json()
     assert payload["status"] == "success"
     assert payload["data"]["tier"] in {"ok", "warning", "confirm", "block"}
-    assert "trim the file" in payload["data"]["message"].lower()
+    assert "trim around the target time window" in payload["data"]["message"].lower()
 
 
 def test_ingest_start_and_ingest_source_paths(client, sample_log_file) -> None:
@@ -53,3 +55,14 @@ def test_ingest_start_and_ingest_source_paths(client, sample_log_file) -> None:
     )
     assert extract_result.status_code == 200
     assert "lines" in extract_result.json()
+
+
+def test_preflight_warning_default_is_half_gb(monkeypatch) -> None:
+    monkeypatch.delenv("PEPI_FILE_WARN_GB", raising=False)
+    monkeypatch.delenv("PEPI_FILE_CONFIRM_GB", raising=False)
+    monkeypatch.delenv("PEPI_FILE_BLOCK_GB", raising=False)
+
+    preflight = web_api._build_preflight_data("file-1", int(0.75 * 1024**3))
+    assert preflight.tier == "warning"
+    assert preflight.can_proceed is True
+    assert "trim around the target time window" in preflight.message.lower()

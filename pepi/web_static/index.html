@@ -87,7 +87,10 @@
         <div class="dashboard" id="dashboard" style="display: block;">
             <div id="preflightBanner" style="display:none; margin: 10px 0; padding: 10px 14px; border-radius: 8px; background:#fff3cd; color:#856404; border:1px solid #ffeeba;"></div>
             <div id="largeDatasetBanner" style="display:none; margin: 10px 0; padding: 10px 14px; border-radius: 8px; background:#fff3cd; color:#856404; border:1px solid #ffeeba;">
-                Large dataset mode is active. Rendering is optimized and some details are loaded on demand.
+                <button type="button" onclick="closeLargeDatasetBanner()" aria-label="Close large dataset warning" style="float:right; border:none; background:transparent; color:#856404; font-size:18px; cursor:pointer; line-height:1;">&times;</button>
+                ⚠️ <strong>Large file detected.</strong> Analysis may feel slower.<br>
+                <br>
+                 <strong>Suggestion:</strong> Use the built-in Trim Log feature to focus on your target time window for faster, clearer results.
             </div>
             <!-- Navigation Tabs -->
             <nav class="tabs" id="mainTabs">

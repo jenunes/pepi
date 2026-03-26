@@ -7,10 +7,9 @@ the parsing pipeline, API endpoints, and CLI output.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Set, Union
 
 from pydantic import BaseModel, Field
-
 
 # ---------------------------------------------------------------------------
 # Core domain models (used by parser / stats / cache layers)
@@ -19,7 +18,7 @@ from pydantic import BaseModel, Field
 class SamplingMetadata(BaseModel):
     total_lines: int
     is_sampled: bool
-    sample_rate: int | float
+    sample_rate: Union[int, float]
     sampled_lines: int
     estimated_original_size: int
     is_user_forced: bool
@@ -80,7 +79,7 @@ class QueryStats(BaseModel):
     allow_disk_use: bool = Field(default=False, alias="allowDiskUse")
     pattern: str = ""
     durations: list[float] = Field(default_factory=list)
-    indexes: list[str] | set[str] = Field(default_factory=set)
+    indexes: Union[list[str], Set[str]] = Field(default_factory=set)
 
     model_config = {"populate_by_name": True}
 

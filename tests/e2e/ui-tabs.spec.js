@@ -1,7 +1,25 @@
 const path = require("path");
+const fs = require("fs");
 const { test, expect } = require("@playwright/test");
 
-const fixturePath = path.resolve(__dirname, "../fixtures/ui_tab_sample.log");
+const defaultFixturePath = path.resolve(__dirname, "../fixtures/ui_tab_sample.log");
+
+function resolveLogPath() {
+  const envDir = process.env.PEPI_E2E_LOG_DIR;
+  if (!envDir) return defaultFixturePath;
+
+  if (!fs.existsSync(envDir)) return defaultFixturePath;
+  const entries = fs
+    .readdirSync(envDir)
+    .filter((name) => name.endsWith(".log") || name.includes(".log."))
+    .map((name) => path.join(envDir, name))
+    .sort();
+
+  if (entries.length === 0) return defaultFixturePath;
+  return entries[0];
+}
+
+const fixturePath = resolveLogPath();
 
 const tabs = [
   { key: "basic", paneSelector: "#basic #basicInfo" },

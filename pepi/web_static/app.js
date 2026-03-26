@@ -9,6 +9,7 @@ let extractionPrettyCache = null;
 const inflightRequests = new Map();
 const perfMetrics = { enabled: true };
 let isLargeDatasetMode = false;
+let largeDatasetBannerDismissed = false;
 let currentPreflight = null;
 let preflightAcknowledged = new Set();
 let currentAnalysisSource = 'raw';
@@ -27,7 +28,15 @@ function setLargeDatasetMode(totalLines = 0) {
     isLargeDatasetMode = totalLines >= 200000;
     const banner = document.getElementById('largeDatasetBanner');
     if (banner) {
-        banner.style.display = isLargeDatasetMode ? 'block' : 'none';
+        banner.style.display = isLargeDatasetMode && !largeDatasetBannerDismissed ? 'block' : 'none';
+    }
+}
+
+function closeLargeDatasetBanner() {
+    largeDatasetBannerDismissed = true;
+    const banner = document.getElementById('largeDatasetBanner');
+    if (banner) {
+        banner.style.display = 'none';
     }
 }
 
@@ -553,6 +562,7 @@ function formatDateTime(isoString) {
 async function selectFile(fileId) {
     currentFileId = fileId;
     currentAnalysisSource = 'raw';
+    largeDatasetBannerDismissed = false;
 
     // Update UI - highlight selected file
     document.querySelectorAll('.file-item').forEach(item => {
