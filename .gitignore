@@ -32,6 +32,10 @@ wheels/
 *.swo
 *~
 
+# Cursor AI
+.cursorrules
+.cursor/
+
 # OS
 .DS_Store
 Thumbs.db
