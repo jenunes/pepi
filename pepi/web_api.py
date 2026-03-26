@@ -1,73 +1,121 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from __future__ import annotations
+
+import collections
+import json
+import os
+import socket
+import tempfile
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Optional
+
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from typing import Optional
-import tempfile
-import os
-import json
-import asyncio
-import time
-from pathlib import Path
-import socket
-from contextlib import asynccontextmanager
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
-# Import our existing pepi functions
 from . import (
-    parse_connections, parse_replica_set_config, parse_replica_set_state,
-    parse_clients, parse_queries, calculate_query_stats, calculate_connection_stats,
-    count_lines, get_date_range, trim_log_file, parse_timeseries_data,
-    parse_connections_timeseries_by_ip, validate_connection_data_consistency,
-    parse_connection_events
-)
-from .index_advisor import analyze_queries, analyze_single_query
-from .types import (
-    AnalysisResult, TrimRequest, QueryExamplesRequest, LogFilterRequest,
-    FtdcStartRequest, SingleQueryRequest,
+    calculate_connection_stats,
+    calculate_query_stats,
+    count_lines,
+    get_date_range,
+    get_sampling_metadata,
+    parse_clients,
+    parse_connection_events,
+    parse_connections,
+    parse_connections_timeseries_by_ip,
+    parse_queries,
+    parse_replica_set_config,
+    parse_replica_set_state,
+    parse_timeseries_data,
+    trim_log_file,
+    validate_connection_data_consistency,
 )
 from .errors import get_validated_file_path, validate_sample_param
+from .index_advisor import analyze_queries as ia_analyze_queries
+from .index_advisor import analyze_single_query
+from .types import (
+    AnalysisResult,
+    ExtractResponse,
+    FileInfo,
+    FileListResponse,
+    FtdcStartRequest,
+    LogFilterRequest,
+    QueryExamplesRequest,
+    SingleQueryRequest,
+    StatusMessage,
+    TrimRequest,
+    UploadResponse,
+)
 
-# Get the directory where this script is located
 script_dir = Path(__file__).parent
 web_static_dir = script_dir / "web_static"
+
+_LOCALHOST_ORIGINS = [
+    "http://localhost:8000", "http://127.0.0.1:8000",
+    "http://localhost:8001", "http://127.0.0.1:8001",
+    "http://localhost:8002", "http://127.0.0.1:8002",
+]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events for the FastAPI app."""
-    # Startup
-    # Create web_static directory if it doesn't exist
     os.makedirs(web_static_dir, exist_ok=True)
-    
-    # Pre-load file if specified
-    preload_file()
-    
+
+    app.state.upload_store = {}
+    app.state.analysis_cache = {}
+
+    preload_file(app.state.upload_store)
+
     yield
-    
-    # Shutdown (nothing to do for now)
 
-app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev3", lifespan=lifespan)
+    for info in app.state.upload_store.values():
+        if not info.get('is_preloaded') and os.path.exists(info['path']):
+            try:
+                os.unlink(info['path'])
+            except OSError:
+                pass
 
-# Enable GZip compression for better performance
+
+app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev4", lifespan=lifespan)
+
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Enable CORS for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_LOCALHOST_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Store for uploaded files and analysis results
-upload_store = {}
-analysis_cache = {}
+
+# ---------------------------------------------------------------------------
+# Dependency injection helpers
+# ---------------------------------------------------------------------------
+
+def get_upload_store(request: Request) -> dict:
+    return request.app.state.upload_store
 
 
-# Serve static files
+def get_analysis_cache(request: Request) -> dict:
+    return request.app.state.analysis_cache
+
+
+def _is_accepted_log_filename(filename: str) -> bool:
+    """Accept .log, .txt, .json, and MongoDB rotated logs (e.g. mongod.log.2026-03-06T21-30-43)."""
+    if filename.endswith(('.log', '.txt', '.json')):
+        return True
+    if '.log.' in filename:
+        return True
+    return False
+
 
 app.mount("/static", StaticFiles(directory=str(web_static_dir)), name="static")
+
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -79,96 +127,99 @@ async def root():
     except FileNotFoundError:
         return HTMLResponse("<h1>Web interface not found. Please create web_static/index.html</h1>")
 
-@app.post("/api/upload")
-async def upload_log_file(file: UploadFile = File(...)):
+
+@app.post("/api/upload", response_model=UploadResponse)
+async def upload_log_file(
+    file: UploadFile = File(...),
+    upload_store: dict = Depends(get_upload_store),
+):
     """Upload and store a MongoDB log file."""
-    if not file.filename.endswith(('.log', '.txt', '.json')):
-        raise HTTPException(status_code=400, detail="Only .log, .txt, and .json files are supported")
-    
-    # Create a temporary file
+    if not _is_accepted_log_filename(file.filename):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Accepted: .log, .txt, .json, and MongoDB rotated logs",
+        )
+
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.log')
     try:
-        # Copy uploaded file content
-        content = await file.read()
-        temp_file.write(content)
+        file_size = 0
+        while chunk := await file.read(1024 * 1024):
+            temp_file.write(chunk)
+            file_size += len(chunk)
         temp_file.close()
-        
-        # Store file info
+
         file_id = os.path.basename(temp_file.name)
+        line_count = count_lines(temp_file.name)
         upload_store[file_id] = {
             'path': temp_file.name,
             'original_name': file.filename,
-            'size': len(content),
-            'lines': count_lines(temp_file.name)
+            'size': file_size,
+            'lines': line_count,
         }
-        
-        return {
-            "file_id": file_id,
-            "filename": file.filename,
-            "size": len(content),
-            "lines": upload_store[file_id]['lines'],
-            "message": "File uploaded successfully"
-        }
+
+        return UploadResponse(
+            file_id=file_id,
+            filename=file.filename,
+            size=file_size,
+            lines=line_count,
+        )
     except Exception as e:
         if os.path.exists(temp_file.name):
             os.unlink(temp_file.name)
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-@app.get("/api/files")
-async def list_uploaded_files():
+@app.get("/api/files", response_model=FileListResponse)
+def list_uploaded_files(upload_store: dict = Depends(get_upload_store)):
     """List all uploaded files."""
     files = []
+    stale_ids = []
     for file_id, info in upload_store.items():
         if os.path.exists(info['path']):
-            files.append({
-                "file_id": file_id,
-                "filename": info['original_name'],
-                "size": info['size'],
-                "lines": info['lines'],
-                "is_preloaded": info.get('is_preloaded', False),
-                "sample_percentage": info.get('sample_percentage', 100)
-            })
+            files.append(FileInfo(
+                file_id=file_id,
+                filename=info['original_name'],
+                size=info['size'],
+                lines=info['lines'],
+                is_preloaded=info.get('is_preloaded', False),
+                sample_percentage=info.get('sample_percentage', 100),
+            ))
         else:
-            # Clean up missing files
-            del upload_store[file_id]
-    return {"files": files}
+            stale_ids.append(file_id)
+    for fid in stale_ids:
+        del upload_store[fid]
+    return FileListResponse(files=files)
 
 @app.post("/api/analyze/{file_id}/basic")
-async def analyze_basic_info(file_id: str, sample: Optional[int] = 100):
+def analyze_basic_info(
+    file_id: str,
+    sample: Optional[int] = 100,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Get basic log file information."""
     file_path = get_validated_file_path(file_id, upload_store)
-    
+
     try:
-        # Parse basic information from log file
         start_date = end_date = None
         os_version = kernel_version = db_version = cmd_options = None
-        
-        # More robust date range extraction
+
+        # Single pass: read first 1000 lines (covers start_date + version info)
+        first_lines: list[str] = []
         with open(file_path, 'r') as f:
-            lines = f.readlines()
-            
-        # Get start date from first valid entry
-        for line in lines[:100]:  # Check first 100 lines for start date
+            for i, line in enumerate(f):
+                if i >= 1000:
+                    break
+                first_lines.append(line)
+
+        for line in first_lines[:100]:
             try:
                 entry = json.loads(line.strip())
                 if entry.get('t', {}).get('$date'):
-                    start_date = entry.get('t', {}).get('$date')
+                    start_date = entry['t']['$date']
                     break
             except (json.JSONDecodeError, ValueError, KeyError):
                 continue
-        
-        # Get end date from last valid entry
-        for line in reversed(lines[-100:]):  # Check last 100 lines for end date
-            try:
-                entry = json.loads(line.strip())
-                if entry.get('t', {}).get('$date'):
-                    end_date = entry.get('t', {}).get('$date')
-                    break
-            except (json.JSONDecodeError, ValueError, KeyError):
-                continue
-        
-        # Scan for version info and startup options (limit to first 1000 lines for performance)
-        for line in lines[:1000]:
+
+        for line in first_lines:
             try:
                 entry = json.loads(line)
                 if entry.get('msg') == 'Operating System':
@@ -181,75 +232,84 @@ async def analyze_basic_info(file_id: str, sample: Optional[int] = 100):
                     cmd_options = entry.get('attr', {}).get('options')
             except (json.JSONDecodeError, ValueError, KeyError):
                 continue
-        
-        # Get sampling metadata
-        from . import get_sampling_metadata, count_lines
-        total_lines = count_lines(file_path)
+
+        # Stream last 100 lines without loading entire file
+        last_lines: collections.deque[str] = collections.deque(maxlen=100)
+        with open(file_path, 'r') as f:
+            for line in f:
+                last_lines.append(line)
+
+        for line in reversed(last_lines):
+            try:
+                entry = json.loads(line.strip())
+                if entry.get('t', {}).get('$date'):
+                    end_date = entry['t']['$date']
+                    break
+            except (json.JSONDecodeError, ValueError, KeyError):
+                continue
+
+        total_lines = upload_store[file_id]['lines']
         sampling_metadata = get_sampling_metadata(total_lines, sample)
-        
+
         return AnalysisResult(
             status="success",
             data={
                 "filename": upload_store[file_id]['original_name'],
                 "size": upload_store[file_id]['size'],
-                "lines": upload_store[file_id]['lines'],
+                "lines": total_lines,
                 "start_date": start_date,
                 "end_date": end_date,
                 "os_version": os_version,
                 "kernel_version": kernel_version,
                 "db_version": db_version,
                 "startup_options": cmd_options,
-                "sampling_metadata": sampling_metadata
-            }
+                "sampling_metadata": sampling_metadata,
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 @app.post("/api/analyze/{file_id}/connections")
-async def analyze_connections(file_id: str, sample: Optional[int] = 100):
+def analyze_connections(
+    file_id: str,
+    sample: Optional[int] = 100,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Analyze connection information with time series data."""
     file_path = get_validated_file_path(file_id, upload_store)
     validate_sample_param(sample)
-    
+
     try:
-        # Get both aggregate data and time series data
         connections_data, total_opened, total_closed = parse_connections(file_path, sample_percentage=sample)
         overall_stats, ip_stats = calculate_connection_stats(connections_data)
-        
-        # Get time series data for connections
+
         slow_queries, connections_timeseries, errors = parse_timeseries_data(file_path)
-        
-        # Get IP-specific connection time series data
+
         try:
             connections_by_ip_timeseries = parse_connections_timeseries_by_ip(file_path)
         except Exception as e:
             print(f"Warning: Failed to parse IP-specific connections: {e}")
             connections_by_ip_timeseries = {}
-        
-        # Validate data consistency and get quality metrics
+
         validation_results = validate_connection_data_consistency(connections_by_ip_timeseries, connections_timeseries)
-        
-        # Get individual connection events
+
         try:
             connection_events = parse_connection_events(file_path)
         except Exception as e:
             print(f"Warning: Failed to parse connection events: {e}")
             connection_events = []
-        
-        # Convert defaultdict to regular dict for JSON serialization
+
         connections_dict = {}
         for ip, data in connections_data.items():
             connections_dict[ip] = {
                 'opened': data['opened'],
                 'closed': data['closed'],
-                'durations': data['durations']
+                'durations': data['durations'],
             }
-        
-        # Get sampling metadata from the parse_connections function
-        from . import get_sampling_metadata, count_lines
-        total_lines = count_lines(file_path)
+
+        total_lines = upload_store[file_id]['lines']
         sampling_metadata = get_sampling_metadata(total_lines, sample)
-        
+
         return AnalysisResult(
             status="success",
             data={
@@ -267,30 +327,34 @@ async def analyze_connections(file_id: str, sample: Optional[int] = 100):
                     "warnings": validation_results.get('warnings', []),
                     "recommendations": validation_results.get('recommendations', []),
                     "quality_score": validation_results.get('data_quality_score', 1.0),
-                    "is_consistent": validation_results.get('is_consistent', True)
-                }
-            }
+                    "is_consistent": validation_results.get('is_consistent', True),
+                },
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Connection analysis failed: {str(e)}")
 
 @app.post("/api/analyze/{file_id}/queries")
-async def analyze_queries(file_id: str, namespace: Optional[str] = None, operation: Optional[str] = None, sample: Optional[int] = 100):
+def analyze_queries_route(
+    file_id: str,
+    namespace: Optional[str] = None,
+    operation: Optional[str] = None,
+    sample: Optional[int] = 100,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Analyze query patterns and performance."""
     file_path = get_validated_file_path(file_id, upload_store)
     validate_sample_param(sample)
-    
+
     try:
         queries_data = parse_queries(file_path, sample_percentage=sample)
         query_stats = calculate_query_stats(queries_data)
-        
-        # Apply filters if specified
+
         if namespace:
             query_stats = {k: v for k, v in query_stats.items() if k[0] == namespace}
         if operation:
             query_stats = {k: v for k, v in query_stats.items() if k[1] == operation}
-        
-        # Convert to JSON-serializable format
+
         results = []
         for (ns, op, pattern), stats in query_stats.items():
             results.append({
@@ -304,21 +368,25 @@ async def analyze_queries(file_id: str, namespace: Optional[str] = None, operati
                 "percentile_95_ms": stats['percentile_95'],
                 "sum_ms": stats['sum'],
                 "allow_disk_use": stats['allowDiskUse'],
-                "indexes": list(stats['indexes']) if isinstance(stats['indexes'], set) else stats['indexes']
+                "indexes": list(stats['indexes']) if isinstance(stats['indexes'], set) else stats['indexes'],
             })
-        
+
         return AnalysisResult(
             status="success",
             data={
                 "queries": results,
-                "total_patterns": len(results)
-            }
+                "total_patterns": len(results),
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query analysis failed: {str(e)}")
 
 @app.post("/api/analyze/{file_id}/query-examples")
-async def get_query_examples(file_id: str, request: QueryExamplesRequest):
+def get_query_examples(
+    file_id: str,
+    request: QueryExamplesRequest,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Get actual query examples for a specific pattern."""
     file_path = get_validated_file_path(file_id, upload_store)
     namespace = request.namespace
@@ -408,7 +476,10 @@ async def get_query_examples(file_id: str, request: QueryExamplesRequest):
         raise HTTPException(status_code=500, detail=f"Failed to get query examples: {str(e)}")
 
 @app.post("/api/analyze/{file_id}/replica-set")
-async def analyze_replica_set(file_id: str):
+def analyze_replica_set(
+    file_id: str,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Analyze replica set configuration and state."""
     file_path = get_validated_file_path(file_id, upload_store)
     
@@ -428,7 +499,10 @@ async def analyze_replica_set(file_id: str):
         raise HTTPException(status_code=500, detail=f"Replica set analysis failed: {str(e)}")
 
 @app.post("/api/analyze/{file_id}/clients")
-async def analyze_clients(file_id: str):
+def analyze_clients(
+    file_id: str,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Analyze client/driver information."""
     file_path = get_validated_file_path(file_id, upload_store)
     
@@ -445,7 +519,11 @@ async def analyze_clients(file_id: str):
         raise HTTPException(status_code=500, detail=f"Client analysis failed: {str(e)}")
 
 @app.post("/api/analyze/{file_id}/timeseries")
-async def analyze_timeseries(file_id: str, namespace: Optional[str] = None):
+def analyze_timeseries(
+    file_id: str,
+    namespace: Optional[str] = None,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Analyze time-series data for slow queries, connections, and errors."""
     file_path = get_validated_file_path(file_id, upload_store)
     
@@ -519,15 +597,14 @@ async def analyze_timeseries(file_id: str, namespace: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"Time-series analysis failed: {str(e)}")
 
 @app.post("/api/analyze/{file_id}/index-recommendations")
-async def get_index_recommendations(file_id: str, request: Optional[SingleQueryRequest] = None, top_n: int = 10, single_query: bool = False):
-    """Get index recommendations for queries.
-    
-    Args:
-        file_id: Uploaded file ID
-        request: Single query data (if analyzing one specific query)
-        top_n: Number of recommendations to return (for bulk analysis)
-        single_query: If True, use LLM enhancement (for single query from UI button)
-    """
+def get_index_recommendations(
+    file_id: str,
+    request: Optional[SingleQueryRequest] = None,
+    top_n: int = 10,
+    single_query: bool = False,
+    upload_store: dict = Depends(get_upload_store),
+):
+    """Get index recommendations for queries."""
     file_path = get_validated_file_path(file_id, upload_store)
     
     try:
@@ -588,7 +665,7 @@ async def get_index_recommendations(file_id: str, request: Optional[SingleQueryR
                 stats['plan_summary'] = 'COLLSCAN'
         
         # Generate recommendations (LLM only if single_query=True)
-        recommendations = analyze_queries(query_stats)
+        recommendations = ia_analyze_queries(query_stats)
         
         # Limit to top N
         recommendations = recommendations[:top_n]
@@ -605,7 +682,11 @@ async def get_index_recommendations(file_id: str, request: Optional[SingleQueryR
         raise HTTPException(status_code=500, detail=f"Index recommendation failed: {str(e)}")
 
 @app.post("/api/trim/{file_id}")
-async def trim_log(file_id: str, trim_request: TrimRequest):
+def trim_log(
+    file_id: str,
+    trim_request: TrimRequest,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Trim log file by date/time range."""
     file_path = get_validated_file_path(file_id, upload_store)
     
@@ -669,7 +750,10 @@ async def trim_log(file_id: str, trim_request: TrimRequest):
         raise HTTPException(status_code=500, detail=f"Trimming failed: {str(e)}")
 
 @app.get("/api/download/{file_id}")
-async def download_file(file_id: str):
+async def download_file(
+    file_id: str,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Download a processed log file."""
     file_path = get_validated_file_path(file_id, upload_store)
     original_name = upload_store[file_id]['original_name']
@@ -692,11 +776,14 @@ async def download_file(file_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
-@app.delete("/api/files/{file_id}")
-async def delete_file(file_id: str):
+@app.delete("/api/files/{file_id}", response_model=StatusMessage)
+async def delete_file(
+    file_id: str,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Delete an uploaded file. For preloaded files, only removes from store (does not delete the original file)."""
     get_validated_file_path(file_id, upload_store)
-    
+
     info = upload_store[file_id]
     file_path = info['path']
     if not info.get('is_preloaded', False):
@@ -705,9 +792,10 @@ async def delete_file(file_id: str):
     
     del upload_store[file_id]
     
-    return {"message": "File deleted successfully"}
+    return StatusMessage(message="File deleted successfully")
 
-def preload_file():
+
+def preload_file(upload_store: dict) -> str | None:
     """Pre-load a file if specified via environment variable. Uses the original path (no copy)."""
     preload_path = os.environ.get('PEPI_PRELOAD_FILE')
     if not preload_path:
@@ -719,7 +807,6 @@ def preload_file():
         original_name = os.path.basename(preload_path)
         file_size = os.path.getsize(preload_path)
         sample_percentage = int(os.environ.get('PEPI_SAMPLE_PERCENTAGE', '100'))
-        # Stable file_id so the same preload is identifiable; pid avoids collisions
         file_id = f"{original_name}_{os.getpid()}"
         if file_id in upload_store:
             file_id = f"{original_name}_{os.getpid()}_{id(preload_path)}"
@@ -737,13 +824,17 @@ def preload_file():
         print(f"❌ Failed to pre-load file {preload_path}: {str(e)}")
     return None
 
-@app.post("/api/analyze/{file_id}/extract")
-async def extract_logs(file_id: str, filters: LogFilterRequest):
+@app.post("/api/analyze/{file_id}/extract", response_model=ExtractResponse)
+def extract_logs(
+    file_id: str,
+    filters: LogFilterRequest,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Extract raw log entries based on filters."""
     file_path = get_validated_file_path(file_id, upload_store)
     matched_lines = []
     total_lines = 0
-    
+
     with open(file_path, 'r') as f:
         for line in f:
             total_lines += 1
@@ -773,13 +864,13 @@ async def extract_logs(file_id: str, filters: LogFilterRequest):
             if len(matched_lines) >= filters.limit:
                 break
     
-    return {
-        "status": "success",
-        "total_scanned": total_lines,
-        "total_matched": len(matched_lines),
-        "lines": matched_lines,
-        "truncated": len(matched_lines) >= filters.limit
-    }
+    return ExtractResponse(
+        total_scanned=total_lines,
+        total_matched=len(matched_lines),
+        lines=matched_lines,
+        truncated=len(matched_lines) >= filters.limit,
+    )
+
 
 def apply_filters(entry, line, filters):
     """Check if entry matches all filters."""
@@ -847,7 +938,10 @@ def apply_filters(entry, line, filters):
     return True
 
 @app.get("/api/analyze/{file_id}/filter-options")
-async def get_filter_options(file_id: str):
+def get_filter_options(
+    file_id: str,
+    upload_store: dict = Depends(get_upload_store),
+):
     """Get available filter options based on log content."""
     file_path = get_validated_file_path(file_id, upload_store)
     
@@ -918,7 +1012,6 @@ async def get_filter_options(file_id: str):
         }
     }
 
-# --- File System Browsing ---
 @app.get("/api/fs/browse")
 async def browse_fs(path: str = None):
     """Browse the server file system to select a directory."""
