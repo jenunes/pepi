@@ -5,6 +5,9 @@ import time
 import shutil
 import re
 import sys
+import logging
+
+logger = logging.getLogger(__name__)
 
 def get_docker_compose_cmd():
     """Returns the available docker compose command as a list."""
@@ -75,7 +78,7 @@ def get_ftdc_dashboard_url():
     return grafana_url
 
 def launch_viewer(data_path: str, open_browser: bool = True):
-    print(f"Starting FTDC Viewer for {data_path}...")
+    logger.info("Starting FTDC Viewer for %s", data_path)
     
     compose_file = os.path.join(os.path.dirname(__file__), "docker-compose.yml")
     
@@ -108,18 +111,14 @@ def launch_viewer(data_path: str, open_browser: bool = True):
     cmd = get_docker_compose_cmd() + ["-f", compose_file, "up", "-d"]
     subprocess.run(cmd, env=env, check=True)
     
-    print("\n🔐 Credentials:")
-    print("-" * 26)
-    print("Influx URL               = http://localhost:8086/")
-    print("Influx UI User           = admin")
-    print(f"Influx UI Password       = {env['INFLUX_ADMIN_PASSWORD']}")
-    print(f"Influx API Token         = {env['INFLUX_API_TOKEN']}")
-    print("Grafana Dashboard URL    = http://localhost:3001/d/ddnw277huiv40ae/ftdc-dashboard")
-    print("Grafana user             = admin")
-    print(f"Grafana Password         = {env['GRAFANA_ADMIN_PASSWORD']}")
-    print("-" * 26 + "\n")
-    
-    print("Tailing ftdc_exporter logs... (Press Ctrl+C to stop trailing, the browser will open automatically)\n")
+    logger.info("Influx URL = http://localhost:8086/")
+    logger.info("Influx UI User = admin")
+    logger.info("Influx UI Password = %s", env['INFLUX_ADMIN_PASSWORD'])
+    logger.info("Influx API Token = %s", env['INFLUX_API_TOKEN'])
+    logger.info("Grafana Dashboard URL = http://localhost:3001/d/ddnw277huiv40ae/ftdc-dashboard")
+    logger.info("Grafana user = admin")
+    logger.info("Grafana Password = %s", env['GRAFANA_ADMIN_PASSWORD'])
+    logger.info("Tailing ftdc_exporter logs; Ctrl+C to stop trailing")
     
     log_cmd = get_docker_compose_cmd() + ["-f", compose_file, "logs", "-f", "ftdc_exporter"]
     grafana_url = "http://localhost:3001/d/ddnw277huiv40ae/ftdc-dashboard"
@@ -139,16 +138,16 @@ def launch_viewer(data_path: str, open_browser: bool = True):
                         grafana_url = parsed_url
                         url_found = True
                         if open_browser:
-                            print("\n\n✅ Data ingestion complete! Opening browser...\n")
+                            logger.info("Data ingestion complete. Opening browser")
                             webbrowser.open(grafana_url)
         process.wait()
     except KeyboardInterrupt:
-        print("\nStopped tailing logs.")
+        logger.info("Stopped tailing logs")
         process.terminate()
         process.wait()
     except Exception as e:
-        print(f"\nError reading logs: {e}")
+        logger.error("Error reading logs: %s", e)
         
     if not url_found and open_browser:
-        print("\nOpening browser with default URL fallback...")
+        logger.info("Opening browser with default URL fallback")
         webbrowser.open(grafana_url)

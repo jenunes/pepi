@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import re
 import json
+import logging
 from typing import Optional, Dict, List, Tuple
+
+
+logger = logging.getLogger(__name__)
 
 # MongoDB Official Documentation - ESR (Equality, Sort, Range) Guideline
 # Source: https://www.mongodb.com/docs/manual/tutorial/equality-sort-range-guideline/
@@ -137,17 +141,17 @@ def analyze_single_query(namespace: str, operation: str, pattern: str, stats: Di
     Returns:
         Single recommendation dict or None
     """
-    print(f"🔎 analyze_single_query: {namespace}.{operation}")
-    print(f"   Stats received: {stats}")
-    print(f"   Indexes: {stats.get('indexes', 'NOT FOUND')}")
+    logger.info("analyze_single_query namespace=%s operation=%s", namespace, operation)
+    logger.debug("stats=%s", stats)
+    logger.debug("indexes=%s", stats.get('indexes', 'NOT FOUND'))
 
     if _is_system_collection(namespace):
-        print(f"   ⚠️  Skipping system collection")
+        logger.warning("Skipping system collection namespace=%s", namespace)
         return None
 
     fields = _extract_query_fields(pattern, operation)
     if not fields:
-        print(f"   ⚠️  No fields detected")
+        logger.warning("No fields detected for query pattern")
         return None
 
     current_index_info = _get_current_index_info(stats)
@@ -155,19 +159,21 @@ def analyze_single_query(namespace: str, operation: str, pattern: str, stats: Di
 
     if (coverage_analysis['recommendation_type'] == 'OPTIMIZED' and
             coverage_analysis['coverage_score'] >= 90):
-        print(f"   ✅ Query is already optimally indexed (coverage: {coverage_analysis['coverage_score']}%)")
-        print(f"   ⚠️  Skipping AI analysis to prevent hallucinations")
+        logger.info(
+            "Query is already optimally indexed (coverage=%s), skipping analysis",
+            coverage_analysis['coverage_score'],
+        )
         return None
 
-    print(f"   ✅ Analyzing query (user-requested)")
+    logger.info("Analyzing user-requested query recommendation")
 
     priority = _calculate_priority(stats)
-    print(f"   Priority score: {priority}")
+    logger.debug("priority_score=%s", priority)
 
     rec = _generate_recommendation(namespace, operation, pattern, stats)
-    print(f"   Generated recommendation: {rec is not None}")
+    logger.debug("generated_recommendation=%s", rec is not None)
     if rec:
-        print(f"   Recommendation keys: {rec.keys()}")
+        logger.debug("recommendation_keys=%s", list(rec.keys()))
         rec['priority'] = priority
         rec['priority_level'] = _get_priority_level(priority)
 
@@ -268,7 +274,10 @@ def _generate_recommendation(namespace: str, operation: str,
 
     if (coverage_analysis['recommendation_type'] == 'OPTIMIZED' and
             coverage_analysis['coverage_score'] >= 90):
-        print(f"✅ Query is already optimally indexed (coverage: {coverage_analysis['coverage_score']}%)")
+        logger.info(
+            "Query is already optimally indexed (coverage=%s)",
+            coverage_analysis['coverage_score'],
+        )
         return None
 
     index_spec = _build_index_spec(fields, operation, pattern)
@@ -477,7 +486,7 @@ def _extract_query_fields(pattern: str, operation: str) -> List[Tuple[str, str]]
     """
     fields = []
 
-    print(f"🔍 Extracting fields from {operation} pattern (first 200 chars): {pattern[:200]}")
+    logger.debug("Extracting fields from operation=%s pattern_prefix=%s", operation, pattern[:200])
 
     try:
         if operation == 'find':
@@ -485,7 +494,7 @@ def _extract_query_fields(pattern: str, operation: str) -> List[Tuple[str, str]]
                 query = json.loads(pattern)
                 if isinstance(query, dict):
                     if 'find' in query:
-                        print(f"✅ Detected full find command object")
+                        logger.debug("Detected full find command object")
 
                         filter_clause = query.get('filter', {})
                         if filter_clause:
@@ -497,12 +506,12 @@ def _extract_query_fields(pattern: str, operation: str) -> List[Tuple[str, str]]
                                 if not field_name.startswith('$'):
                                     fields.append((field_name, 'sort'))
 
-                        print(f"✅ Extracted {len(fields)} fields from full command: {fields}")
+                        logger.debug("Extracted %d fields from full command", len(fields))
                     else:
                         _extract_fields_from_match_clause(query, fields)
-                        print(f"✅ JSON parsing succeeded for find! Extracted {len(fields)} fields: {fields}")
+                        logger.debug("JSON parsing succeeded for find, extracted %d fields", len(fields))
             except (json.JSONDecodeError, TypeError) as e:
-                print(f"⚠️ JSON parsing failed for find: {e}, falling back to regex")
+                logger.warning("JSON parsing failed for find (%s), falling back to regex", e)
                 equality_fields = re.findall(r'"([^"]+)":\s*"[^"]*"', pattern)
                 for field in equality_fields:
                     if not field.startswith('$'):
@@ -532,12 +541,12 @@ def _extract_query_fields(pattern: str, operation: str) -> List[Tuple[str, str]]
                 parsed = json.loads(pattern)
 
                 if isinstance(parsed, dict) and 'aggregate' in parsed:
-                    print(f"✅ Detected full aggregate command object")
+                    logger.debug("Detected full aggregate command object")
                     pipeline = parsed.get('pipeline', [])
                 elif isinstance(parsed, list):
                     pipeline = parsed
                 else:
-                    print(f"⚠️ Unknown aggregate format: {type(parsed)}")
+                    logger.warning("Unknown aggregate format: %s", type(parsed))
                     pipeline = []
 
                 if isinstance(pipeline, list):
@@ -553,9 +562,9 @@ def _extract_query_fields(pattern: str, operation: str) -> List[Tuple[str, str]]
                                     if not field_name.startswith('$'):
                                         fields.append((field_name, 'sort'))
 
-                    print(f"✅ JSON parsing succeeded! Extracted {len(fields)} fields: {fields}")
+                    logger.debug("JSON parsing succeeded for aggregate, extracted %d fields", len(fields))
             except (json.JSONDecodeError, TypeError) as e:
-                print(f"⚠️ JSON parsing failed: {e}")
+                logger.warning("JSON parsing failed for aggregate: %s", e)
                 match_sections = re.findall(r'\$match[,\s]*\{[^}]*\}', pattern)
                 for match_section in match_sections:
                     match_fields = re.findall(r'"([^"$][^"]*)":\s*["{[]', match_section)
@@ -582,7 +591,7 @@ def _extract_query_fields(pattern: str, operation: str) -> List[Tuple[str, str]]
                 parsed = json.loads(pattern)
                 if isinstance(parsed, dict):
                     if operation in parsed:
-                        print(f"✅ Detected full {operation} command object")
+                        logger.debug("Detected full %s command object", operation)
                         items = parsed.get('updates', []) if operation == 'update' else parsed.get('deletes', [])
                         for item in items:
                             if isinstance(item, dict) and 'q' in item:
@@ -611,7 +620,7 @@ def _extract_query_fields(pattern: str, operation: str) -> List[Tuple[str, str]]
             seen.add(key)
             unique_fields.append(key)
 
-    print(f"🎯 Final unique fields: {unique_fields}")
+    logger.debug("Final unique fields: %s", unique_fields)
 
     return unique_fields
 
@@ -786,7 +795,7 @@ def _parse_plan_summary(plan_summary: str) -> Dict:
                 'structure': structure
             }
         except (json.JSONDecodeError, ValueError, IndexError) as e:
-            print(f"⚠️ Failed to parse IXSCAN structure: {plan_summary} - {e}")
+            logger.warning("Failed to parse IXSCAN structure (%s): %s", plan_summary, e)
             try:
                 pattern = r'(\w+):\s*([+-]?\d+)'
                 matches = re.findall(pattern, index_part)
@@ -799,7 +808,7 @@ def _parse_plan_summary(plan_summary: str) -> Dict:
                         'structure': structure
                     }
             except Exception as e2:
-                print(f"⚠️ Alternative parsing also failed: {e2}")
+                logger.warning("Alternative IXSCAN parsing also failed: %s", e2)
 
             return {'type': 'IXSCAN', 'fields': {}, 'structure': []}
 
@@ -898,11 +907,13 @@ def _calculate_coverage_score(query_field_names: List[str],
             equality_fields = [f for f, t in query_field_types.items() if t == 'equality']
             if len(equality_fields) == 1 and len(query_field_names) == 1:
                 final_score *= 0.8
-                print(f"   ⚠️  Performance context: Simple query with good index but slow ({mean_ms:.0f}ms)")
-                print(f"   ⚠️  This suggests poor selectivity or data volume issues")
+                logger.warning(
+                    "Simple query with good index but slow (%.0fms), suggesting selectivity/data issues",
+                    mean_ms,
+                )
 
         if count > 50 and mean_ms > 500:
-            print(f"   📊 Performance context: Frequent ({count}×) slow query ({mean_ms:.0f}ms)")
+            logger.info("Frequent slow query count=%s mean_ms=%.0f", count, mean_ms)
 
     return min(int(final_score), 100)
 

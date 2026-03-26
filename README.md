@@ -1,3 +1,78 @@
+# Pepi
+
+Pepi is a local-first MongoDB log analyzer with CLI and FastAPI web UI.
+
+## Highlights
+
+- Parse large MongoDB logs for connections, queries, replica set state, clients, and time-series signals.
+- Use the web dashboard for upload, filtering, trimming, and index recommendations.
+- Keep data local; no telemetry.
+
+## Installation
+
+```bash
+git clone https://github.com/jenunes/pepi.git
+cd pepi
+pip install -e .
+```
+
+For development tools (pytest, ruff):
+
+```bash
+pip install -e ".[dev]"
+```
+
+## Quick usage
+
+```bash
+# CLI summary
+pepi --fetch /path/to/mongod.log
+
+# Web UI only
+pepi --web-ui
+
+# Web UI with preloaded file
+pepi --fetch /path/to/mongod.log --web-ui
+
+# Query analysis
+pepi --fetch /path/to/mongod.log --queries
+```
+
+## Development
+
+### Run checks
+
+```bash
+ruff check pepi tests
+pytest -q
+```
+
+### Project structure
+
+```text
+pepi/
+  __init__.py
+  cache.py
+  cli.py
+  errors.py
+  formatters.py
+  index_advisor.py
+  parser.py
+  sampling.py
+  stats.py
+  types.py
+  upgrade.py
+  utils.py
+  web_api.py
+tests/
+  ...
+```
+
+## Notes
+
+- Upload supports `.log`, `.txt`, `.json`, and rotated MongoDB names like `mongod.log.2026-03-06T21-30-43`.
+- Large uploads are streamed in chunks to reduce memory usage.
+- Temporary uploaded files are cleaned up on API shutdown.
 # pepi
 
 A fast, user-friendly MongoDB log analysis tool for extracting insights from MongoDB log files.

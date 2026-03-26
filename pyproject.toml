@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pepi"
+dynamic = ["version"]
+description = "A fast, user-friendly MongoDB log analysis tool"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+  { name = "Jean Nunes" }
+]
+license = { text = "MIT" }
+dependencies = [
+  "click>=8.0.0",
+  "PyYAML>=6.0",
+  "tqdm>=4.62.0",
+  "fastapi>=0.100.0",
+  "uvicorn>=0.23.0",
+  "python-multipart>=0.0.6",
+  "psutil>=5.9.0",
+  "python-dateutil>=2.8.0",
+  "requests>=2.28.0",
+  "packaging>=21.0"
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "httpx>=0.27.0",
+  "ruff>=0.6.0"
+]
+
+[project.scripts]
+pepi = "pepi:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "pepi.version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pepi*"]
+
+[tool.setuptools.package-data]
+pepi = ["web_static/*", "web_static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

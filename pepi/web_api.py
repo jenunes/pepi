@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import collections
 import json
+import logging
 import os
 import socket
 import tempfile
@@ -41,7 +42,10 @@ from .types import (
     ExtractResponse,
     FileInfo,
     FileListResponse,
+    FilterOptionsResponse,
+    FsBrowseResponse,
     FtdcStartRequest,
+    FtdcStatusResponse,
     LogFilterRequest,
     QueryExamplesRequest,
     SingleQueryRequest,
@@ -49,6 +53,8 @@ from .types import (
     TrimRequest,
     UploadResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 script_dir = Path(__file__).parent
 web_static_dir = script_dir / "web_static"
@@ -91,6 +97,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_ts = time.time()
+    response = await call_next(request)
+    elapsed_ms = (time.time() - start_ts) * 1000
+    logger.info(
+        "%s %s -> %s (%.1fms)",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +210,7 @@ def list_uploaded_files(upload_store: dict = Depends(get_upload_store)):
         del upload_store[fid]
     return FileListResponse(files=files)
 
-@app.post("/api/analyze/{file_id}/basic")
+@app.post("/api/analyze/{file_id}/basic", response_model=AnalysisResult)
 def analyze_basic_info(
     file_id: str,
     sample: Optional[int] = 100,
@@ -269,7 +290,7 @@ def analyze_basic_info(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
-@app.post("/api/analyze/{file_id}/connections")
+@app.post("/api/analyze/{file_id}/connections", response_model=AnalysisResult)
 def analyze_connections(
     file_id: str,
     sample: Optional[int] = 100,
@@ -288,7 +309,7 @@ def analyze_connections(
         try:
             connections_by_ip_timeseries = parse_connections_timeseries_by_ip(file_path)
         except Exception as e:
-            print(f"Warning: Failed to parse IP-specific connections: {e}")
+            logger.warning("Failed to parse IP-specific connections: %s", e)
             connections_by_ip_timeseries = {}
 
         validation_results = validate_connection_data_consistency(connections_by_ip_timeseries, connections_timeseries)
@@ -296,7 +317,7 @@ def analyze_connections(
         try:
             connection_events = parse_connection_events(file_path)
         except Exception as e:
-            print(f"Warning: Failed to parse connection events: {e}")
+            logger.warning("Failed to parse connection events: %s", e)
             connection_events = []
 
         connections_dict = {}
@@ -334,7 +355,7 @@ def analyze_connections(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Connection analysis failed: {str(e)}")
 
-@app.post("/api/analyze/{file_id}/queries")
+@app.post("/api/analyze/{file_id}/queries", response_model=AnalysisResult)
 def analyze_queries_route(
     file_id: str,
     namespace: Optional[str] = None,
@@ -381,7 +402,7 @@ def analyze_queries_route(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query analysis failed: {str(e)}")
 
-@app.post("/api/analyze/{file_id}/query-examples")
+@app.post("/api/analyze/{file_id}/query-examples", response_model=AnalysisResult)
 def get_query_examples(
     file_id: str,
     request: QueryExamplesRequest,
@@ -393,7 +414,12 @@ def get_query_examples(
     operation = request.operation
     pattern = request.pattern
     
-    print(f"🔍 Looking for examples: ns={namespace}, op={operation}, pattern={pattern[:100]}")
+    logger.info(
+        "Looking for query examples ns=%s op=%s pattern=%s",
+        namespace,
+        operation,
+        pattern[:100],
+    )
     
     try:
         examples = []
@@ -421,7 +447,7 @@ def get_query_examples(
                         query_pattern = extract_query_pattern(op, command)
                         match_attempts += 1
                         if match_attempts <= 3:  # Log first few attempts
-                            print(f"  Comparing: {query_pattern[:100]} == {pattern[:100]}")
+                            logger.debug("Comparing %s == %s", query_pattern[:100], pattern[:100])
                         
                         # Try exact match first
                         if query_pattern == pattern:
@@ -461,7 +487,7 @@ def get_query_examples(
                 except Exception:
                     continue
         
-        print(f"✅ Found {len(examples)} examples (checked {match_attempts} patterns)")
+        logger.info("Found %d examples (checked %d patterns)", len(examples), match_attempts)
         
         return AnalysisResult(
             status="success",
@@ -475,7 +501,7 @@ def get_query_examples(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get query examples: {str(e)}")
 
-@app.post("/api/analyze/{file_id}/replica-set")
+@app.post("/api/analyze/{file_id}/replica-set", response_model=AnalysisResult)
 def analyze_replica_set(
     file_id: str,
     upload_store: dict = Depends(get_upload_store),
@@ -498,7 +524,7 @@ def analyze_replica_set(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Replica set analysis failed: {str(e)}")
 
-@app.post("/api/analyze/{file_id}/clients")
+@app.post("/api/analyze/{file_id}/clients", response_model=AnalysisResult)
 def analyze_clients(
     file_id: str,
     upload_store: dict = Depends(get_upload_store),
@@ -518,7 +544,7 @@ def analyze_clients(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Client analysis failed: {str(e)}")
 
-@app.post("/api/analyze/{file_id}/timeseries")
+@app.post("/api/analyze/{file_id}/timeseries", response_model=AnalysisResult)
 def analyze_timeseries(
     file_id: str,
     namespace: Optional[str] = None,
@@ -596,7 +622,7 @@ def analyze_timeseries(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Time-series analysis failed: {str(e)}")
 
-@app.post("/api/analyze/{file_id}/index-recommendations")
+@app.post("/api/analyze/{file_id}/index-recommendations", response_model=AnalysisResult)
 def get_index_recommendations(
     file_id: str,
     request: Optional[SingleQueryRequest] = None,
@@ -610,7 +636,7 @@ def get_index_recommendations(
     try:
         # If we have a single query with raw log line, use it directly
         if request and request.raw_log_line:
-            print(f"🎯 Using raw log line for analysis")
+            logger.info("Using raw log line for index recommendation analysis")
             # Parse the actual command from the log line
             log_entry = json.loads(request.raw_log_line)
             command = log_entry.get('attr', {}).get('command', {})
@@ -620,8 +646,8 @@ def get_index_recommendations(
             # This includes filter, sort, projection, limit, skip, pipeline, etc.
             full_command_json = json.dumps(command)
             
-            print(f"📊 Passing full command to AI (first 200 chars): {full_command_json[:200]}")
-            print(f"📊 Plan summary: {plan_summary}")
+            logger.debug("Passing full command JSON prefix: %s", full_command_json[:200])
+            logger.debug("Plan summary: %s", plan_summary)
             
             # Enhance stats with planSummary for coverage analysis
             enhanced_stats = request.stats.copy()
@@ -681,7 +707,7 @@ def get_index_recommendations(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Index recommendation failed: {str(e)}")
 
-@app.post("/api/trim/{file_id}")
+@app.post("/api/trim/{file_id}", response_model=AnalysisResult)
 def trim_log(
     file_id: str,
     trim_request: TrimRequest,
@@ -818,10 +844,10 @@ def preload_file(upload_store: dict) -> str | None:
             'is_preloaded': True,
             'sample_percentage': sample_percentage,
         }
-        print(f"📁 Pre-loaded file: {original_name} (ID: {file_id})")
+        logger.info("Pre-loaded file %s (ID: %s)", original_name, file_id)
         return file_id
     except Exception as e:
-        print(f"❌ Failed to pre-load file {preload_path}: {str(e)}")
+        logger.error("Failed to pre-load file %s: %s", preload_path, str(e))
     return None
 
 @app.post("/api/analyze/{file_id}/extract", response_model=ExtractResponse)
@@ -937,7 +963,7 @@ def apply_filters(entry, line, filters):
     
     return True
 
-@app.get("/api/analyze/{file_id}/filter-options")
+@app.get("/api/analyze/{file_id}/filter-options", response_model=FilterOptionsResponse)
 def get_filter_options(
     file_id: str,
     upload_store: dict = Depends(get_upload_store),
@@ -1012,7 +1038,7 @@ def get_filter_options(
         }
     }
 
-@app.get("/api/fs/browse")
+@app.get("/api/fs/browse", response_model=FsBrowseResponse)
 async def browse_fs(path: str = None):
     """Browse the server file system to select a directory."""
     if not path:
@@ -1052,7 +1078,7 @@ async def browse_fs(path: str = None):
 
 # --- FTDC Endpoints ---
 
-@app.get("/api/ftdc/list")
+@app.get("/api/ftdc/list", response_model=AnalysisResult)
 async def list_ftdc_dirs():
     """Returns some discovered FTDC directories."""
     dirs = []
@@ -1072,7 +1098,7 @@ async def list_ftdc_dirs():
                 pass
     return {"status": "success", "data": {"directories": dirs}}
 
-@app.post("/api/ftdc/start")
+@app.post("/api/ftdc/start", response_model=StatusMessage)
 async def start_ftdc(request: FtdcStartRequest):
     try:
         from pepi.ftdc import launch_viewer
@@ -1083,7 +1109,7 @@ async def start_ftdc(request: FtdcStartRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/ftdc/status")
+@app.get("/api/ftdc/status", response_model=FtdcStatusResponse)
 async def status_ftdc():
     import urllib.request
     try:
@@ -1104,7 +1130,7 @@ async def status_ftdc():
     except (OSError, ImportError, ValueError):
         return {"status": "success", "data": {"running": False}}
 
-@app.post("/api/ftdc/stop")
+@app.post("/api/ftdc/stop", response_model=StatusMessage)
 async def stop_ftdc():
     try:
         import subprocess
@@ -1156,14 +1182,14 @@ def find_available_port(start_port=8000):
         
         # Show existing pepi processes
         if pepi_processes:
-            print(f"📋 Found {len(pepi_processes)} existing pepi web-ui process(es):")
+            logger.info("Found %d existing pepi web-ui process(es)", len(pepi_processes))
             for proc in pepi_processes:
-                print(f"   • PID {proc['pid']} on port {proc['port']}")
+                logger.info("Existing pepi process PID %s on port %s", proc['pid'], proc['port'])
         
         # Check if we've reached the limit
         if len(pepi_processes) >= 3:
-            print("❌ Maximum of 3 pepi web-ui instances already running.")
-            print("   Please stop one of the existing instances before starting a new one.")
+            logger.error("Maximum of 3 pepi web-ui instances already running.")
+            logger.error("Please stop one of the existing instances before starting a new one.")
             raise RuntimeError("Maximum pepi instances reached (3)")
         
         # Find the first available port from our allowed list
@@ -1176,21 +1202,21 @@ def find_available_port(start_port=8000):
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                         s.bind(('0.0.0.0', port))
-                        print(f"🎯 Selected port {port} for this instance")
+                        logger.info("Selected port %s for this instance", port)
                         return port
                 except OSError as e:
                     # Only warn if it's actually in use (not TIME_WAIT)
                     if "Address already in use" in str(e):
-                        print(f"⚠️  Port {port} is in use, trying next...")
+                        logger.warning("Port %s is in use, trying next", port)
                     else:
-                        print(f"⚠️  Port {port} unavailable ({e}), trying next...")
+                        logger.warning("Port %s unavailable (%s), trying next", port, e)
                     continue
         
         raise RuntimeError("No available ports in range 8000-8002")
         
     except ImportError:
         # Fallback if psutil is not available
-        print("⚠️  psutil not available, using basic port detection...")
+        logger.warning("psutil not available, using basic port detection")
         for port in allowed_ports:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -1204,7 +1230,7 @@ def find_available_port(start_port=8000):
 if __name__ == "__main__":
     import uvicorn
     
-    print("🚀 Starting Pepi Web Interface...")
+    logger.info("Starting Pepi Web Interface")
     
     # Find an available port
     try:
@@ -1218,4 +1244,4 @@ if __name__ == "__main__":
         
         uvicorn.run(app, host="0.0.0.0", port=port)
     except RuntimeError as e:
-        print(f"❌ Failed to start server: {e}") 
+        logger.error("Failed to start server: %s", e)

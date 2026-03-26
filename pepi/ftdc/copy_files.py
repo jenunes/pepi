@@ -1,5 +1,8 @@
 import os
 import shutil
+import logging
+
+logger = logging.getLogger(__name__)
 
 src_repo = "/home/jean/repositories/mongodb_ftdc_viewer"
 dst_repo = "/home/jean/repositories/pepi/pepi/ftdc"
@@ -9,11 +12,11 @@ def copy_item(src, dst):
         if os.path.exists(dst):
             shutil.rmtree(dst)
         shutil.copytree(src, dst)
-        print(f"Copied directory {src} -> {dst}")
+        logger.info("Copied directory %s -> %s", src, dst)
     elif os.path.isfile(src):
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(src, dst)
-        print(f"Copied file {src} -> {dst}")
+        logger.info("Copied file %s -> %s", src, dst)
 
 # Copy grafana dashboards
 copy_item(
@@ -27,4 +30,4 @@ copy_item(
     os.path.join(dst_repo, "ftdc_exporter")
 )
 
-print("FTDC components copied successfully.")
+logger.info("FTDC components copied successfully.")
