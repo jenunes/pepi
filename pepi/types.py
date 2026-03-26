@@ -164,6 +164,8 @@ class FileInfo(BaseModel):
     lines: int
     is_preloaded: bool = False
     sample_percentage: int = 100
+    preflight_tier: Optional[str] = None
+    can_proceed: Optional[bool] = None
 
 
 class FileListResponse(BaseModel):
@@ -227,6 +229,45 @@ class FtdcStatusResponse(BaseModel):
 class StatusMessage(BaseModel):
     status: str = "success"
     message: str = ""
+
+
+class PreflightThresholds(BaseModel):
+    warning_gb: float
+    confirm_gb: float
+    block_gb: float
+
+
+class PreflightData(BaseModel):
+    file_id: str
+    size_bytes: int
+    size_gb: float
+    tier: str
+    can_proceed: bool
+    requires_confirmation: bool
+    message: str
+    recommendation: str = "trim_by_time_window"
+    thresholds: PreflightThresholds
+
+
+class PreflightResponse(BaseModel):
+    status: str = "success"
+    data: PreflightData
+
+
+class IngestStatusData(BaseModel):
+    job_id: str
+    file_id: str
+    status: str
+    bytes_processed: int = 0
+    lines_processed: int = 0
+    started_at: float
+    finished_at: Optional[float] = None
+    error_message: Optional[str] = None
+
+
+class IngestStatusResponse(BaseModel):
+    status: str = "success"
+    data: IngestStatusData
 
 
 # ---------------------------------------------------------------------------

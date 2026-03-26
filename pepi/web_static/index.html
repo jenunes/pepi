@@ -85,6 +85,7 @@
 
         <!-- Analysis Dashboard -->
         <div class="dashboard" id="dashboard" style="display: block;">
+            <div id="preflightBanner" style="display:none; margin: 10px 0; padding: 10px 14px; border-radius: 8px; background:#fff3cd; color:#856404; border:1px solid #ffeeba;"></div>
             <div id="largeDatasetBanner" style="display:none; margin: 10px 0; padding: 10px 14px; border-radius: 8px; background:#fff3cd; color:#856404; border:1px solid #ffeeba;">
                 Large dataset mode is active. Rendering is optimized and some details are loaded on demand.
             </div>
@@ -500,11 +501,22 @@
                 <i class="fas fa-question-circle"></i> FAQ
             </a>
             <span class="footer-separator">•</span>
-            <span class="footer-version">v2.1.0.dev7</span>
+            <span class="footer-version">v2.1.0.dev8</span>
         </div>
     </div>
 
     <script src="/static/app.js?v=1.1.1"></script>
+    <div id="preflightModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:9999; align-items:center; justify-content:center;">
+        <div style="background:#fff; width:min(680px,92vw); border-radius:12px; padding:20px;">
+            <h3 style="margin-top:0;">Large File Preflight</h3>
+            <p id="preflightMessage"></p>
+            <p id="preflightContext" style="color:#666;"></p>
+            <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:16px;">
+                <button class="btn" id="preflightCancelBtn">Cancel</button>
+                <button class="btn btn-primary" id="preflightProceedBtn">Proceed</button>
+            </div>
+        </div>
+    </div>
 </body>
 
 </html>

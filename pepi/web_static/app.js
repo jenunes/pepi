@@ -9,6 +9,9 @@ let extractionPrettyCache = null;
 const inflightRequests = new Map();
 const perfMetrics = { enabled: true };
 let isLargeDatasetMode = false;
+let currentPreflight = null;
+let preflightAcknowledged = new Set();
+let currentAnalysisSource = 'raw';
 
 function startPerf(label) {
     return { label, startedAt: performance.now() };
@@ -51,6 +54,78 @@ async function fetchJson(url, options = {}, group = null) {
         throw new Error(`${response.status} ${response.statusText}`);
     }
     return response.json();
+}
+
+async function getPreflight(fileId) {
+    return fetchJson(`/api/files/${fileId}/preflight`, {}, 'preflight');
+}
+
+function showPreflightBanner(message) {
+    const banner = document.getElementById('preflightBanner');
+    if (!banner) return;
+    banner.textContent = message;
+    banner.style.display = 'block';
+}
+
+function hidePreflightBanner() {
+    const banner = document.getElementById('preflightBanner');
+    if (!banner) return;
+    banner.style.display = 'none';
+}
+
+function closePreflightModal() {
+    const modal = document.getElementById('preflightModal');
+    if (!modal) return;
+    modal.style.display = 'none';
+}
+
+function showPreflightModal(preflight) {
+    const modal = document.getElementById('preflightModal');
+    const msg = document.getElementById('preflightMessage');
+    const ctx = document.getElementById('preflightContext');
+    const proceedBtn = document.getElementById('preflightProceedBtn');
+    const cancelBtn = document.getElementById('preflightCancelBtn');
+    if (!modal || !msg || !ctx || !proceedBtn || !cancelBtn) return Promise.resolve(false);
+
+    msg.textContent = preflight.message;
+    if (preflight.tier === 'confirm') {
+        ctx.textContent = 'Continuing may significantly increase processing time and disk usage.';
+    } else if (preflight.tier === 'block') {
+        ctx.textContent = 'File exceeds the configured size limit.';
+    } else {
+        ctx.textContent = '';
+    }
+    proceedBtn.disabled = !preflight.can_proceed;
+    modal.style.display = 'flex';
+
+    return new Promise((resolve) => {
+        proceedBtn.onclick = () => {
+            closePreflightModal();
+            resolve(true);
+        };
+        cancelBtn.onclick = () => {
+            closePreflightModal();
+            resolve(false);
+        };
+    });
+}
+
+async function startIngestForFile(fileId) {
+    try {
+        await fetchJson(`/api/ingest/${fileId}/start`, { method: 'POST' }, 'ingest');
+    } catch (error) {
+        showToast('warning', `Ingest start skipped: ${error.message}`);
+    }
+}
+
+async function refreshIngestStatus(fileId) {
+    try {
+        const result = await fetchJson(`/api/ingest/${fileId}/status`, {}, 'ingest');
+        const status = result?.data?.status;
+        currentAnalysisSource = status === 'completed' ? 'ingest' : 'raw';
+    } catch {
+        currentAnalysisSource = 'raw';
+    }
 }
 
 // Performance optimization functions
@@ -450,6 +525,7 @@ function formatDateTime(isoString) {
 // File selection and analysis
 async function selectFile(fileId) {
     currentFileId = fileId;
+    currentAnalysisSource = 'raw';
 
     // Update UI - highlight selected file
     document.querySelectorAll('.file-item').forEach(item => {
@@ -464,6 +540,30 @@ async function selectFile(fileId) {
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.style.display = 'block';
     });
+
+    try {
+        const preflightResponse = await getPreflight(fileId);
+        currentPreflight = preflightResponse.data;
+        if (currentPreflight.tier !== 'ok') {
+            showPreflightBanner(currentPreflight.message);
+        } else {
+            hidePreflightBanner();
+        }
+        if (!preflightAcknowledged.has(fileId) && currentPreflight.tier !== 'ok') {
+            const proceed = await showPreflightModal(currentPreflight);
+            if (!proceed) {
+                return;
+            }
+            preflightAcknowledged.add(fileId);
+        }
+
+        if (currentPreflight.can_proceed) {
+            await startIngestForFile(fileId);
+            setTimeout(() => refreshIngestStatus(fileId), 1200);
+        }
+    } catch (error) {
+        showToast('warning', `Preflight unavailable: ${error.message}`);
+    }
 
     // Default to basic tab
     switchTab('basic');
@@ -634,6 +734,7 @@ function displayBasicInfo(data) {
 
 async function analyzeConnections() {
     if (!currentFileId) return;
+    await refreshIngestStatus(currentFileId);
 
     showLoading('Analyzing connections...');
 
@@ -642,7 +743,7 @@ async function analyzeConnections() {
 
     try {
         const result = await fetchJson(
-            `/api/analyze/${currentFileId}/connections?sample=${samplePercentage}&include_details=false`,
+            `/api/analyze/${currentFileId}/connections?sample=${samplePercentage}&include_details=false&source=${currentAnalysisSource}`,
             { method: 'POST' },
             'tab-analysis'
         );
@@ -2446,6 +2547,7 @@ function copyQueryExample(exampleIndex) {
 // Time Series Analysis Functions
 async function analyzeTimeSeries() {
     if (!currentFileId) return;
+    await refreshIngestStatus(currentFileId);
 
     const namespace = document.getElementById('timeseriesNamespaceFilter').value;
 
@@ -2455,6 +2557,7 @@ async function analyzeTimeSeries() {
         const params = new URLSearchParams();
         if (namespace) params.append('namespace', namespace);
         params.append('include_raw', String(!isLargeDatasetMode));
+        params.append('source', currentAnalysisSource);
         const url = `/api/analyze/${currentFileId}/timeseries?${params.toString()}`;
 
         const result = await fetchJson(url, { method: 'POST' }, 'tab-analysis');
@@ -3593,6 +3696,8 @@ document.addEventListener('DOMContentLoaded', function () {
 let currentExtractionLines = [];
 
 async function applyExtraction() {
+    if (!currentFileId) return;
+    await refreshIngestStatus(currentFileId);
     // Handle namespace (dropdown vs custom input)
     let namespace = '';
     if (document.getElementById('useCustomNamespace').checked) {
@@ -3617,7 +3722,7 @@ async function applyExtraction() {
 
     showToast('info', 'Extracting logs...');
     try {
-        const data = await fetchJson(`/api/analyze/${currentFileId}/extract?offset=0`, {
+        const data = await fetchJson(`/api/analyze/${currentFileId}/extract?offset=0&source=${currentAnalysisSource}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(filters)

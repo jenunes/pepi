@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -37,6 +38,17 @@ from . import (
 from .errors import get_validated_file_path, validate_sample_param
 from .index_advisor import analyze_queries as ia_analyze_queries
 from .index_advisor import analyze_single_query
+from .ingest_store import (
+    bootstrap_schema,
+    delete_file_ingest_data,
+    get_connection,
+    get_ingest_db_path,
+    get_latest_job_for_file,
+    query_connections_summary,
+    query_extract,
+    query_timeseries,
+)
+from .ingest_worker import run_ingest_job
 from .types import (
     AnalysisResult,
     ExtractResponse,
@@ -46,7 +58,11 @@ from .types import (
     FsBrowseResponse,
     FtdcStartRequest,
     FtdcStatusResponse,
+    IngestStatusResponse,
     LogFilterRequest,
+    PreflightData,
+    PreflightResponse,
+    PreflightThresholds,
     QueryExamplesRequest,
     SingleQueryRequest,
     StatusMessage,
@@ -73,6 +89,10 @@ async def lifespan(app: FastAPI):
 
     app.state.upload_store = {}
     app.state.analysis_cache = {}
+    app.state.ingest_db_path = get_ingest_db_path()
+    app.state.ingest_conn = get_connection(app.state.ingest_db_path)
+    bootstrap_schema(app.state.ingest_conn)
+    app.state.ingest_runtime = {}
 
     preload_file(app.state.upload_store)
 
@@ -84,9 +104,10 @@ async def lifespan(app: FastAPI):
                 os.unlink(info['path'])
             except OSError:
                 pass
+    app.state.ingest_conn.close()
 
 
-app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev7", lifespan=lifespan)
+app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev8", lifespan=lifespan)
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -126,6 +147,14 @@ def get_analysis_cache(request: Request) -> dict:
     return request.app.state.analysis_cache
 
 
+def get_ingest_conn(request: Request):
+    return request.app.state.ingest_conn
+
+
+def get_ingest_runtime(request: Request) -> dict:
+    return request.app.state.ingest_runtime
+
+
 def _is_accepted_log_filename(filename: str) -> bool:
     """Accept .log, .txt, .json, and MongoDB rotated logs (e.g. mongod.log.2026-03-06T21-30-43)."""
     if filename.endswith(('.log', '.txt', '.json')):
@@ -133,6 +162,42 @@ def _is_accepted_log_filename(filename: str) -> bool:
     if '.log.' in filename:
         return True
     return False
+
+
+def _get_size_thresholds() -> PreflightThresholds:
+    return PreflightThresholds(
+        warning_gb=float(os.environ.get("PEPI_FILE_WARN_GB", "1")),
+        confirm_gb=float(os.environ.get("PEPI_FILE_CONFIRM_GB", "2")),
+        block_gb=float(os.environ.get("PEPI_FILE_BLOCK_GB", "4")),
+    )
+
+
+def _build_preflight_data(file_id: str, size_bytes: int) -> PreflightData:
+    size_gb = size_bytes / (1024**3)
+    thresholds = _get_size_thresholds()
+    allow_oversize = os.environ.get("PEPI_ALLOW_OVERSIZE", "false").lower() == "true"
+    tier = "ok"
+    can_proceed = True
+    requires_confirmation = False
+    if size_gb >= thresholds.block_gb:
+        tier = "block"
+        can_proceed = allow_oversize
+    elif size_gb >= thresholds.confirm_gb:
+        tier = "confirm"
+        requires_confirmation = True
+    elif size_gb >= thresholds.warning_gb:
+        tier = "warning"
+    message = "Large file detected. To avoid slow analysis, trim the file to the specific period you need."
+    return PreflightData(
+        file_id=file_id,
+        size_bytes=size_bytes,
+        size_gb=round(size_gb, 3),
+        tier=tier,
+        can_proceed=can_proceed,
+        requires_confirmation=requires_confirmation,
+        message=message,
+        thresholds=thresholds,
+    )
 
 
 app.mount("/static", StaticFiles(directory=str(web_static_dir)), name="static")
@@ -196,6 +261,7 @@ def list_uploaded_files(upload_store: dict = Depends(get_upload_store)):
     stale_ids = []
     for file_id, info in upload_store.items():
         if os.path.exists(info['path']):
+            preflight = _build_preflight_data(file_id, info["size"])
             files.append(FileInfo(
                 file_id=file_id,
                 filename=info['original_name'],
@@ -203,12 +269,119 @@ def list_uploaded_files(upload_store: dict = Depends(get_upload_store)):
                 lines=info['lines'],
                 is_preloaded=info.get('is_preloaded', False),
                 sample_percentage=info.get('sample_percentage', 100),
+                preflight_tier=preflight.tier,
+                can_proceed=preflight.can_proceed,
             ))
         else:
             stale_ids.append(file_id)
     for fid in stale_ids:
         del upload_store[fid]
     return FileListResponse(files=files)
+
+
+@app.get("/api/files/{file_id}/preflight", response_model=PreflightResponse)
+def get_file_preflight(
+    file_id: str,
+    upload_store: dict = Depends(get_upload_store),
+):
+    get_validated_file_path(file_id, upload_store)
+    info = upload_store[file_id]
+    data = _build_preflight_data(file_id, info["size"])
+    return PreflightResponse(data=data)
+
+
+@app.post("/api/ingest/{file_id}/start", response_model=IngestStatusResponse)
+def start_ingest(
+    file_id: str,
+    force: bool = False,
+    upload_store: dict = Depends(get_upload_store),
+    ingest_conn=Depends(get_ingest_conn),
+    ingest_runtime: dict = Depends(get_ingest_runtime),
+):
+    file_path = get_validated_file_path(file_id, upload_store)
+    preflight = _build_preflight_data(file_id, upload_store[file_id]["size"])
+    if not preflight.can_proceed and not force:
+        raise HTTPException(status_code=400, detail=preflight.message)
+    latest = get_latest_job_for_file(ingest_conn, file_id)
+    if latest and latest["status"] == "running":
+        return IngestStatusResponse(status="success", data=latest)
+
+    job_id = f"{file_id}:{int(time.time())}"
+    cancel_event = threading.Event()
+    worker = threading.Thread(
+        target=run_ingest_job,
+        kwargs={
+            "conn": ingest_conn,
+            "file_id": file_id,
+            "file_path": file_path,
+            "job_id": job_id,
+            "cancel_event": cancel_event,
+        },
+        daemon=True,
+    )
+    ingest_runtime[file_id] = {"job_id": job_id, "cancel_event": cancel_event, "thread": worker}
+    worker.start()
+    data = {
+        "job_id": job_id,
+        "file_id": file_id,
+        "status": "running",
+        "bytes_processed": 0,
+        "lines_processed": 0,
+        "started_at": time.time(),
+        "finished_at": None,
+        "error_message": None,
+    }
+    return IngestStatusResponse(status="success", data=data)
+
+
+@app.get("/api/ingest/{file_id}/status", response_model=IngestStatusResponse)
+def ingest_status(
+    file_id: str,
+    upload_store: dict = Depends(get_upload_store),
+    ingest_conn=Depends(get_ingest_conn),
+):
+    get_validated_file_path(file_id, upload_store)
+    latest = get_latest_job_for_file(ingest_conn, file_id)
+    if not latest:
+        now = time.time()
+        latest = {
+            "job_id": f"{file_id}:none",
+            "file_id": file_id,
+            "status": "not_started",
+            "bytes_processed": 0,
+            "lines_processed": 0,
+            "started_at": now,
+            "finished_at": None,
+            "error_message": None,
+        }
+    return IngestStatusResponse(status="success", data=latest)
+
+
+@app.post("/api/ingest/{file_id}/cancel", response_model=IngestStatusResponse)
+def cancel_ingest(
+    file_id: str,
+    upload_store: dict = Depends(get_upload_store),
+    ingest_conn=Depends(get_ingest_conn),
+    ingest_runtime: dict = Depends(get_ingest_runtime),
+):
+    get_validated_file_path(file_id, upload_store)
+    runtime = ingest_runtime.get(file_id)
+    if runtime:
+        runtime["cancel_event"].set()
+    latest = get_latest_job_for_file(ingest_conn, file_id)
+    if not latest:
+        now = time.time()
+        latest = {
+            "job_id": f"{file_id}:none",
+            "file_id": file_id,
+            "status": "cancelled",
+            "bytes_processed": 0,
+            "lines_processed": 0,
+            "started_at": now,
+            "finished_at": now,
+            "error_message": None,
+        }
+    return IngestStatusResponse(status="success", data=latest)
 
 @app.post("/api/analyze/{file_id}/basic", response_model=AnalysisResult)
 def analyze_basic_info(
@@ -295,13 +468,26 @@ def analyze_connections(
     file_id: str,
     sample: Optional[int] = 100,
     include_details: bool = False,
+    source: str = "raw",
     upload_store: dict = Depends(get_upload_store),
+    ingest_conn=Depends(get_ingest_conn),
 ):
     """Analyze connection information with time series data."""
     file_path = get_validated_file_path(file_id, upload_store)
     validate_sample_param(sample)
+    if source not in {"raw", "ingest"}:
+        raise HTTPException(status_code=400, detail="Invalid source. Allowed: raw, ingest")
 
     try:
+        if source == "ingest":
+            ingest_data = query_connections_summary(ingest_conn, file_id)
+            total_lines = upload_store[file_id]["lines"]
+            sampling_metadata = get_sampling_metadata(total_lines, sample)
+            ingest_data["sampling_metadata"] = sampling_metadata
+            if not include_details:
+                ingest_data["connection_events"] = []
+            return AnalysisResult(status="success", data=ingest_data)
+
         connections_data, total_opened, total_closed = parse_connections(file_path, sample_percentage=sample)
         overall_stats, ip_stats = calculate_connection_stats(connections_data)
 
@@ -550,12 +736,26 @@ def analyze_timeseries(
     file_id: str,
     namespace: Optional[str] = None,
     include_raw: bool = True,
+    source: str = "raw",
     upload_store: dict = Depends(get_upload_store),
+    ingest_conn=Depends(get_ingest_conn),
 ):
     """Analyze time-series data for slow queries, connections, and errors."""
     file_path = get_validated_file_path(file_id, upload_store)
+    if source not in {"raw", "ingest"}:
+        raise HTTPException(status_code=400, detail="Invalid source. Allowed: raw, ingest")
     
     try:
+        if source == "ingest":
+            data = query_timeseries(ingest_conn, file_id, include_raw=include_raw)
+            if namespace:
+                data["slow_queries"] = [q for q in data["slow_queries"] if q["namespace"] == namespace]
+                data["aggregated_queries"] = [
+                    q for q in data["aggregated_queries"] if q["namespace"] == namespace
+                ]
+                data["unique_namespaces"] = sorted({q["namespace"] for q in data["aggregated_queries"]})
+            return AnalysisResult(status="success", data=data)
+
         slow_queries, connections, errors = parse_timeseries_data(file_path)
         
         # Filter slow queries by namespace if specified
@@ -808,6 +1008,7 @@ async def download_file(
 async def delete_file(
     file_id: str,
     upload_store: dict = Depends(get_upload_store),
+    ingest_conn=Depends(get_ingest_conn),
 ):
     """Delete an uploaded file. For preloaded files, only removes from store (does not delete the original file)."""
     get_validated_file_path(file_id, upload_store)
@@ -817,6 +1018,7 @@ async def delete_file(
     if not info.get('is_preloaded', False):
         if os.path.exists(file_path):
             os.unlink(file_path)
+    delete_file_ingest_data(ingest_conn, file_id)
     
     del upload_store[file_id]
     
@@ -857,10 +1059,35 @@ def extract_logs(
     file_id: str,
     filters: LogFilterRequest,
     offset: int = 0,
+    source: str = "raw",
     upload_store: dict = Depends(get_upload_store),
+    ingest_conn=Depends(get_ingest_conn),
 ):
     """Extract raw log entries based on filters."""
     file_path = get_validated_file_path(file_id, upload_store)
+    if source not in {"raw", "ingest"}:
+        raise HTTPException(status_code=400, detail="Invalid source. Allowed: raw, ingest")
+    if source == "ingest":
+        data = query_extract(
+            ingest_conn,
+            file_id,
+            offset=offset,
+            limit=filters.limit,
+            text_search=filters.text_search,
+            case_sensitive=filters.case_sensitive,
+            components=filters.components,
+            severities=filters.severities,
+            operations=filters.operations,
+            namespace=filters.namespace,
+            date_from=filters.date_from,
+            date_to=filters.date_to,
+        )
+        return ExtractResponse(
+            total_scanned=data["total_scanned"],
+            total_matched=data["total_matched"],
+            lines=data["lines"],
+            truncated=data["truncated"],
+        )
     matched_lines = []
     matched_count = 0
     total_lines = 0
