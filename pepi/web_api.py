@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import collections
+import errno
 import json
 import logging
 import os
@@ -67,6 +68,7 @@ from .types import (
     SingleQueryRequest,
     StatusMessage,
     TrimRequest,
+    TmpHealthResponse,
     UploadResponse,
 )
 
@@ -93,6 +95,9 @@ async def lifespan(app: FastAPI):
     app.state.ingest_conn = get_connection(app.state.ingest_db_path)
     bootstrap_schema(app.state.ingest_conn)
     app.state.ingest_runtime = {}
+    app.state.upload_tmp_dir = resolve_upload_tmp_dir()
+
+    cleanup_stale_upload_files(app.state.upload_tmp_dir)
 
     preload_file(app.state.upload_store)
 
@@ -104,10 +109,11 @@ async def lifespan(app: FastAPI):
                 os.unlink(info['path'])
             except OSError:
                 pass
+    cleanup_stale_upload_files(app.state.upload_tmp_dir)
     app.state.ingest_conn.close()
 
 
-app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev8", lifespan=lifespan)
+app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.2.0", lifespan=lifespan)
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -122,10 +128,13 @@ app.add_middleware(
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    # Keep middleware in place but avoid noisy per-request terminal logs by default.
+    if os.environ.get("PEPI_HTTP_LOG", "false").lower() != "true":
+        return await call_next(request)
     start_ts = time.time()
     response = await call_next(request)
     elapsed_ms = (time.time() - start_ts) * 1000
-    logger.info(
+    logger.debug(
         "%s %s -> %s (%.1fms)",
         request.method,
         request.url.path,
@@ -153,6 +162,10 @@ def get_ingest_conn(request: Request):
 
 def get_ingest_runtime(request: Request) -> dict:
     return request.app.state.ingest_runtime
+
+
+def get_upload_tmp_dir(request: Request) -> str:
+    return request.app.state.upload_tmp_dir
 
 
 def _is_accepted_log_filename(filename: str) -> bool:
@@ -200,6 +213,69 @@ def _build_preflight_data(file_id: str, size_bytes: int) -> PreflightData:
     )
 
 
+def _get_or_compute_line_count(upload_store: dict, file_id: str) -> int:
+    current = int(upload_store[file_id].get("lines", 0) or 0)
+    if current > 0:
+        return current
+    file_path = upload_store[file_id]["path"]
+    computed = count_lines(file_path)
+    upload_store[file_id]["lines"] = computed
+    return computed
+
+
+def resolve_upload_tmp_dir() -> str:
+    configured = os.environ.get("PEPI_UPLOAD_TMPDIR")
+    if configured:
+        target = os.path.abspath(os.path.expanduser(configured))
+    else:
+        env_tmp = os.environ.get("TMPDIR")
+        target = os.path.abspath(os.path.expanduser(env_tmp)) if env_tmp else tempfile.gettempdir()
+    Path(target).mkdir(parents=True, exist_ok=True)
+    if not os.access(target, os.W_OK):
+        raise RuntimeError(f"Upload temp dir is not writable: {target}")
+    return target
+
+
+def get_free_bytes(path: str) -> int:
+    stat = os.statvfs(path)
+    return stat.f_bavail * stat.f_frsize
+
+
+def get_tmp_requirements() -> tuple[int, float]:
+    min_free_mb = int(os.environ.get("PEPI_UPLOAD_MIN_FREE_MB", "0"))
+    headroom_factor = float(os.environ.get("PEPI_UPLOAD_HEADROOM_FACTOR", "1.5"))
+    return min_free_mb * 1024 * 1024, headroom_factor
+
+
+def assert_min_free_space(tmp_dir: str, required_bytes: int, headroom_factor: float) -> None:
+    free_bytes = get_free_bytes(tmp_dir)
+    required_with_headroom = int(required_bytes * max(1.0, headroom_factor))
+    if free_bytes < required_with_headroom:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def estimate_required_upload_bytes(request: Request, min_required_bytes: int, headroom_factor: float) -> int:
+    content_length = request.headers.get("content-length")
+    if not content_length:
+        return min_required_bytes
+    try:
+        length = int(content_length)
+    except ValueError:
+        return min_required_bytes
+    return max(min_required_bytes, int(length * max(1.0, headroom_factor)))
+
+
+def cleanup_stale_upload_files(tmp_dir: str) -> None:
+    max_age_seconds = int(os.environ.get("PEPI_TMP_CLEANUP_MAX_AGE_SECONDS", "86400"))
+    now = time.time()
+    for path in Path(tmp_dir).glob("pepi_upload_*.log"):
+        try:
+            if now - path.stat().st_mtime > max_age_seconds:
+                path.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
 app.mount("/static", StaticFiles(directory=str(web_static_dir)), name="static")
 
 
@@ -216,8 +292,10 @@ async def root():
 
 @app.post("/api/upload", response_model=UploadResponse)
 async def upload_log_file(
+    request: Request,
     file: UploadFile = File(...),
     upload_store: dict = Depends(get_upload_store),
+    upload_tmp_dir: str = Depends(get_upload_tmp_dir),
 ):
     """Upload and store a MongoDB log file."""
     if not _is_accepted_log_filename(file.filename):
@@ -226,33 +304,81 @@ async def upload_log_file(
             detail="Unsupported file type. Accepted: .log, .txt, .json, and MongoDB rotated logs",
         )
 
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.log')
+    temp_file = tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=".log",
+        prefix="pepi_upload_",
+        dir=upload_tmp_dir,
+    )
     try:
         file_size = 0
+        min_required_bytes, headroom_factor = get_tmp_requirements()
+        required_bytes = estimate_required_upload_bytes(request, min_required_bytes, headroom_factor)
+        assert_min_free_space(upload_tmp_dir, required_bytes, 1.0)
         while chunk := await file.read(1024 * 1024):
             temp_file.write(chunk)
             file_size += len(chunk)
         temp_file.close()
 
         file_id = os.path.basename(temp_file.name)
-        line_count = count_lines(temp_file.name)
         upload_store[file_id] = {
             'path': temp_file.name,
             'original_name': file.filename,
             'size': file_size,
-            'lines': line_count,
+            # Deferred line counting for large uploads.
+            'lines': 0,
         }
 
         return UploadResponse(
             file_id=file_id,
             filename=file.filename,
             size=file_size,
-            lines=line_count,
+            lines=0,
         )
+    except OSError as e:
+        logger.exception("Upload failed for filename=%s", file.filename)
+        if os.path.exists(temp_file.name):
+            os.unlink(temp_file.name)
+        if e.errno == errno.ENOSPC:
+            raise HTTPException(
+                status_code=507,
+                detail={
+                    "error_code": "NO_SPACE_LEFT",
+                    "detail": "No space left on device for upload temporary files.",
+                    "hint": "Free disk space, set PEPI_UPLOAD_TMPDIR to a larger partition, or trim the file to a smaller time range.",
+                },
+            )
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
     except Exception as e:
+        logger.exception("Upload failed for filename=%s", file.filename)
         if os.path.exists(temp_file.name):
             os.unlink(temp_file.name)
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@app.get("/api/system/tmp-health", response_model=TmpHealthResponse)
+def get_tmp_health(
+    upload_tmp_dir: str = Depends(get_upload_tmp_dir),
+):
+    min_required_bytes, headroom_factor = get_tmp_requirements()
+    free_bytes = get_free_bytes(upload_tmp_dir)
+    has_space = free_bytes >= min_required_bytes
+    message = None
+    if not has_space:
+        message = (
+            "Low temporary storage space. Large file uploads may fail. "
+            "Consider PEPI_UPLOAD_TMPDIR or trimming logs by time range."
+        )
+    return TmpHealthResponse(
+        data={
+            "tmp_dir": upload_tmp_dir,
+            "free_bytes": free_bytes,
+            "min_required_bytes": min_required_bytes,
+            "headroom_factor": headroom_factor,
+            "has_space": has_space,
+        },
+        message=message,
+    )
 
 @app.get("/api/files", response_model=FileListResponse)
 def list_uploaded_files(upload_store: dict = Depends(get_upload_store)):
@@ -442,7 +568,7 @@ def analyze_basic_info(
             except (json.JSONDecodeError, ValueError, KeyError):
                 continue
 
-        total_lines = upload_store[file_id]['lines']
+        total_lines = _get_or_compute_line_count(upload_store, file_id)
         sampling_metadata = get_sampling_metadata(total_lines, sample)
 
         return AnalysisResult(
@@ -481,7 +607,7 @@ def analyze_connections(
     try:
         if source == "ingest":
             ingest_data = query_connections_summary(ingest_conn, file_id)
-            total_lines = upload_store[file_id]["lines"]
+            total_lines = _get_or_compute_line_count(upload_store, file_id)
             sampling_metadata = get_sampling_metadata(total_lines, sample)
             ingest_data["sampling_metadata"] = sampling_metadata
             if not include_details:
@@ -515,7 +641,7 @@ def analyze_connections(
                 'durations': data['durations'] if include_details else [],
             }
 
-        total_lines = upload_store[file_id]['lines']
+        total_lines = _get_or_compute_line_count(upload_store, file_id)
         sampling_metadata = get_sampling_metadata(total_lines, sample)
 
         return AnalysisResult(
@@ -1044,7 +1170,7 @@ def preload_file(upload_store: dict) -> str | None:
             'path': preload_path,
             'original_name': original_name,
             'size': file_size,
-            'lines': count_lines(preload_path),
+            'lines': 0,
             'is_preloaded': True,
             'sample_percentage': sample_percentage,
         }
@@ -1404,7 +1530,7 @@ def find_available_port(start_port=8000):
             try:
                 if proc.info['cmdline'] and any('pepi.web_api' in cmd for cmd in proc.info['cmdline']):
                     # Get the port this process is using
-                    for conn in proc.connections():
+                    for conn in proc.net_connections():
                         if conn.status == 'LISTEN' and conn.laddr.ip in ['0.0.0.0', '127.0.0.1']:
                             pepi_processes.append({
                                 'pid': proc.info['pid'],
@@ -1462,6 +1588,27 @@ def find_available_port(start_port=8000):
                 continue
         raise RuntimeError("No available ports in range 8000-8002")
 
+
+def cleanup_stale_port_files() -> None:
+    """Remove stale /tmp/pepi_port_<pid>.txt files for dead processes."""
+    temp_dir = Path(tempfile.gettempdir())
+    for path in temp_dir.glob("pepi_port_*.txt"):
+        try:
+            pid_text = path.stem.replace("pepi_port_", "")
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        try:
+            os.kill(pid, 0)
+            # Process exists: keep marker.
+            continue
+        except OSError:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 if __name__ == "__main__":
     import uvicorn
     
@@ -1469,6 +1616,7 @@ if __name__ == "__main__":
     
     # Find an available port
     try:
+        cleanup_stale_port_files()
         port = find_available_port(8000)
         
         # Write the port to a temporary file so the main process can read it
@@ -1477,6 +1625,12 @@ if __name__ == "__main__":
         with open(port_file, 'w') as f:
             f.write(str(port))
         
-        uvicorn.run(app, host="0.0.0.0", port=port)
+        try:
+            uvicorn.run(app, host="0.0.0.0", port=port, access_log=False, log_level="error")
+        finally:
+            try:
+                os.unlink(port_file)
+            except OSError:
+                pass
     except RuntimeError as e:
         logger.error("Failed to start server: %s", e)

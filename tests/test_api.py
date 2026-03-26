@@ -11,7 +11,7 @@ def test_upload_accepts_rotated_filename(client, sample_log_file) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["file_id"]
-    assert body["lines"] > 0
+    assert body["lines"] >= 0
 
 
 def test_basic_analysis_endpoint(client, sample_log_file) -> None:

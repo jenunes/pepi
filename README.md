@@ -73,6 +73,21 @@ tests/
 - Upload supports `.log`, `.txt`, `.json`, and rotated MongoDB names like `mongod.log.2026-03-06T21-30-43`.
 - Large uploads are streamed in chunks to reduce memory usage.
 - Temporary uploaded files are cleaned up on API shutdown.
+
+## Temporary Storage And Port Markers
+
+- Upload temporary directory resolution order:
+  1. `PEPI_UPLOAD_TMPDIR`
+  2. `TMPDIR`
+  3. system temporary directory
+- Disk guardrail controls:
+  - `PEPI_UPLOAD_MIN_FREE_MB` (default: `0`, optional fixed floor)
+  - `PEPI_UPLOAD_HEADROOM_FACTOR` (default: `1.5`)
+- If upload fails with no space left on device:
+  - free disk space, or
+  - set `PEPI_UPLOAD_TMPDIR` to a partition with enough capacity, or
+  - trim the log around the target time range and upload a smaller file.
+- Port marker files (`/tmp/pepi_port_<pid>.txt`) are cleaned automatically on startup/shutdown, and stale markers are removed when PID is no longer alive.
 # pepi
 
 A fast, user-friendly MongoDB log analysis tool for extracting insights from MongoDB log files.

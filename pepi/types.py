@@ -270,6 +270,20 @@ class IngestStatusResponse(BaseModel):
     data: IngestStatusData
 
 
+class TmpHealthData(BaseModel):
+    tmp_dir: str
+    free_bytes: int
+    min_required_bytes: int
+    headroom_factor: float
+    has_space: bool
+
+
+class TmpHealthResponse(BaseModel):
+    status: str = "success"
+    data: TmpHealthData
+    message: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Index advisor models
 # ---------------------------------------------------------------------------

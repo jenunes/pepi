@@ -26,6 +26,27 @@ from pepi.upgrade import check_version_async, perform_upgrade
 from pepi.utils import count_lines, get_date_range, trim_log_file
 
 
+def cleanup_stale_port_files() -> None:
+    """Remove stale /tmp/pepi_port_<pid>.txt files for dead processes."""
+    import tempfile
+
+    temp_dir = Path(tempfile.gettempdir())
+    for path in temp_dir.glob("pepi_port_*.txt"):
+        try:
+            pid_text = path.stem.replace("pepi_port_", "")
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        try:
+            os.kill(pid, 0)
+            continue
+        except OSError:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 class CustomCommand(click.Command):
     def format_help(self, ctx, formatter):
         """Custom help formatter with contextual help."""
@@ -195,6 +216,7 @@ def launch_web_ui(logfile: Optional[str] = None, sample_percentage: int = 100) -
         return
     
     click.echo("🚀 Starting Pepi Web Interface...")
+    cleanup_stale_port_files()
     
     env = os.environ.copy()
     if logfile:
@@ -246,7 +268,7 @@ def launch_web_ui(logfile: Optional[str] = None, sample_percentage: int = 100) -
                             newest_proc = proc
                 
                 if newest_proc:
-                    for conn in newest_proc.connections():
+                    for conn in newest_proc.net_connections():
                         if conn.status == 'LISTEN' and conn.laddr.ip in ['0.0.0.0', '127.0.0.1']:
                             server_port = conn.laddr.port
                             break
@@ -266,14 +288,13 @@ def launch_web_ui(logfile: Optional[str] = None, sample_percentage: int = 100) -
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
-            
+            click.echo("✅ Web server stopped")
+        finally:
             if 'port_file' in locals() and port_file and os.path.exists(port_file):
                 try:
                     os.remove(port_file)
                 except OSError:
                     pass
-            
-            click.echo("✅ Web server stopped")
             
     except Exception as e:
         click.echo(f"❌ Error starting web interface: {str(e)}")

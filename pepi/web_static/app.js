@@ -217,6 +217,7 @@ document.addEventListener('DOMContentLoaded', function () {
     initializeEventListeners();
     loadUploadedFiles();
     initializeDatePickers();
+    checkTmpHealth();
 });
 
 function initializeEventListeners() {
@@ -341,7 +342,20 @@ async function uploadFile(file) {
         });
 
         if (!response.ok) {
-            throw new Error(`Upload failed: ${response.statusText}`);
+            let detailMessage = `Upload failed: ${response.statusText}`;
+            try {
+                const errorBody = await response.json();
+                const detail = errorBody?.detail;
+                if (typeof detail === 'string') {
+                    detailMessage = detail;
+                } else if (detail && typeof detail === 'object') {
+                    const parts = [detail.detail, detail.hint].filter(Boolean);
+                    detailMessage = parts.join(' ');
+                }
+            } catch {
+                // Keep fallback message when response is not JSON.
+            }
+            throw new Error(detailMessage);
         }
 
         const result = await response.json();
@@ -356,6 +370,19 @@ async function uploadFile(file) {
     } catch (error) {
         hideProgress();
         showToast('error', `Upload failed: ${error.message}`);
+    }
+}
+
+async function checkTmpHealth() {
+    try {
+        const response = await fetch('/api/system/tmp-health');
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (payload?.data?.has_space === false) {
+            showToast('warning', payload.message || 'Low temporary storage space detected.');
+        }
+    } catch {
+        // Non-blocking diagnostics only.
     }
 }
 
@@ -678,10 +705,12 @@ function displayBasicInfo(data) {
     const mongoInfo = document.getElementById('mongoInfo');
     const samplingInfo = document.getElementById('samplingInfo');
 
+    const lineDisplay = data.lines && data.lines > 0 ? data.lines.toLocaleString() : 'N/A (counting deferred)';
+
     fileInfo.innerHTML = `
         <p><strong>Filename:</strong> ${data.filename}</p>
         <p><strong>Size:</strong> ${formatFileSize(data.size)}</p>
-        <p><strong>Lines:</strong> ${data.lines.toLocaleString()}</p>
+        <p><strong>Lines:</strong> ${lineDisplay}</p>
         <p><strong>Start Date:</strong> ${data.start_date || 'N/A'}</p>
         <p><strong>End Date:</strong> ${data.end_date || 'N/A'}</p>
     `;
