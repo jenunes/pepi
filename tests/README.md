@@ -21,11 +21,11 @@ This directory contains test log files for testing various features of the pepi 
 
 ```bash
 # Test hostname sorting
-python pepi.py --fetch tests/test_sort.log --connections --sort-by hostname
+pepi --fetch tests/test_sort.log --connections --sort-by hostname
 
 # Test opened connections sorting
-python pepi.py --fetch tests/test_sort2.log --connections --sort-by opened
+pepi --fetch tests/test_sort2.log --connections --sort-by opened
 
 # Test closed connections sorting
-python pepi.py --fetch tests/test_sort2.log --connections --sort-by closed
+pepi --fetch tests/test_sort2.log --connections --sort-by closed
 ``` 

@@ -52,11 +52,11 @@ class CustomCommand(click.Command):
                 formatter.write_text("  --compare        Compare 2-3 specific hostnames/IPs")
                 formatter.write_text("")
                 formatter.write_text("Examples:")
-                formatter.write_text("  pepi.py --fetch logfile --connections")
-                formatter.write_text("  pepi.py --fetch logfile --connections --stats")
-                formatter.write_text("  pepi.py --fetch logfile --connections --sort-by opened")
-                formatter.write_text("  pepi.py --fetch logfile --connections --compare ip1 --compare ip2")
-                formatter.write_text("  pepi.py --fetch logfile --connections --stats --sort-by opened --compare ip1 --compare ip2")
+                formatter.write_text("  pepi --fetch logfile --connections")
+                formatter.write_text("  pepi --fetch logfile --connections --stats")
+                formatter.write_text("  pepi --fetch logfile --connections --sort-by opened")
+                formatter.write_text("  pepi --fetch logfile --connections --compare ip1 --compare ip2")
+                formatter.write_text("  pepi --fetch logfile --connections --stats --sort-by opened --compare ip1 --compare ip2")
         
         elif option == '--queries':
             with formatter.section("Query Analysis"):
@@ -70,14 +70,14 @@ class CustomCommand(click.Command):
                 formatter.write_text("  --report-histogram  Show execution time distribution histogram")
                 formatter.write_text("")
                 formatter.write_text("Examples:")
-                formatter.write_text("  pepi.py --fetch logfile --queries")
-                formatter.write_text("  pepi.py --fetch logfile --queries --sort-by count")
-                formatter.write_text("  pepi.py --fetch logfile --queries --sort-by mean")
-                formatter.write_text("  pepi.py --fetch logfile --queries --sort-by 95%")
-                formatter.write_text("  pepi.py --fetch logfile --queries --report-full-patterns report.txt")
-                formatter.write_text("  pepi.py --fetch logfile --queries --namespace test.users")
-                formatter.write_text("  pepi.py --fetch logfile --queries --operation find")
-                formatter.write_text("  pepi.py --fetch logfile --queries --report-histogram")
+                formatter.write_text("  pepi --fetch logfile --queries")
+                formatter.write_text("  pepi --fetch logfile --queries --sort-by count")
+                formatter.write_text("  pepi --fetch logfile --queries --sort-by mean")
+                formatter.write_text("  pepi --fetch logfile --queries --sort-by 95%")
+                formatter.write_text("  pepi --fetch logfile --queries --report-full-patterns report.txt")
+                formatter.write_text("  pepi --fetch logfile --queries --namespace test.users")
+                formatter.write_text("  pepi --fetch logfile --queries --operation find")
+                formatter.write_text("  pepi --fetch logfile --queries --report-histogram")
         
         elif option == '--trim':
             with formatter.section("Log File Trimming"):
@@ -99,10 +99,10 @@ class CustomCommand(click.Command):
                 formatter.write_text("  - Missing time parts default to 0 (start) or maximum (end)")
                 formatter.write_text("")
                 formatter.write_text("Examples:")
-                formatter.write_text("  pepi.py --fetch logfile --trim --from '25/12/2023'")
-                formatter.write_text("  pepi.py --fetch logfile --trim --from '25/12/2023' --until '26/12/2023'")
-                formatter.write_text("  pepi.py --fetch logfile --trim --from '25/12/2023 14:00' --until '25/12/2023 16:00'")
-                formatter.write_text("  pepi.py --fetch logfile --trim --from '25/12/2023 14:30:45' --until '25/12/2023 14:30:45'")
+                formatter.write_text("  pepi --fetch logfile --trim --from '25/12/2023'")
+                formatter.write_text("  pepi --fetch logfile --trim --from '25/12/2023' --until '26/12/2023'")
+                formatter.write_text("  pepi --fetch logfile --trim --from '25/12/2023 14:00' --until '25/12/2023 16:00'")
+                formatter.write_text("  pepi --fetch logfile --trim --from '25/12/2023 14:30:45' --until '25/12/2023 14:30:45'")
         
         elif option == '--web-ui':
             with formatter.section("Web Interface"):
@@ -117,8 +117,8 @@ class CustomCommand(click.Command):
                 formatter.write_text("  - File management (download, delete)")
                 formatter.write_text("")
                 formatter.write_text("Usage:")
-                formatter.write_text("  pepi.py --web-ui                     # Launch with no file")
-                formatter.write_text("  pepi.py --fetch logfile --web-ui     # Launch with pre-loaded file")
+                formatter.write_text("  pepi --web-ui                     # Launch with no file")
+                formatter.write_text("  pepi --fetch logfile --web-ui     # Launch with pre-loaded file")
                 formatter.write_text("")
                 formatter.write_text("The web interface will open in your default browser at http://localhost:8000")
         
@@ -127,7 +127,7 @@ class CustomCommand(click.Command):
                 formatter.write_text("--ftdc PATH         Launch FTDC Viewer for a specific diagnostic.data path")
                 formatter.write_text("")
                 formatter.write_text("Usage:")
-                formatter.write_text("  pepi.py --ftdc /path/to/diagnostic.data")
+                formatter.write_text("  pepi --ftdc /path/to/diagnostic.data")
                 formatter.write_text("")
                 formatter.write_text("The FTDC viewer will start Docker containers and open Grafana in your browser.")
         
@@ -138,7 +138,7 @@ class CustomCommand(click.Command):
     def show_full_help(self, formatter):
         """Show the full help menu."""
         with formatter.section("Usage"):
-            formatter.write_text("pepi.py --fetch <logfile> [OPTIONS]")
+            formatter.write_text("pepi --fetch <logfile> [OPTIONS]")
         
         with formatter.section("Description"):
             formatter.write_text("pepi: MongoDB log analysis tool for extracting insights from MongoDB log files.")
@@ -185,7 +185,7 @@ def launch_web_ui(logfile: Optional[str] = None, sample_percentage: int = 100) -
     web_api_path = Path(__file__).parent / "web_api.py"
     if not web_api_path.exists():
         click.echo("❌ Web interface not found. web_api.py is missing.")
-        click.echo("   Make sure web_api.py is in the same directory as pepi.py")
+        click.echo("   Make sure web_api.py is in the same package directory as pepi")
         return
     
     web_static_path = Path(__file__).parent / "web_static"

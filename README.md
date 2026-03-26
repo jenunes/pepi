@@ -184,7 +184,7 @@ You can always force a re-parse and clear the cache with the `--clear-cache` fla
    pip install -r requirements.txt
    
    # Run the tool
-   python pepi.py --fetch /path/to/mongod.log
+   pepi --fetch /path/to/mongod.log
    ```
 
 ## Usage
@@ -501,7 +501,7 @@ test.users | delete    | [{"limit": "?", "q": {"status": "?"}}]                 
 ### Project Structure
 ```
 pepi/
-├── pepi.py              # Main application
+├── pepi/                # Python package
 ├── requirements.txt     # Python dependencies
 ├── README.md           # This file
 ├── tests/              # Test files
@@ -515,13 +515,13 @@ pepi/
 ### Running Tests
 ```bash
 # Test sorting functionality
-python pepi.py --fetch tests/test_sort.log --connections --sort-by opened
+pepi --fetch tests/test_sort.log --connections --sort-by opened
 
 # Test comparison functionality
-python pepi.py --fetch tests/test_sort2.log --connections --compare 127.0.0.1 --compare 192.168.1.100
+pepi --fetch tests/test_sort2.log --connections --compare 127.0.0.1 --compare 192.168.1.100
 
 # Test with statistics
-python pepi.py --fetch tests/test_sort2.log --connections --stats --compare 127.0.0.1 --compare 192.168.1.100
+pepi --fetch tests/test_sort2.log --connections --stats --compare 127.0.0.1 --compare 192.168.1.100
 ```
 
 ## Requirements
