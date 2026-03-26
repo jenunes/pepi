@@ -3,11 +3,17 @@ name: CI
 on:
   push:
     branches: [main, dev]
+    tags: ["v*"]
   pull_request:
     branches: [main, dev]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  lint-unit:
+    name: Lint and Unit (py3.11)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -23,8 +29,105 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Ruff
+      - name: Ruff lint (tests, blocking)
         run: ruff check tests
 
-      - name: Pytest
-        run: pytest -q
+      - name: Ruff lint (pepi, advisory)
+        run: ruff check pepi --exit-zero
+
+      - name: Ruff format check
+        run: ruff format --check tests
+
+      - name: Pytest (full)
+        run: pytest -q --junitxml=pytest-results.xml
+
+      - name: Upload pytest report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results-lint-unit
+          path: pytest-results.xml
+          if-no-files-found: ignore
+
+  integration-scope:
+    name: Integration Scope (upload/preflight/ingest/tmp)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run scope-focused tests
+        run: |
+          pytest -q tests/test_api.py tests/test_ingest_preflight.py tests/test_tmp_hygiene.py --junitxml=pytest-results-integration.xml
+
+      - name: Upload integration report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results-integration
+          path: pytest-results-integration.xml
+          if-no-files-found: ignore
+
+  python-matrix-core:
+    name: Python Matrix Core (${{ matrix.python-version }})
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.8", "3.11", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "${{ matrix.python-version }}"
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run core smoke tests
+        run: |
+          pytest -q tests/test_parser.py tests/test_sampling.py tests/test_stats.py tests/test_cache.py tests/test_index_advisor.py
+
+  package-smoke:
+    name: Package Build and CLI Smoke
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Build package
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build
+
+      - name: Install built wheel
+        run: |
+          python -m pip install --upgrade pip
+          pip install dist/*.whl
+
+      - name: Verify CLI entrypoint
+        run: |
+          pepi --version

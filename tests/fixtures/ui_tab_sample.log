@@ -1,0 +1,7 @@
+{"t":{"$date":"2026-03-06T21:30:00.000Z"},"c":"CONTROL","msg":"Operating System","attr":{"os":{"name":"Linux","version":"6.1.0"}}}
+{"t":{"$date":"2026-03-06T21:30:01.000Z"},"c":"CONTROL","msg":"Build Info","attr":{"buildInfo":{"version":"7.0.0"}}}
+{"t":{"$date":"2026-03-06T21:30:02.000Z"},"c":"CONTROL","msg":"Options set by command line","attr":{"options":{"replSet":"rs0"}}}
+{"t":{"$date":"2026-03-06T21:30:03.000Z"},"c":"NETWORK","msg":"Connection accepted","attr":{"remote":"127.0.0.1:50000","connectionId":1}}
+{"t":{"$date":"2026-03-06T21:30:04.000Z"},"c":"COMMAND","msg":"Slow query","attr":{"ns":"test.users","durationMillis":240,"planSummary":"COLLSCAN","command":{"find":"users","filter":{"status":"A"}}}}
+{"t":{"$date":"2026-03-06T21:30:05.000Z"},"c":"NETWORK","msg":"Connection ended","attr":{"remote":"127.0.0.1:50000","connectionId":1}}
+{"t":{"$date":"2026-03-06T21:31:00.000Z"},"c":"REPL","msg":"New replica set config in use","attr":{"config":{"_id":"rs0","members":[{"_id":0,"host":"localhost:27017"}]}}}

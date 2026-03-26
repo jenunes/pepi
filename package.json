@@ -1,0 +1,12 @@
+{
+  "name": "pepi-ui-e2e",
+  "private": true,
+  "version": "2.2.1-dev1",
+  "description": "Playwright UI smoke tests for Pepi tabs",
+  "scripts": {
+    "test:e2e:ui-tabs": "playwright test tests/e2e/ui-tabs.spec.js --reporter=line,html"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.0"
+  }
+}
