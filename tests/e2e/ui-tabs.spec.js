@@ -24,11 +24,11 @@ const fixturePath = resolveLogPath();
 const tabs = [
   { key: "basic", paneSelector: "#basic #basicInfo" },
   { key: "extractor", paneSelector: "#extractor .extractor-filters" },
-  { key: "connections", paneSelector: "#connections #connectionStats" },
-  { key: "clients", paneSelector: "#clients #clientsContent" },
-  { key: "queries", paneSelector: "#queries #queryStats" },
-  { key: "timeseries", paneSelector: "#timeseries #slowQueriesPlot" },
-  { key: "replica-set", paneSelector: "#replica-set #replicaSetContent" }
+  { key: "connections", paneSelector: "#connections .analysis-header h2" },
+  { key: "clients", paneSelector: "#clients .analysis-header h2" },
+  { key: "queries", paneSelector: "#queries .analysis-header h2" },
+  { key: "timeseries", paneSelector: "#timeseries .analysis-header h2" },
+  { key: "replica-set", paneSelector: "#replica-set .analysis-header h2" }
 ];
 
 test("all requested tabs are visible and render primary UI containers", async ({ page }) => {
