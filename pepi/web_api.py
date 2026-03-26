@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI):
                 pass
 
 
-app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev6", lifespan=lifespan)
+app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev7", lifespan=lifespan)
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
