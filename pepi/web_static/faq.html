@@ -172,7 +172,7 @@
 
         <div class="header">
             <h1><i class="fas fa-question-circle"></i> Frequently Asked Questions</h1>
-            <p>Everything you need to know about Pepi</p>
+            <p>Pepi Web UI FAQ for version 2.2.0</p>
         </div>
 
         <!-- Privacy & Data Collection -->
@@ -202,8 +202,9 @@
                 <div class="faq-answer">
                     <p>Pepi stores data <strong>only on your local machine</strong>:</p>
                     <ul>
-                        <li><strong>Cached Analysis:</strong> Parsed log data is cached locally for 7 days to speed up repeated analyses</li>
-                        <li><strong>Uploaded Files:</strong> Log files you upload via the web UI are temporarily stored in your system's temp directory</li>
+                        <li><strong>Uploaded Files:</strong> Files uploaded in the Web UI are written to a local temporary directory.</li>
+                        <li><strong>Ingest Data:</strong> When large-file ingest is started, indexed analysis data is stored locally.</li>
+                        <li><strong>Port Markers:</strong> Local runtime marker files are used for Web UI coordination and cleaned automatically.</li>
                     </ul>
                     <p><strong>No telemetry, no analytics, no external communication whatsoever.</strong></p>
                 </div>
@@ -215,74 +216,146 @@
                     <span>Can I use Pepi offline?</span>
                 </div>
                 <div class="faq-answer">
-                    <p><strong>Yes!</strong> Once installed, Pepi works completely offline. The web UI loads from your local system, and all processing happens locally. The only time you need internet is:</p>
-                    <ul>
-                        <li>Initial installation: <code>pip install</code></li>
-                    </ul>
+                    <p><strong>Core analysis runs fully local.</strong> Once installed, parsing and analysis are local-only.</p>
+                    <p>The Web UI references CDN-hosted frontend libraries by default, so an internet connection may be needed unless those assets are provided locally in your environment.</p>
+                    <p>The only mandatory internet usage is package installation/update time (for example, <code>pip install</code>).</p>
                 </div>
             </div>
         </div>
 
 
-        <!-- Performance & Resources -->
+        <!-- Performance & Large Files -->
         <div class="faq-section">
             <h2 class="section-title">
-                <i class="fas fa-tachometer-alt"></i> Performance & Resources
+                <i class="fas fa-tachometer-alt"></i> Performance & Large Files
             </h2>
 
 
             <div class="faq-item">
                 <div class="faq-question">
                     <i class="fas fa-circle-question"></i>
-                    <span>Can I analyze large log files (GB+)?</span>
+                    <span>Can I analyze very large log files (for example around 1GB)?</span>
                 </div>
                 <div class="faq-answer">
-                    <p><strong>Yes!</strong> Pepi handles large files efficiently:</p>
+                    <p><strong>Yes, with guardrails.</strong> Pepi supports large files and adds safety checks before heavy analysis.</p>
                     <ul>
-                        <li><strong>Streaming parser:</strong> Processes files line-by-line (doesn't load entire file into memory)</li>
-                        <li><strong>7-day cache:</strong> Re-analyzing the same file is instant</li>
-                        <li><strong>Progress bars:</strong> Shows real-time progress with <code>tqdm</code></li>
-                        <li><strong>Data sampling:</strong> Time series automatically samples large datasets (>10k points) for browser performance</li>
+                        <li><strong>Preflight tiers:</strong> file size is evaluated as warn/confirm/block before proceeding.</li>
+                        <li><strong>UI guidance:</strong> if a file is too large, Pepi recommends trimming around the exact time window you need.</li>
+                        <li><strong>Streaming upload:</strong> upload processing is chunked to reduce memory pressure.</li>
+                        <li><strong>Deferred expensive work:</strong> some metadata (like line counts) may be computed lazily to keep uploads responsive.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>What is the recommended workflow when a file is too large?</span>
+                </div>
+                <div class="faq-answer">
+                    <p>Best practice is to trim first, then analyze:</p>
+                    <ul>
+                        <li>Use <strong>Trim Log File</strong> in Basic Info to isolate the target period.</li>
+                        <li>Re-upload or analyze the trimmed output for better responsiveness and lower resource usage.</li>
+                        <li>Use sampling and narrow filters when exploring large windows.</li>
                     </ul>
                 </div>
             </div>
         </div>
 
-        <!-- Technical -->
+        <!-- Analysis Modes -->
         <div class="faq-section">
             <h2 class="section-title">
-                <i class="fas fa-code"></i> Technical Details
+                <i class="fas fa-database"></i> Analysis Modes
             </h2>
 
             <div class="faq-item">
                 <div class="faq-question">
                     <i class="fas fa-circle-question"></i>
-                    <span>What MongoDB versions are supported?</span>
+                    <span>What is the difference between raw analysis and ingest-backed analysis?</span>
                 </div>
                 <div class="faq-answer">
-                    <p>Pepi supports MongoDB <strong>4.4+</strong> (versions that use the JSON log output format introduced in MongoDB 4.4). It has been tested with MongoDB 4.4, 5.x, 6.x, and 7.x.</p>
-                    <p>MongoDB 4.4 introduced structured JSON logging (Relaxed Extended JSON v2.0) for all log destinations, which Pepi requires for accurate parsing.</p>
+                    <p>Pepi supports both read paths in the current API:</p>
+                    <ul>
+                        <li><strong>Raw:</strong> reads directly from the uploaded file.</li>
+                        <li><strong>Ingest:</strong> reads from locally indexed data generated by a background ingest job.</li>
+                    </ul>
+                    <p>For very large logs, ingest-backed queries can improve repeated analysis and responsiveness.</p>
                 </div>
             </div>
 
             <div class="faq-item">
                 <div class="faq-question">
                     <i class="fas fa-circle-question"></i>
-                    <span>Where is the cache stored?</span>
+                    <span>How do I check ingest progress?</span>
                 </div>
                 <div class="faq-answer">
-                    <p>Cache is stored in <code>~/.pepi_cache/</code> with 7-day TTL. You can clear it anytime with:</p>
-                    <code>pepi --clear-cache</code>
+                    <p>Ingest jobs expose status and cancellation endpoints that the UI can poll:</p>
+                    <ul>
+                        <li><code>/api/ingest/{file_id}/start</code></li>
+                        <li><code>/api/ingest/{file_id}/status</code></li>
+                        <li><code>/api/ingest/{file_id}/cancel</code></li>
+                    </ul>
                 </div>
             </div>
 
+        </div>
+
+        <!-- TMP and Troubleshooting -->
+        <div class="faq-section">
+            <h2 class="section-title">
+                <i class="fas fa-wrench"></i> TMP And Troubleshooting
+            </h2>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>Where are uploaded files written and how can I change it?</span>
+                </div>
+                <div class="faq-answer">
+                    <p>Upload temporary directory resolution order is:</p>
+                    <ul>
+                        <li><code>PEPI_UPLOAD_TMPDIR</code></li>
+                        <li><code>TMPDIR</code></li>
+                        <li>system temp directory</li>
+                    </ul>
+                    <p>Disk guardrails can be tuned with <code>PEPI_UPLOAD_MIN_FREE_MB</code> and <code>PEPI_UPLOAD_HEADROOM_FACTOR</code>.</p>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>What does a 507 upload error mean?</span>
+                </div>
+                <div class="faq-answer">
+                    <p><strong>507</strong> indicates insufficient storage in the temporary upload location.</p>
+                    <ul>
+                        <li>Free disk space, or</li>
+                        <li>set <code>PEPI_UPLOAD_TMPDIR</code> to a larger partition, or</li>
+                        <li>trim the log to a smaller time range and retry.</li>
+                    </ul>
+                    <p>The UI surfaces backend details/hints, and system temp health is available via <code>/api/system/tmp-health</code>.</p>
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question">
+                    <i class="fas fa-circle-question"></i>
+                    <span>Why are terminal logs quieter in Web UI mode?</span>
+                </div>
+                <div class="faq-answer">
+                    <p>By default, Web UI runtime output is reduced to focus on errors/warnings.</p>
+                    <p>Request-level HTTP logging can be enabled by setting <code>PEPI_HTTP_LOG=true</code>.</p>
+                </div>
+            </div>
         </div>
 
         <div class="footer">
-            <p><strong>Pepi</strong> - MongoDB Log Analyzer v1.0</p>
+            <p><strong>Pepi</strong> - MongoDB Log Analyzer v2.2.0</p>
             <p>Open Source | 100% Local | Privacy-First</p>
             <p style="margin-top: 15px;">
-                <a href="https://github.com/yourusername/pepi" style="color: #667eea; text-decoration: none;">
+                <a href="https://github.com/jenunes/pepi" style="color: #667eea; text-decoration: none;">
                     <i class="fas fa-code-branch"></i> GitHub
                 </a>
             </p>
