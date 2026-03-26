@@ -3,8 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from pydantic import BaseModel
-from typing import Optional, Dict, Any, List
+from typing import Optional
 import tempfile
 import os
 import json
@@ -23,6 +22,11 @@ from . import (
     parse_connection_events
 )
 from .index_advisor import IndexAdvisor
+from .types import (
+    AnalysisResult, TrimRequest, QueryExamplesRequest, LogFilterRequest,
+    FtdcStartRequest, SingleQueryRequest,
+)
+from .errors import get_validated_file_path, validate_sample_param
 
 # Get the directory where this script is located
 script_dir = Path(__file__).parent
@@ -42,7 +46,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown (nothing to do for now)
 
-app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev1", lifespan=lifespan)
 
 # Enable GZip compression for better performance
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -60,44 +64,6 @@ app.add_middleware(
 upload_store = {}
 analysis_cache = {}
 
-# Pydantic models for API responses
-class LogInfo(BaseModel):
-    filename: str
-    size: int
-    lines: int
-    start_date: Optional[str]
-    end_date: Optional[str]
-
-class AnalysisResult(BaseModel):
-    status: str
-    data: Dict[str, Any]
-    message: Optional[str] = None
-
-class TrimRequest(BaseModel):
-    from_date: Optional[str] = None
-    until_date: Optional[str] = None
-
-class QueryExamplesRequest(BaseModel):
-    namespace: str
-    operation: str
-    pattern: str
-
-class LogFilterRequest(BaseModel):
-    text_search: Optional[str] = None
-    case_sensitive: bool = False
-    event_types: List[str] = []  # ['COLLSCAN', 'IXSCAN', 'slow_query', 'planSummary']
-    components: List[str] = []    # MongoDB components: NETWORK, COMMAND, QUERY, etc.
-    severities: List[str] = []    # ['I', 'W', 'E', 'F', 'D'] or specific D1-D5
-    operations: List[str] = []    # ['find', 'aggregate', 'insert', 'update', 'delete']
-    namespace: Optional[str] = None  # Filter by ns in attr
-    log_id: Optional[int] = None     # Filter by specific log ID
-    context: Optional[str] = None    # Filter by ctx (thread/connection)
-    date_from: Optional[str] = None
-    date_to: Optional[str] = None
-    limit: int = 10000  # Max lines to return
-
-class FtdcStartRequest(BaseModel):
-    path: str
 
 # Serve static files
 
@@ -170,12 +136,7 @@ async def list_uploaded_files():
 @app.post("/api/analyze/{file_id}/basic")
 async def analyze_basic_info(file_id: str, sample: Optional[int] = 100):
     """Get basic log file information."""
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File no longer exists")
+    file_path = get_validated_file_path(file_id, upload_store)
     
     try:
         # Parse basic information from log file
@@ -193,7 +154,7 @@ async def analyze_basic_info(file_id: str, sample: Optional[int] = 100):
                 if entry.get('t', {}).get('$date'):
                     start_date = entry.get('t', {}).get('$date')
                     break
-            except:
+            except (json.JSONDecodeError, ValueError, KeyError):
                 continue
         
         # Get end date from last valid entry
@@ -203,7 +164,7 @@ async def analyze_basic_info(file_id: str, sample: Optional[int] = 100):
                 if entry.get('t', {}).get('$date'):
                     end_date = entry.get('t', {}).get('$date')
                     break
-            except:
+            except (json.JSONDecodeError, ValueError, KeyError):
                 continue
         
         # Scan for version info and startup options (limit to first 1000 lines for performance)
@@ -218,7 +179,7 @@ async def analyze_basic_info(file_id: str, sample: Optional[int] = 100):
                     db_version = entry.get('attr', {}).get('buildInfo', {}).get('version')
                 elif entry.get('msg') == 'Options set by command line':
                     cmd_options = entry.get('attr', {}).get('options')
-            except:
+            except (json.JSONDecodeError, ValueError, KeyError):
                 continue
         
         # Get sampling metadata
@@ -247,14 +208,8 @@ async def analyze_basic_info(file_id: str, sample: Optional[int] = 100):
 @app.post("/api/analyze/{file_id}/connections")
 async def analyze_connections(file_id: str, sample: Optional[int] = 100):
     """Analyze connection information with time series data."""
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
-    
-    # Validate sample parameter
-    if sample is not None and (sample < 0 or sample > 100):
-        raise HTTPException(status_code=400, detail="Sample percentage must be between 0 and 100")
+    file_path = get_validated_file_path(file_id, upload_store)
+    validate_sample_param(sample)
     
     try:
         # Get both aggregate data and time series data
@@ -322,14 +277,8 @@ async def analyze_connections(file_id: str, sample: Optional[int] = 100):
 @app.post("/api/analyze/{file_id}/queries")
 async def analyze_queries(file_id: str, namespace: Optional[str] = None, operation: Optional[str] = None, sample: Optional[int] = 100):
     """Analyze query patterns and performance."""
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
-    
-    # Validate sample parameter
-    if sample is not None and (sample < 0 or sample > 100):
-        raise HTTPException(status_code=400, detail="Sample percentage must be between 0 and 100")
+    file_path = get_validated_file_path(file_id, upload_store)
+    validate_sample_param(sample)
     
     try:
         queries_data = parse_queries(file_path, sample_percentage=sample)
@@ -371,10 +320,7 @@ async def analyze_queries(file_id: str, namespace: Optional[str] = None, operati
 @app.post("/api/analyze/{file_id}/query-examples")
 async def get_query_examples(file_id: str, request: QueryExamplesRequest):
     """Get actual query examples for a specific pattern."""
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
+    file_path = get_validated_file_path(file_id, upload_store)
     namespace = request.namespace
     operation = request.operation
     pattern = request.pattern
@@ -426,7 +372,7 @@ async def get_query_examples(file_id: str, request: QueryExamplesRequest):
                                     pass  # Match found (different format but same stages)
                                 else:
                                     continue  # No match
-                            except:
+                            except (json.JSONDecodeError, ValueError, TypeError):
                                 continue  # No match
                         else:
                             continue  # No match
@@ -464,10 +410,7 @@ async def get_query_examples(file_id: str, request: QueryExamplesRequest):
 @app.post("/api/analyze/{file_id}/replica-set")
 async def analyze_replica_set(file_id: str):
     """Analyze replica set configuration and state."""
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
+    file_path = get_validated_file_path(file_id, upload_store)
     
     try:
         configs = parse_replica_set_config(file_path)
@@ -487,10 +430,7 @@ async def analyze_replica_set(file_id: str):
 @app.post("/api/analyze/{file_id}/clients")
 async def analyze_clients(file_id: str):
     """Analyze client/driver information."""
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
+    file_path = get_validated_file_path(file_id, upload_store)
     
     try:
         clients_data = parse_clients(file_path)
@@ -507,10 +447,7 @@ async def analyze_clients(file_id: str):
 @app.post("/api/analyze/{file_id}/timeseries")
 async def analyze_timeseries(file_id: str, namespace: Optional[str] = None):
     """Analyze time-series data for slow queries, connections, and errors."""
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
+    file_path = get_validated_file_path(file_id, upload_store)
     
     try:
         slow_queries, connections, errors = parse_timeseries_data(file_path)
@@ -581,16 +518,9 @@ async def analyze_timeseries(file_id: str, namespace: Optional[str] = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Time-series analysis failed: {str(e)}")
 
-class SingleQueryRequest(BaseModel):
-    namespace: str
-    operation: str
-    pattern: str
-    raw_log_line: Optional[str] = None
-    stats: Dict
-
 @app.post("/api/analyze/{file_id}/index-recommendations")
 async def get_index_recommendations(file_id: str, request: Optional[SingleQueryRequest] = None, top_n: int = 10, single_query: bool = False):
-    """Get AI-powered index recommendations for queries.
+    """Get index recommendations for queries.
     
     Args:
         file_id: Uploaded file ID
@@ -598,10 +528,7 @@ async def get_index_recommendations(file_id: str, request: Optional[SingleQueryR
         top_n: Number of recommendations to return (for bulk analysis)
         single_query: If True, use LLM enhancement (for single query from UI button)
     """
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
+    file_path = get_validated_file_path(file_id, upload_store)
     
     try:
         # Initialize index advisor
@@ -683,10 +610,7 @@ async def get_index_recommendations(file_id: str, request: Optional[SingleQueryR
 @app.post("/api/trim/{file_id}")
 async def trim_log(file_id: str, trim_request: TrimRequest):
     """Trim log file by date/time range."""
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
+    file_path = get_validated_file_path(file_id, upload_store)
     
     try:
         start_dt, end_dt = get_date_range(trim_request.from_date, trim_request.until_date)
@@ -750,14 +674,8 @@ async def trim_log(file_id: str, trim_request: TrimRequest):
 @app.get("/api/download/{file_id}")
 async def download_file(file_id: str):
     """Download a processed log file."""
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
+    file_path = get_validated_file_path(file_id, upload_store)
     original_name = upload_store[file_id]['original_name']
-    
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File no longer exists")
     
     try:
         # Check file size
@@ -780,8 +698,7 @@ async def download_file(file_id: str):
 @app.delete("/api/files/{file_id}")
 async def delete_file(file_id: str):
     """Delete an uploaded file. For preloaded files, only removes from store (does not delete the original file)."""
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
+    get_validated_file_path(file_id, upload_store)
     
     info = upload_store[file_id]
     file_path = info['path']
@@ -826,11 +743,7 @@ def preload_file():
 @app.post("/api/analyze/{file_id}/extract")
 async def extract_logs(file_id: str, filters: LogFilterRequest):
     """Extract raw log entries based on filters."""
-    
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
+    file_path = get_validated_file_path(file_id, upload_store)
     matched_lines = []
     total_lines = 0
     
@@ -850,7 +763,7 @@ async def extract_logs(file_id: str, filters: LogFilterRequest):
             # Parse JSON for detailed filtering
             try:
                 entry = json.loads(line.strip())
-            except:
+            except (json.JSONDecodeError, ValueError):
                 continue
             
             # Apply filters
@@ -939,11 +852,7 @@ def apply_filters(entry, line, filters):
 @app.get("/api/analyze/{file_id}/filter-options")
 async def get_filter_options(file_id: str):
     """Get available filter options based on log content."""
-    
-    if file_id not in upload_store:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_path = upload_store[file_id]['path']
+    file_path = get_validated_file_path(file_id, upload_store)
     
     # Scan log to find available options
     available_components = set()
@@ -993,7 +902,7 @@ async def get_filter_options(file_id: str):
                 if ns:
                     available_namespaces.add(ns)
                     
-            except:
+            except (json.JSONDecodeError, ValueError, KeyError):
                 continue
     
     return {
@@ -1102,7 +1011,7 @@ async def status_ftdc():
              
         # Exporter is done! Return the precise URL.
         return {"status": "success", "data": {"running": True, "url": url}}
-    except:
+    except (OSError, ImportError, ValueError):
         return {"status": "success", "data": {"running": False}}
 
 @app.post("/api/ftdc/stop")

@@ -1,0 +1,295 @@
+"""
+Pydantic models and type definitions for Pepi.
+
+Provides typed data structures for all core data flowing through
+the parsing pipeline, API endpoints, and CLI output.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# Core domain models (used by parser / stats / cache layers)
+# ---------------------------------------------------------------------------
+
+class SamplingMetadata(BaseModel):
+    total_lines: int
+    is_sampled: bool
+    sample_rate: int | float
+    sampled_lines: int
+    estimated_original_size: int
+    is_user_forced: bool
+    user_percentage: Optional[int] = None
+
+
+class ConnectionData(BaseModel):
+    opened: int = 0
+    closed: int = 0
+    durations: list[float] = Field(default_factory=list)
+
+
+class ConnectionStats(BaseModel):
+    avg: float
+    min: float
+    max: float
+
+
+class ConnectionEvent(BaseModel):
+    timestamp: str
+    event_type: str
+    ip: str
+    connection_id: Optional[int] = None
+    total_connections: int = 0
+    log_message: str = ""
+
+
+class DataQuality(BaseModel):
+    validation_results: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    quality_score: float = 1.0
+    is_consistent: bool = True
+
+
+class SlowQuery(BaseModel):
+    timestamp: str
+    namespace: str
+    operation: str
+    duration_ms: int
+    plan_summary: str = "N/A"
+    command: dict[str, Any] = Field(default_factory=dict)
+
+
+class ErrorEntry(BaseModel):
+    timestamp: str
+    message: str
+    severity: str = ""
+
+
+class QueryStats(BaseModel):
+    count: int
+    min: float
+    max: float
+    sum: float
+    mean: float
+    percentile_95: float
+    allow_disk_use: bool = Field(default=False, alias="allowDiskUse")
+    pattern: str = ""
+    durations: list[float] = Field(default_factory=list)
+    indexes: list[str] | set[str] = Field(default_factory=set)
+
+    model_config = {"populate_by_name": True}
+
+
+class ReplicaSetConfig(BaseModel):
+    timestamp: str
+    config: dict[str, Any]
+
+
+class ClientInfo(BaseModel):
+    driver: str
+    connections: int = 0
+    ip_addresses: list[str] = Field(default_factory=list)
+    users: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# API request models
+# ---------------------------------------------------------------------------
+
+class TrimRequest(BaseModel):
+    from_date: Optional[str] = None
+    until_date: Optional[str] = None
+
+
+class QueryExamplesRequest(BaseModel):
+    namespace: str
+    operation: str
+    pattern: str
+
+
+class LogFilterRequest(BaseModel):
+    text_search: Optional[str] = None
+    case_sensitive: bool = False
+    event_types: list[str] = Field(default_factory=list)
+    components: list[str] = Field(default_factory=list)
+    severities: list[str] = Field(default_factory=list)
+    operations: list[str] = Field(default_factory=list)
+    namespace: Optional[str] = None
+    log_id: Optional[int] = None
+    context: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    limit: int = 10000
+
+
+class FtdcStartRequest(BaseModel):
+    path: str
+
+
+class SingleQueryRequest(BaseModel):
+    namespace: str
+    operation: str
+    pattern: str
+    raw_log_line: Optional[str] = None
+    stats: dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
+# API response models
+# ---------------------------------------------------------------------------
+
+class AnalysisResult(BaseModel):
+    status: str
+    data: dict[str, Any]
+    message: Optional[str] = None
+
+
+class UploadResponse(BaseModel):
+    file_id: str
+    filename: str
+    size: int
+    lines: int
+    message: str = "File uploaded successfully"
+
+
+class FileInfo(BaseModel):
+    file_id: str
+    filename: str
+    size: int
+    lines: int
+    is_preloaded: bool = False
+    sample_percentage: int = 100
+
+
+class FileListResponse(BaseModel):
+    files: list[FileInfo]
+
+
+class ExtractResponse(BaseModel):
+    status: str = "success"
+    total_scanned: int
+    total_matched: int
+    lines: list[str]
+    truncated: bool = False
+
+
+class EventTypesAvailable(BaseModel):
+    COLLSCAN: bool = False
+    IXSCAN: bool = False
+    slow_query: bool = False
+    error: bool = False
+
+
+class FilterOptionsData(BaseModel):
+    event_types: EventTypesAvailable
+    components: list[str] = Field(default_factory=list)
+    severities: list[str] = Field(default_factory=list)
+    operations: list[str] = Field(default_factory=list)
+    namespaces: list[str] = Field(default_factory=list)
+
+
+class FilterOptionsResponse(BaseModel):
+    status: str = "success"
+    data: FilterOptionsData
+
+
+class FsBrowseEntry(BaseModel):
+    name: str
+    path: str
+
+
+class FsBrowseData(BaseModel):
+    current_path: str
+    directories: list[FsBrowseEntry]
+
+
+class FsBrowseResponse(BaseModel):
+    status: str = "success"
+    data: Optional[FsBrowseData] = None
+    message: Optional[str] = None
+
+
+class FtdcStatusData(BaseModel):
+    running: bool
+    url: Optional[str] = None
+
+
+class FtdcStatusResponse(BaseModel):
+    status: str = "success"
+    data: FtdcStatusData
+
+
+class StatusMessage(BaseModel):
+    status: str = "success"
+    message: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Index advisor models
+# ---------------------------------------------------------------------------
+
+class IndexRecommendationStats(BaseModel):
+    count: int = 0
+    mean_ms: float = 0.0
+    p95_ms: float = 0.0
+
+
+class MigrationCommand(BaseModel):
+    action: str
+    command: str
+    description: str = ""
+
+
+class MigrationStrategy(BaseModel):
+    type: str
+    commands: list[MigrationCommand] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    estimated_impact: str = "low"
+
+
+class CoverageAnalysis(BaseModel):
+    coverage_score: int = 0
+    esr_violations: list[str] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+    suboptimal_order: list[str] = Field(default_factory=list)
+    recommendation_type: str = "CREATE_NEW"
+    improvement_details: list[str] = Field(default_factory=list)
+
+
+class IndexRecommendationDetail(BaseModel):
+    index_spec: Any = None
+    command: str = ""
+    reason: str = ""
+    migration_strategy: Optional[MigrationStrategy] = None
+    estimated_improvement: Optional[str] = None
+
+
+class IndexRecommendation(BaseModel):
+    namespace: str
+    operation: str
+    pattern: str
+    current_index: str = "COLLSCAN"
+    current_index_structure: list[Any] = Field(default_factory=list)
+    stats: IndexRecommendationStats = Field(default_factory=IndexRecommendationStats)
+    coverage_analysis: Optional[CoverageAnalysis] = None
+    recommendation: IndexRecommendationDetail = Field(default_factory=IndexRecommendationDetail)
+    priority: float = 0.0
+    priority_level: str = "LOW"
+
+
+# ---------------------------------------------------------------------------
+# Upload store entry (internal state)
+# ---------------------------------------------------------------------------
+
+class UploadedFileInfo(BaseModel):
+    path: str
+    original_name: str
+    size: int
+    lines: int
+    is_preloaded: bool = False
+    sample_percentage: int = 100

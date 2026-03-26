@@ -143,7 +143,7 @@ def check_for_updates():
                 
                 if pkg_version.parse(latest_version) > pkg_version.parse(current_version):
                     return latest_version
-    except:
+    except (requests.RequestException, ValueError, KeyError, IndexError):
         pass
     return None
 
@@ -454,8 +454,8 @@ def parse_connections(logfile, sample_percentage=None):
                                             end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
                                             duration = (end_dt - start_dt).total_seconds()
                                             connections[ip]['durations'].append(duration)
-                                        except:
-                                            pass  # Skip if timestamp parsing fails
+                                        except (ValueError, TypeError, OverflowError):
+                                            pass
                                 
                                 # Clean up
                                 del connection_starts[conn_id]
@@ -1733,7 +1733,7 @@ def launch_web_ui(logfile=None, sample_percentage=100):
             if 'port_file' in locals() and port_file and os.path.exists(port_file):
                 try:
                     os.remove(port_file)
-                except:
+                except OSError:
                     pass
             
             click.echo("✅ Web server stopped")
