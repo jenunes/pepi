@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown (nothing to do for now)
 
-app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev1", lifespan=lifespan)
+app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev2", lifespan=lifespan)
 
 # Enable GZip compression for better performance
 app.add_middleware(GZipMiddleware, minimum_size=1000)
