@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 import pepi.cli as pepi_cli
 import pepi.web_api as web_api
