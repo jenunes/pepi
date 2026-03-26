@@ -21,7 +21,7 @@ from . import (
     parse_connections_timeseries_by_ip, validate_connection_data_consistency,
     parse_connection_events
 )
-from .index_advisor import IndexAdvisor
+from .index_advisor import analyze_queries, analyze_single_query
 from .types import (
     AnalysisResult, TrimRequest, QueryExamplesRequest, LogFilterRequest,
     FtdcStartRequest, SingleQueryRequest,
@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown (nothing to do for now)
 
-app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev2", lifespan=lifespan)
+app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.1.0.dev3", lifespan=lifespan)
 
 # Enable GZip compression for better performance
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -531,9 +531,6 @@ async def get_index_recommendations(file_id: str, request: Optional[SingleQueryR
     file_path = get_validated_file_path(file_id, upload_store)
     
     try:
-        # Initialize index advisor
-        advisor = IndexAdvisor()
-        
         # If we have a single query with raw log line, use it directly
         if request and request.raw_log_line:
             print(f"🎯 Using raw log line for analysis")
@@ -554,7 +551,7 @@ async def get_index_recommendations(file_id: str, request: Optional[SingleQueryR
             enhanced_stats['plan_summary'] = plan_summary
             
             # Analyze single query
-            recommendation = advisor.analyze_single_query(
+            recommendation = analyze_single_query(
                 namespace=request.namespace,
                 operation=request.operation,
                 pattern=full_command_json,
@@ -591,7 +588,7 @@ async def get_index_recommendations(file_id: str, request: Optional[SingleQueryR
                 stats['plan_summary'] = 'COLLSCAN'
         
         # Generate recommendations (LLM only if single_query=True)
-        recommendations = advisor.analyze_queries(query_stats)
+        recommendations = analyze_queries(query_stats)
         
         # Limit to top N
         recommendations = recommendations[:top_n]
@@ -601,7 +598,7 @@ async def get_index_recommendations(file_id: str, request: Optional[SingleQueryR
             data={
                 "recommendations": recommendations,
                 "total_analyzed": len(query_stats),
-                "has_llm": advisor.llm is not None
+                "has_llm": False
             }
         )
     except Exception as e:
