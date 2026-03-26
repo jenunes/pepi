@@ -3,6 +3,55 @@ let currentFileId = null;
 let charts = {};
 let currentSort = { table: null, column: null, direction: 'asc' };
 let cliSamplePercentage = null;
+let activeTabName = 'basic';
+let lastFilterOptionsFileId = null;
+let extractionPrettyCache = null;
+const inflightRequests = new Map();
+const perfMetrics = { enabled: true };
+let isLargeDatasetMode = false;
+
+function startPerf(label) {
+    return { label, startedAt: performance.now() };
+}
+
+function endPerf(ctx, details = {}) {
+    if (!ctx || !perfMetrics.enabled) return;
+    const elapsed = performance.now() - ctx.startedAt;
+    console.debug(`[perf] ${ctx.label}: ${elapsed.toFixed(1)}ms`, details);
+}
+
+function setLargeDatasetMode(totalLines = 0) {
+    isLargeDatasetMode = totalLines >= 200000;
+    const banner = document.getElementById('largeDatasetBanner');
+    if (banner) {
+        banner.style.display = isLargeDatasetMode ? 'block' : 'none';
+    }
+}
+
+function abortRequestGroup(group) {
+    const controller = inflightRequests.get(group);
+    if (controller) {
+        controller.abort();
+        inflightRequests.delete(group);
+    }
+}
+
+async function fetchJson(url, options = {}, group = null) {
+    if (group) {
+        abortRequestGroup(group);
+        const controller = new AbortController();
+        inflightRequests.set(group, controller);
+        options.signal = controller.signal;
+    }
+    const response = await fetch(url, options);
+    if (group) {
+        inflightRequests.delete(group);
+    }
+    if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+    }
+    return response.json();
+}
 
 // Performance optimization functions
 function downsampleTimeSeriesData(data, maxPoints = 1000) {
@@ -60,12 +109,19 @@ const debouncedChartNew = debounce((plotId, traces, layout, config) => {
     Plotly.newPlot(plotId, traces, layout, config);
 }, 300);
 
+const debouncedConnectionsRangeUpdate = debounce((eventData, connectionsByIPData) => {
+    updateConnectionsTableForRange(eventData, connectionsByIPData);
+}, 200);
+
 // Progressive rendering function
 function renderChartProgressively(plotId, traces, layout, config = {}) {
-    // For now, use regular Plotly rendering to avoid loading issues
-    // TODO: Implement proper progressive rendering later
     try {
-        Plotly.newPlot(plotId, traces, layout, config);
+        const el = document.getElementById(plotId);
+        if (el && el.data) {
+            Plotly.react(plotId, traces, layout, config);
+        } else {
+            Plotly.newPlot(plotId, traces, layout, config);
+        }
     } catch (error) {
         console.error('Chart rendering failed:', error);
         const element = document.getElementById(plotId);
@@ -464,6 +520,12 @@ async function deleteFile(fileId) {
 
 // Tab switching
 function switchTab(tabName) {
+    activeTabName = tabName;
+    // Cancel stale requests when moving between heavy tabs
+    abortRequestGroup('tab-analysis');
+    abortRequestGroup('extract');
+    abortRequestGroup('query-examples');
+
     // Update tab buttons
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.classList.remove('active');
@@ -477,7 +539,7 @@ function switchTab(tabName) {
     document.getElementById(tabName).classList.add('active');
 
     // Load filter options when switching to extractor tab
-    if (tabName === 'extractor' && currentFileId) {
+    if (tabName === 'extractor' && currentFileId && lastFilterOptionsFileId !== currentFileId) {
         loadFilterOptions();
     }
 }
@@ -491,8 +553,11 @@ async function analyzeBasicInfo() {
     try {
         // Get sampling percentage from CLI or UI
         const samplePercentage = cliSamplePercentage || document.getElementById('samplePercentage')?.value || 100;
-        const response = await fetch(`/api/analyze/${currentFileId}/basic?sample=${samplePercentage}`, { method: 'POST' });
-        const result = await response.json();
+        const result = await fetchJson(
+            `/api/analyze/${currentFileId}/basic?sample=${samplePercentage}`,
+            { method: 'POST' },
+            'tab-analysis'
+        );
 
         if (result.status === 'success') {
             displayBasicInfo(result.data);
@@ -500,6 +565,7 @@ async function analyzeBasicInfo() {
             showToast('error', 'Basic analysis failed');
         }
     } catch (error) {
+        if (error.name === 'AbortError') return;
         showToast('error', `Analysis failed: ${error.message}`);
     } finally {
         hideLoading();
@@ -507,6 +573,7 @@ async function analyzeBasicInfo() {
 }
 
 function displayBasicInfo(data) {
+    setLargeDatasetMode(data.lines || 0);
     const fileInfo = document.getElementById('fileInfo');
     const mongoInfo = document.getElementById('mongoInfo');
     const samplingInfo = document.getElementById('samplingInfo');
@@ -574,8 +641,11 @@ async function analyzeConnections() {
     const samplePercentage = cliSamplePercentage || document.getElementById('samplePercentage')?.value || 100;
 
     try {
-        const response = await fetch(`/api/analyze/${currentFileId}/connections?sample=${samplePercentage}`, { method: 'POST' });
-        const result = await response.json();
+        const result = await fetchJson(
+            `/api/analyze/${currentFileId}/connections?sample=${samplePercentage}&include_details=false`,
+            { method: 'POST' },
+            'tab-analysis'
+        );
 
         if (result.status === 'success') {
             displayConnectionsData(result.data);
@@ -583,6 +653,7 @@ async function analyzeConnections() {
             showToast('error', 'Connection analysis failed');
         }
     } catch (error) {
+        if (error.name === 'AbortError') return;
         showToast('error', `Analysis failed: ${error.message}`);
     } finally {
         hideLoading();
@@ -1154,6 +1225,9 @@ function createTotalConnectionsPlot(connectionsData) {
         const plot = document.getElementById('connectionsPlot');
         plot.on('plotly_relayout', function (eventData) {
             syncConnectionsZoom('connectionsPlot', eventData);
+            if (data.connections_by_ip_timeseries) {
+                debouncedConnectionsRangeUpdate(eventData, data.connections_by_ip_timeseries);
+            }
         });
     }, 100);
 }
@@ -1263,6 +1337,7 @@ function updateConnectionsTableForRange(eventData, connectionsByIPData) {
 }
 
 function updateConnectionsTable(data) {
+    const perf = startPerf('updateConnectionsTable');
     const tableContainer = document.getElementById('connectionsTable');
 
     if (!data || !data.connections) {
@@ -1270,43 +1345,44 @@ function updateConnectionsTable(data) {
         return;
     }
 
-    // Create connections table
     const table = document.createElement('table');
     table.className = 'data-table';
-
     const headers = ['IP Address', 'Opened', 'Closed', 'Balance'];
-    if (data.overall_stats) {
-        headers.push('Avg Duration', 'Min Duration', 'Max Duration');
-    }
+    if (data.overall_stats) headers.push('Avg Duration', 'Min Duration', 'Max Duration');
 
-    table.innerHTML = `
-        <thead>
-            <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
-        </thead>
-        <tbody>
-            ${Object.entries(data.connections).map(([ip, conn]) => {
-        let row = `
-                    <tr>
-                        <td>${ip}</td>
-                        <td>${conn.opened}</td>
-                        <td>${conn.closed}</td>
-                        <td>${conn.opened - conn.closed}</td>
-                `;
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    headers.forEach((h) => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        headerRow.appendChild(th);
+    });
+    thead.appendChild(headerRow);
 
+    const tbody = document.createElement('tbody');
+    const fragment = document.createDocumentFragment();
+    Object.entries(data.connections).forEach(([ip, conn]) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${ip}</td>
+            <td>${conn.opened}</td>
+            <td>${conn.closed}</td>
+            <td>${conn.opened - conn.closed}</td>
+        `;
         if (data.ip_stats && data.ip_stats[ip]) {
             const stats = data.ip_stats[ip];
-            row += `
-                        <td>${stats.avg.toFixed(1)}s</td>
-                        <td>${stats.min.toFixed(1)}s</td>
-                        <td>${stats.max.toFixed(1)}s</td>
-                    `;
+            const tdAvg = document.createElement('td');
+            const tdMin = document.createElement('td');
+            const tdMax = document.createElement('td');
+            tdAvg.textContent = `${stats.avg.toFixed(1)}s`;
+            tdMin.textContent = `${stats.min.toFixed(1)}s`;
+            tdMax.textContent = `${stats.max.toFixed(1)}s`;
+            tr.append(tdAvg, tdMin, tdMax);
         }
-
-        row += '</tr>';
-        return row;
-    }).join('')}
-        </tbody>
-    `;
+        fragment.appendChild(tr);
+    });
+    tbody.appendChild(fragment);
+    table.append(thead, tbody);
 
     tableContainer.innerHTML = '';
     tableContainer.appendChild(table);
@@ -1325,6 +1401,7 @@ function updateConnectionsTable(data) {
         `;
         tableContainer.appendChild(rangeInfo);
     }
+    endPerf(perf, { rows: Object.keys(data.connections).length });
 }
 
 function syncConnectionsZoom(sourceId, eventData) {
@@ -1408,8 +1485,7 @@ async function analyzeQueries() {
 
         if (params.toString()) url += '?' + params.toString();
 
-        const response = await fetch(url, { method: 'POST' });
-        const result = await response.json();
+        const result = await fetchJson(url, { method: 'POST' }, 'tab-analysis');
 
         if (result.status === 'success') {
             displayQueriesData(result.data);
@@ -1417,6 +1493,7 @@ async function analyzeQueries() {
             showToast('error', 'Query analysis failed');
         }
     } catch (error) {
+        if (error.name === 'AbortError') return;
         showToast('error', `Analysis failed: ${error.message}`);
     } finally {
         hideLoading();
@@ -1428,6 +1505,7 @@ let currentQueriesData = null;
 let selectedQueryIndex = null;
 
 function displayQueriesData(data) {
+    const perf = startPerf('displayQueriesData');
     // Store queries data globally
     currentQueriesData = data;
 
@@ -1490,53 +1568,48 @@ function displayQueriesData(data) {
     // Create queries table
     const table = document.createElement('table');
     table.className = 'data-table';
-
     table.innerHTML = `
-        <thead>
-            <tr>
-                <th>Namespace</th>
-                <th>Operation</th>
-                <th>Pattern</th>
-                <th>Count</th>
-                <th>Min (ms)</th>
-                <th>Max (ms)</th>
-                <th>Mean (ms)</th>
-                <th>95% (ms)</th>
-                <th>Index</th>
-            </tr>
-        </thead>
-        <tbody>
-            ${data.queries.map((query, index) => `
-                <tr data-query-index="${index}">
-                    <td>${query.namespace}</td>
-                    <td>${query.operation}</td>
-                    <td>
-                        <span class="pattern-text pattern-clickable" 
-                              title="Click to view query examples" 
-                              data-namespace="${query.namespace}" 
-                              data-operation="${query.operation}" 
-                              data-pattern="${encodeURIComponent(query.pattern)}" 
-                              data-row-index="${index}"
-                              onclick="showQueryExamplesFromElement(this)">
-                            ${truncateText(query.pattern, 50)}
-                        </span>
-                    </td>
-                    <td>${query.count}</td>
-                    <td>${query.min_ms.toFixed(1)}</td>
-                    <td>${query.max_ms.toFixed(1)}</td>
-                    <td>${query.mean_ms.toFixed(1)}</td>
-                    <td>${query.percentile_95_ms.toFixed(1)}</td>
-                    <td>${formatIndexes(query.indexes)}</td>
-                </tr>
-            `).join('')}
-        </tbody>
+        <thead><tr>
+            <th>Namespace</th><th>Operation</th><th>Pattern</th><th>Count</th>
+            <th>Min (ms)</th><th>Max (ms)</th><th>Mean (ms)</th><th>95% (ms)</th><th>Index</th>
+        </tr></thead><tbody></tbody>
     `;
+    const tbody = table.querySelector('tbody');
+    const fragment = document.createDocumentFragment();
+    data.queries.forEach((query, index) => {
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-query-index', index);
+        tr.innerHTML = `
+            <td>${query.namespace}</td>
+            <td>${query.operation}</td>
+            <td>
+                <span class="pattern-text pattern-clickable"
+                      title="Click to view query examples"
+                      data-namespace="${query.namespace}"
+                      data-operation="${query.operation}"
+                      data-pattern="${encodeURIComponent(query.pattern)}"
+                      data-row-index="${index}"
+                      onclick="showQueryExamplesFromElement(this)">
+                    ${truncateText(query.pattern, 50)}
+                </span>
+            </td>
+            <td>${query.count}</td>
+            <td>${query.min_ms.toFixed(1)}</td>
+            <td>${query.max_ms.toFixed(1)}</td>
+            <td>${query.mean_ms.toFixed(1)}</td>
+            <td>${query.percentile_95_ms.toFixed(1)}</td>
+            <td>${formatIndexes(query.indexes)}</td>
+        `;
+        fragment.appendChild(tr);
+    });
+    tbody.appendChild(fragment);
 
     tableContainer.innerHTML = '';
     tableContainer.appendChild(table);
 
     // Make table sortable
     makeSortable(table, 'queries');
+    endPerf(perf, { rows: data.queries.length });
 }
 
 function createQueriesChart(queries) {
@@ -2016,12 +2089,10 @@ async function showQueryExamples(namespace, operation, encodedPattern, rowIndex)
 
     const pattern = decodeURIComponent(encodedPattern);
 
-    console.log('🔍 Requesting query examples:', { namespace, operation, pattern });
-
     showLoading('Loading query examples...');
 
     try {
-        const response = await fetch(`/api/analyze/${currentFileId}/query-examples`, {
+        const result = await fetchJson(`/api/analyze/${currentFileId}/query-examples`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -2031,11 +2102,7 @@ async function showQueryExamples(namespace, operation, encodedPattern, rowIndex)
                 operation: operation,
                 pattern: pattern
             })
-        });
-
-        const result = await response.json();
-
-        console.log('📊 Query examples result:', result);
+        }, 'query-examples');
 
         if (result.status === 'success') {
             displayQueryExamples(result.data, rowIndex);
@@ -2043,6 +2110,7 @@ async function showQueryExamples(namespace, operation, encodedPattern, rowIndex)
             showToast('error', 'Failed to load query examples');
         }
     } catch (error) {
+        if (error.name === 'AbortError') return;
         showToast('error', `Failed to load query examples: ${error.message}`);
     } finally {
         hideLoading();
@@ -2384,13 +2452,12 @@ async function analyzeTimeSeries() {
     showLoading('Analyzing time-series data...');
 
     try {
-        let url = `/api/analyze/${currentFileId}/timeseries`;
-        if (namespace) {
-            url += `?namespace=${encodeURIComponent(namespace)}`;
-        }
+        const params = new URLSearchParams();
+        if (namespace) params.append('namespace', namespace);
+        params.append('include_raw', String(!isLargeDatasetMode));
+        const url = `/api/analyze/${currentFileId}/timeseries?${params.toString()}`;
 
-        const response = await fetch(url, { method: 'POST' });
-        const result = await response.json();
+        const result = await fetchJson(url, { method: 'POST' }, 'tab-analysis');
 
         if (result.status === 'success') {
             displayTimeSeriesData(result.data);
@@ -2398,6 +2465,7 @@ async function analyzeTimeSeries() {
             showToast('error', 'Time-series analysis failed');
         }
     } catch (error) {
+        if (error.name === 'AbortError') return;
         showToast('error', `Analysis failed: ${error.message}`);
     } finally {
         hideLoading();
@@ -2440,9 +2508,11 @@ function createSlowQueriesPlot(slowQueries) {
         return;
     }
 
+    const maxPlotPoints = isLargeDatasetMode ? 2000 : 6000;
+    const sampledQueries = downsampleArray(slowQueries, maxPlotPoints);
     // Group by namespace for different traces
     const tracesByNamespace = {};
-    slowQueries.forEach(q => {
+    sampledQueries.forEach(q => {
         if (!tracesByNamespace[q.namespace]) {
             tracesByNamespace[q.namespace] = {
                 x: [],
@@ -2491,7 +2561,7 @@ function createSlowQueriesPlot(slowQueries) {
         displaylogo: false
     };
 
-    Plotly.newPlot('slowQueriesPlot', traces, layout, config);
+    renderChartProgressively('slowQueriesPlot', traces, layout, config);
 
     // Add events after chart is rendered
     setTimeout(() => {
@@ -2575,9 +2645,11 @@ function createErrorsPlot(errors) {
         return;
     }
 
+    const maxPlotPoints = isLargeDatasetMode ? 2000 : 6000;
+    const sampledErrors = downsampleArray(errors, maxPlotPoints);
     // Group by message
     const tracesByMessage = {};
-    errors.forEach(e => {
+    sampledErrors.forEach(e => {
         const msgKey = e.message;
         if (!tracesByMessage[msgKey]) {
             tracesByMessage[msgKey] = {
@@ -2624,7 +2696,7 @@ function createErrorsPlot(errors) {
         displaylogo: false
     };
 
-    Plotly.newPlot('errorsPlot', traces, layout, config);
+    renderChartProgressively('errorsPlot', traces, layout, config);
 
     // Add zoom sync event after chart is rendered
     setTimeout(() => {
@@ -2744,6 +2816,7 @@ function copyCommandToClipboard() {
 }
 
 function displayAggregatedQueriesTable(aggregatedQueries) {
+    const perf = startPerf('displayAggregatedQueriesTable');
     const container = document.getElementById('aggregatedQueriesTable');
 
     if (!aggregatedQueries || aggregatedQueries.length === 0) {
@@ -2753,31 +2826,23 @@ function displayAggregatedQueriesTable(aggregatedQueries) {
 
     const table = document.createElement('table');
     table.className = 'timeseries-table';
-
-    table.innerHTML = `
-        <thead>
-            <tr>
-                <th>Namespace</th>
-                <th>Count</th>
-                <th>Mean Duration (ms)</th>
-            </tr>
-        </thead>
-        <tbody>
-            ${aggregatedQueries.map(q => `
-                <tr>
-                    <td>${q.namespace}</td>
-                    <td>${q.count}</td>
-                    <td>${q.mean_duration_ms}</td>
-                </tr>
-            `).join('')}
-        </tbody>
-    `;
+    table.innerHTML = '<thead><tr><th>Namespace</th><th>Count</th><th>Mean Duration (ms)</th></tr></thead><tbody></tbody>';
+    const tbody = table.querySelector('tbody');
+    const fragment = document.createDocumentFragment();
+    aggregatedQueries.forEach((q) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${q.namespace}</td><td>${q.count}</td><td>${q.mean_duration_ms}</td>`;
+        fragment.appendChild(tr);
+    });
+    tbody.appendChild(fragment);
 
     container.innerHTML = '';
     container.appendChild(table);
+    endPerf(perf, { rows: aggregatedQueries.length });
 }
 
 function displayAggregatedErrorsTable(aggregatedErrors) {
+    const perf = startPerf('displayAggregatedErrorsTable');
     const container = document.getElementById('aggregatedErrorsTable');
 
     if (!aggregatedErrors || aggregatedErrors.length === 0) {
@@ -2787,26 +2852,19 @@ function displayAggregatedErrorsTable(aggregatedErrors) {
 
     const table = document.createElement('table');
     table.className = 'timeseries-table';
-
-    table.innerHTML = `
-        <thead>
-            <tr>
-                <th>Message</th>
-                <th>Count</th>
-            </tr>
-        </thead>
-        <tbody>
-            ${aggregatedErrors.map(e => `
-                <tr>
-                    <td>${e.message}</td>
-                    <td>${e.count}</td>
-                </tr>
-            `).join('')}
-        </tbody>
-    `;
+    table.innerHTML = '<thead><tr><th>Message</th><th>Count</th></tr></thead><tbody></tbody>';
+    const tbody = table.querySelector('tbody');
+    const fragment = document.createDocumentFragment();
+    aggregatedErrors.forEach((e) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${e.message}</td><td>${e.count}</td>`;
+        fragment.appendChild(tr);
+    });
+    tbody.appendChild(fragment);
 
     container.innerHTML = '';
     container.appendChild(table);
+    endPerf(perf, { rows: aggregatedErrors.length });
 }
 
 function showLLMInstallationModal(statusData) {
@@ -3418,11 +3476,12 @@ async function loadFilterOptions() {
     if (!currentFileId) return;
 
     try {
-        const response = await fetch(`/api/analyze/${currentFileId}/filter-options`);
-        const data = await response.json();
+        const data = await fetchJson(`/api/analyze/${currentFileId}/filter-options`);
         filterOptions = data.data;
+        lastFilterOptionsFileId = currentFileId;
         populateFilterOptions();
     } catch (error) {
+        if (error.name === 'AbortError') return;
         console.error('Failed to load filter options:', error);
         showToast('error', 'Failed to load filter options');
     }
@@ -3542,6 +3601,7 @@ async function applyExtraction() {
         namespace = document.getElementById('extractNamespace').value;
     }
 
+    const pageSize = isLargeDatasetMode ? 5000 : 10000;
     const filters = {
         text_search: document.getElementById('extractTextSearch').value,
         case_sensitive: document.getElementById('extractCaseSensitive').checked,
@@ -3552,32 +3612,35 @@ async function applyExtraction() {
         namespace: namespace,
         date_from: document.getElementById('extractDateFrom').value,
         date_to: document.getElementById('extractDateTo').value,
-        limit: 10000
+        limit: pageSize
     };
 
     showToast('info', 'Extracting logs...');
+    try {
+        const data = await fetchJson(`/api/analyze/${currentFileId}/extract?offset=0`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(filters)
+        }, 'extract');
 
-    const response = await fetch(`/api/analyze/${currentFileId}/extract`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(filters)
-    });
+        // Store raw lines for format changes
+        currentExtractionLines = data.lines;
+        extractionPrettyCache = null;
 
-    const data = await response.json();
+        // Update match count
+        document.getElementById('matchCount').textContent = data.total_matched;
 
-    // Store raw lines for format changes
-    currentExtractionLines = data.lines;
+        // Apply current format
+        applyOutputFormat();
 
-    // Update match count
-    document.getElementById('matchCount').textContent = data.total_matched;
-
-    // Apply current format
-    applyOutputFormat();
-
-    if (data.truncated) {
-        showToast('warning', `Results truncated to ${filters.limit} lines`);
-    } else {
-        showToast('success', `Found ${data.total_matched} matches`);
+        if (data.truncated) {
+            showToast('warning', `Results truncated to ${filters.limit} lines`);
+        } else {
+            showToast('success', `Found ${data.total_matched} matches`);
+        }
+    } catch (error) {
+        if (error.name === 'AbortError') return;
+        showToast('error', `Extraction failed: ${error.message}`);
     }
 }
 
@@ -3593,13 +3656,16 @@ function applyOutputFormat() {
     if (format === 'raw') {
         output = currentExtractionLines.join('\n');
     } else if (format === 'pretty') {
-        output = currentExtractionLines.map(line => {
-            try {
-                return JSON.stringify(JSON.parse(line), null, 2);
-            } catch {
-                return line;
-            }
-        }).join('\n---\n');
+        if (!extractionPrettyCache) {
+            extractionPrettyCache = currentExtractionLines.map(line => {
+                try {
+                    return JSON.stringify(JSON.parse(line), null, 2);
+                } catch {
+                    return line;
+                }
+            }).join('\n---\n');
+        }
+        output = extractionPrettyCache;
     }
 
     document.getElementById('extractorOutput').value = output;

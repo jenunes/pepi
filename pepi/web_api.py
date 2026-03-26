@@ -294,6 +294,7 @@ def analyze_basic_info(
 def analyze_connections(
     file_id: str,
     sample: Optional[int] = 100,
+    include_details: bool = False,
     upload_store: dict = Depends(get_upload_store),
 ):
     """Analyze connection information with time series data."""
@@ -325,7 +326,7 @@ def analyze_connections(
             connections_dict[ip] = {
                 'opened': data['opened'],
                 'closed': data['closed'],
-                'durations': data['durations'],
+                'durations': data['durations'] if include_details else [],
             }
 
         total_lines = upload_store[file_id]['lines']
@@ -341,7 +342,7 @@ def analyze_connections(
                 "ip_stats": ip_stats,
                 "connections_timeseries": connections_timeseries,
                 "connections_by_ip_timeseries": connections_by_ip_timeseries,
-                "connection_events": connection_events,
+                "connection_events": connection_events if include_details else [],
                 "sampling_metadata": sampling_metadata,
                 "data_quality": {
                     "validation_results": validation_results,
@@ -548,6 +549,7 @@ def analyze_clients(
 def analyze_timeseries(
     file_id: str,
     namespace: Optional[str] = None,
+    include_raw: bool = True,
     upload_store: dict = Depends(get_upload_store),
 ):
     """Analyze time-series data for slow queries, connections, and errors."""
@@ -609,9 +611,9 @@ def analyze_timeseries(
         return AnalysisResult(
             status="success",
             data={
-                "slow_queries": slow_queries,
-                "connections": connections,
-                "errors": errors,
+                "slow_queries": slow_queries if include_raw else [],
+                "connections": connections if include_raw else [],
+                "errors": errors if include_raw else [],
                 "aggregated_queries": aggregated_queries,
                 "aggregated_errors": aggregated_errors,
                 "unique_namespaces": unique_namespaces,
@@ -854,12 +856,15 @@ def preload_file(upload_store: dict) -> str | None:
 def extract_logs(
     file_id: str,
     filters: LogFilterRequest,
+    offset: int = 0,
     upload_store: dict = Depends(get_upload_store),
 ):
     """Extract raw log entries based on filters."""
     file_path = get_validated_file_path(file_id, upload_store)
     matched_lines = []
+    matched_count = 0
     total_lines = 0
+    page_limit = max(1, min(filters.limit, 5000))
 
     with open(file_path, 'r') as f:
         for line in f:
@@ -884,17 +889,20 @@ def extract_logs(
             if not apply_filters(entry, line, filters):
                 continue
             
+            matched_count += 1
+            if matched_count <= offset:
+                continue
+
             matched_lines.append(line.strip())
-            
-            # Limit results
-            if len(matched_lines) >= filters.limit:
+
+            if len(matched_lines) >= page_limit:
                 break
     
     return ExtractResponse(
         total_scanned=total_lines,
-        total_matched=len(matched_lines),
+        total_matched=matched_count,
         lines=matched_lines,
-        truncated=len(matched_lines) >= filters.limit,
+        truncated=len(matched_lines) >= page_limit,
     )
 
 
