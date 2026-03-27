@@ -33,6 +33,11 @@ from . import (
     parse_replica_set_config,
     parse_replica_set_state,
     parse_timeseries_data,
+    parse_errors_detail,
+    parse_collscan_trends,
+    parse_repl_health,
+    parse_lock_contention,
+    parse_auth_failures,
     trim_log_file,
     validate_connection_data_consistency,
 )
@@ -50,6 +55,7 @@ from .ingest_store import (
     query_timeseries,
 )
 from .ingest_worker import run_ingest_job
+from .version import __version__
 from .types import (
     AnalysisResult,
     ExtractResponse,
@@ -113,7 +119,7 @@ async def lifespan(app: FastAPI):
     app.state.ingest_conn.close()
 
 
-app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.2.1.dev1", lifespan=lifespan)
+app = FastAPI(title="Pepi MongoDB Log Analyzer", version=__version__, lifespan=lifespan)
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -647,6 +653,8 @@ def analyze_connections(
         total_lines = _get_or_compute_line_count(upload_store, file_id)
         sampling_metadata = get_sampling_metadata(total_lines, sample)
 
+        lock_contention = parse_lock_contention(file_path)
+
         return AnalysisResult(
             status="success",
             data={
@@ -666,6 +674,7 @@ def analyze_connections(
                     "quality_score": validation_results.get('data_quality_score', 1.0),
                     "is_consistent": validation_results.get('is_consistent', True),
                 },
+                **lock_contention,
             },
         )
     except Exception as e:
@@ -694,6 +703,7 @@ def analyze_queries_route(
 
         results = []
         for (ns, op, pattern), stats in query_stats.items():
+            idx = stats['indexes']
             results.append({
                 "namespace": ns,
                 "operation": op,
@@ -705,14 +715,33 @@ def analyze_queries_route(
                 "percentile_95_ms": stats['percentile_95'],
                 "sum_ms": stats['sum'],
                 "allow_disk_use": stats['allowDiskUse'],
-                "indexes": list(stats['indexes']) if isinstance(stats['indexes'], set) else stats['indexes'],
+                "indexes": list(idx) if isinstance(idx, set) else idx,
+                "sort_shape": stats.get('sort_shape', ''),
+                "projection_shape": stats.get('projection_shape', ''),
+                "has_limit": stats.get('has_limit', False),
+                "has_skip": stats.get('has_skip', False),
+                "aggregate_shape_summary": stats.get('aggregate_shape_summary', ''),
+                "sum_docs_examined": stats.get('sum_docs_examined', 0),
+                "sum_keys_examined": stats.get('sum_keys_examined', 0),
+                "sum_n_returned": stats.get('sum_n_returned', 0),
+                "sum_planning_micros": stats.get('sum_planning_micros', 0),
+                "avg_docs_examined": stats.get('avg_docs_examined'),
+                "avg_keys_examined": stats.get('avg_keys_examined'),
+                "avg_n_returned": stats.get('avg_n_returned'),
+                "avg_planning_micros": stats.get('avg_planning_micros'),
+                "scan_efficiency": stats.get('scan_efficiency'),
+                "fetch_efficiency": stats.get('fetch_efficiency'),
+                "exec_event_count": stats.get('exec_event_count', 0),
             })
+
+        collscan_trends = parse_collscan_trends(file_path)
 
         return AnalysisResult(
             status="success",
             data={
                 "queries": results,
                 "total_patterns": len(results),
+                **collscan_trends,
             },
         )
     except Exception as e:
@@ -765,27 +794,18 @@ def get_query_examples(
                         if match_attempts <= 3:  # Log first few attempts
                             logger.debug("Comparing %s == %s", query_pattern[:100], pattern[:100])
                         
-                        # Try exact match first
                         if query_pattern == pattern:
-                            pass  # Match found
-                        # For aggregate queries, also try legacy format compatibility
+                            pass
                         elif op == 'aggregate':
-                            # Convert between formats: ["$match","$project"] <=> [$match,$project]
                             try:
-                                # Parse new format (JSON array)
-                                stages_new = json.loads(query_pattern) if query_pattern.startswith('[') else []
-                                # Parse old format (bracket-comma-separated)
-                                stages_old = pattern.strip('[]').split(',') if pattern.startswith('[') and not pattern.startswith('["') else []
-                                
-                                # Compare stage lists
-                                if stages_new and stages_old and stages_new == stages_old:
-                                    pass  # Match found (different format but same stages)
+                                if json.loads(query_pattern) == json.loads(pattern):
+                                    pass
                                 else:
-                                    continue  # No match
+                                    continue
                             except (json.JSONDecodeError, ValueError, TypeError):
-                                continue  # No match
+                                continue
                         else:
-                            continue  # No match
+                            continue
                             
                         # This is a match - add the example
                         examples.append({
@@ -829,12 +849,15 @@ def analyze_replica_set(
         configs = parse_replica_set_config(file_path)
         states, node_status = parse_replica_set_state(file_path)
         
+        repl_health = parse_repl_health(file_path)
+
         return AnalysisResult(
             status="success",
             data={
                 "configs": configs,
                 "states": states,
-                "node_status": node_status
+                "node_status": node_status,
+                **repl_health,
             }
         )
     except Exception as e:
@@ -851,10 +874,13 @@ def analyze_clients(
     try:
         clients_data = parse_clients(file_path)
         
+        auth_failures = parse_auth_failures(file_path)
+
         return AnalysisResult(
             status="success",
             data={
-                "clients": clients_data
+                "clients": clients_data,
+                **auth_failures,
             }
         )
     except Exception as e:
@@ -936,6 +962,8 @@ def analyze_timeseries(
         # Get MongoDB info from slow queries
         total_slow_queries = len(slow_queries)
         sampled = len(slow_queries) == max_points
+
+        errors_detail = parse_errors_detail(file_path)
         
         return AnalysisResult(
             status="success",
@@ -947,7 +975,8 @@ def analyze_timeseries(
                 "aggregated_errors": aggregated_errors,
                 "unique_namespaces": unique_namespaces,
                 "total_slow_queries": total_slow_queries,
-                "sampled": sampled
+                "sampled": sampled,
+                **errors_detail,
             }
         )
     except Exception as e:
@@ -983,7 +1012,8 @@ def get_index_recommendations(
             # Enhance stats with planSummary for coverage analysis
             enhanced_stats = request.stats.copy()
             enhanced_stats['plan_summary'] = plan_summary
-            
+            enhanced_stats.setdefault('pattern', request.pattern)
+
             # Analyze single query
             recommendation = analyze_single_query(
                 namespace=request.namespace,

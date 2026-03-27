@@ -219,6 +219,21 @@
                             <div id="aggregatedErrorsTable"></div>
                         </div>
                     </div>
+
+                    <div class="timeseries-tables" id="errorsDetailSection" style="display: none;">
+                        <div class="table-section">
+                            <h3><i class="fas fa-layer-group"></i> Error Severity Timeline</h3>
+                            <div id="errorsDetailTimelinePlot" class="plotly-chart"></div>
+                        </div>
+                        <div class="table-section">
+                            <h3><i class="fas fa-microchip"></i> Errors By Component</h3>
+                            <div class="stats-grid" id="errorsByComponentCards"></div>
+                        </div>
+                        <div class="table-section">
+                            <h3><i class="fas fa-list"></i> Top Error Messages</h3>
+                            <div class="table-container" id="topErrorsTable"></div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Raw Extractor Tab -->
@@ -360,6 +375,17 @@
                     </div>
 
                     <div class="table-container" id="connectionsTable"></div>
+
+                    <div class="timeseries-charts" id="contentionSection" style="display: none;">
+                        <div class="chart-section">
+                            <h3><i class="fas fa-road-barrier"></i> Contention Timeline</h3>
+                            <div id="contentionTimelinePlot" class="plotly-chart"></div>
+                        </div>
+                        <div class="chart-section">
+                            <h3><i class="fas fa-stopwatch"></i> Checkpoint Durations</h3>
+                            <div id="checkpointDurationsPlot" class="plotly-chart"></div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Clients Tab -->
@@ -371,6 +397,14 @@
                         </button>
                     </div>
                     <div id="clientsContent"></div>
+                    <div id="authFailuresSection" style="display: none;">
+                        <div class="chart-section">
+                            <h3><i class="fas fa-user-shield"></i> Auth Failures Timeline</h3>
+                            <div id="authFailuresTimelinePlot" class="plotly-chart"></div>
+                        </div>
+                        <div class="stats-grid" id="authBreakdownCards"></div>
+                        <div class="table-container" id="authFailuresTable"></div>
+                    </div>
                 </div>
 
                 <!-- Queries Tab -->
@@ -397,6 +431,15 @@
                         <canvas id="queriesChart"></canvas>
                     </div>
                     <div class="table-container" id="queriesTable"></div>
+
+                    <div id="collscanTrendsSection" style="display: none;">
+                        <div class="chart-section">
+                            <h3><i class="fas fa-chart-line"></i> COLLSCAN Trend</h3>
+                            <div id="collscanTrendPlot" class="plotly-chart"></div>
+                        </div>
+                        <div class="stats-grid" id="collscanImpactCards"></div>
+                        <div class="table-container" id="collscanNamespacesTable"></div>
+                    </div>
                 </div>
 
                 <!-- Replica Set Tab -->
@@ -408,6 +451,15 @@
                         </button>
                     </div>
                     <div id="replicaSetContent"></div>
+                    <div id="replHealthSection" style="display: none;">
+                        <div class="stats-grid" id="replHealthStats"></div>
+                        <div class="chart-section">
+                            <h3><i class="fas fa-heartbeat"></i> Replication Health Timeline</h3>
+                            <div id="replEventsTimelinePlot" class="plotly-chart"></div>
+                        </div>
+                        <div class="table-container" id="replElectionsTable"></div>
+                        <div id="rollbackAlerts"></div>
+                    </div>
                 </div>
 
                 <!-- FTDC Viewer Tab -->
@@ -504,7 +556,7 @@
                 <i class="fas fa-question-circle"></i> FAQ
             </a>
             <span class="footer-separator">•</span>
-            <span class="footer-version">v2.2.1.dev1</span>
+            <span class="footer-version">v2.2.3.dev1</span>
         </div>
     </div>
 

@@ -23,5 +23,10 @@ from pepi.parser import (
     validate_connection_data_consistency,
     parse_connection_events,
     extract_query_pattern,
+    parse_errors_detail,
+    parse_collscan_trends,
+    parse_repl_health,
+    parse_lock_contention,
+    parse_auth_failures,
 )
 from pepi.cli import main

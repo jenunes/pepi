@@ -5,10 +5,10 @@ Provides accurate, fast analysis without AI dependencies.
 
 from __future__ import annotations
 
-import re
 import json
 import logging
-from typing import Optional, Dict, List, Tuple
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 
 logger = logging.getLogger(__name__)
@@ -94,6 +94,17 @@ AGGREGATION PIPELINE CONSIDERATIONS:
 """
 
 
+def _pattern_for_advisor(stats: Dict, fallback_pattern: str) -> str:
+    """Use full representative command JSON for field extraction when available."""
+    rc = stats.get('repr_command')
+    if rc is not None:
+        try:
+            return json.dumps(rc)
+        except (TypeError, ValueError):
+            pass
+    return fallback_pattern
+
+
 def analyze_queries(query_stats: Dict) -> List[Dict]:
     """Analyze queries and generate index recommendations.
 
@@ -114,7 +125,8 @@ def analyze_queries(query_stats: Dict) -> List[Dict]:
 
         priority = _calculate_priority(stats)
 
-        rec = _generate_recommendation(namespace, operation, pattern, stats)
+        advisor_pattern = _pattern_for_advisor(stats, pattern)
+        rec = _generate_recommendation(namespace, operation, advisor_pattern, stats)
 
         if rec:
             rec['priority'] = priority
@@ -213,6 +225,12 @@ def _needs_index(stats: Dict) -> bool:
     if stats.get('count', 0) > 50 and stats.get('mean', 0) > 50:
         return True
 
+    avg_docs = stats.get('avg_docs_examined')
+    avg_nr = stats.get('avg_n_returned')
+    if avg_docs is not None and avg_nr is not None and avg_nr > 0:
+        if (avg_docs / avg_nr) > 100:
+            return True
+
     return False
 
 
@@ -241,6 +259,15 @@ def _calculate_priority(stats: Dict) -> float:
     if count > 100:
         base_score *= 1.3
 
+    avg_docs = stats.get('avg_docs_examined')
+    avg_nr = stats.get('avg_n_returned')
+    if avg_docs is not None and avg_nr is not None and avg_nr > 0:
+        ratio = avg_docs / avg_nr
+        if ratio > 50:
+            base_score *= 1.2
+        if ratio > 200:
+            base_score *= 1.15
+
     return min(base_score, 1000)
 
 
@@ -254,6 +281,132 @@ def _get_priority_level(score: float) -> str:
         return "MEDIUM"
     else:
         return "LOW"
+
+
+def _placeholder_explain_values(obj: Any) -> Any:
+    """Replace scalars with placeholders for safe explain command snippets."""
+    if isinstance(obj, dict):
+        return {k: _placeholder_explain_values(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_placeholder_explain_values(v) for v in obj]
+    return "<value>"
+
+
+def _generate_explain_command(namespace: str, operation: str, pattern: str) -> str:
+    """Build a mongosh explain('executionStats') skeleton from the command pattern."""
+    db, coll = namespace.split('.', 1) if '.' in namespace else ('db', namespace)
+    base = f'db.getSiblingDB("{db}").getCollection("{coll}")'
+    try:
+        cmd = json.loads(pattern)
+    except (json.JSONDecodeError, TypeError):
+        return f'{base}.find({{}}).explain("executionStats")  // Unparseable command; edit filter'
+
+    if operation == 'find':
+        if isinstance(cmd, dict) and 'find' in cmd:
+            filt = _placeholder_explain_values(cmd.get('filter', {}))
+            parts: List[str] = [f'{base}.find({json.dumps(filt)})']
+            sort = cmd.get('sort')
+            if sort and isinstance(sort, dict):
+                parts.append(f'.sort({json.dumps(_placeholder_explain_values(sort))})')
+            if cmd.get('skip') is not None:
+                parts.append('.skip(<number>)')
+            if cmd.get('limit') is not None:
+                parts.append('.limit(<number>)')
+            return ''.join(parts) + '.explain("executionStats")'
+        if isinstance(cmd, dict):
+            filt = _placeholder_explain_values(cmd)
+            return f'{base}.find({json.dumps(filt)}).explain("executionStats")'
+
+    if operation == 'aggregate':
+        pipeline: List[Any] = []
+        if isinstance(cmd, dict) and 'aggregate' in cmd:
+            pipeline = cmd.get('pipeline', []) or []
+        elif isinstance(cmd, list):
+            pipeline = cmd
+        if pipeline:
+            ph = _placeholder_explain_values(pipeline)
+            return f'{base}.explain("executionStats").aggregate({json.dumps(ph)})'
+        return f'{base}.explain("executionStats").aggregate([])'
+
+    if operation == 'update' and isinstance(cmd, dict) and 'updates' in cmd:
+        return (
+            f'{base}.explain("executionStats").updateMany('
+            f'<filter>, <update>)  // Expand from command.updates'
+        )
+    if operation == 'delete' and isinstance(cmd, dict) and 'deletes' in cmd:
+        return f'{base}.explain("executionStats").deleteMany(<filter>)  // Expand from command.deletes'
+
+    return f'{base}.find({{}}).explain("executionStats")  // operation={operation}'
+
+
+def _build_esr_breakdown(
+    fields: List[Tuple[str, str]],
+    index_spec: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Human-readable E/S/R classification per field for UI transparency."""
+    rec_keys = [k for k in index_spec.keys()] if index_spec else []
+    evidence_map = {
+        'equality': 'Equality predicate in filter (exact match)',
+        'range': 'Range or inequality operator in filter',
+        'sort': 'Sort clause or $sort stage in command',
+        'text': '$text or regex-style predicate',
+    }
+    out: List[Dict[str, Any]] = []
+    for field, usage in fields:
+        pos: Optional[int] = None
+        if field in rec_keys:
+            pos = rec_keys.index(field) + 1
+        out.append({
+            'field': field,
+            'classification': usage,
+            'evidence': evidence_map.get(usage, usage),
+            'position_in_index': pos,
+        })
+    return out
+
+
+def _compute_suboptimal_order(
+    fields: List[Tuple[str, str]],
+    index_spec: Dict[str, Any],
+    current_structure: List[Tuple[str, int]],
+) -> List[str]:
+    """Compare current index key order to ESR expectations and recommended spec."""
+    issues: List[str] = []
+    if not current_structure or not index_spec:
+        return issues
+
+    cur_fields = [f for f, _ in current_structure]
+    rec_fields = [k for k in index_spec.keys() if index_spec[k] != 'text']
+
+    equality_fields = list(dict.fromkeys([f for f, t in fields if t == 'equality']))
+    sort_fields = list(dict.fromkeys([f for f, t in fields if t == 'sort']))
+    range_fields = list(dict.fromkeys([f for f, t in fields if t == 'range']))
+
+    def pos(field: str) -> Optional[int]:
+        return cur_fields.index(field) if field in cur_fields else None
+
+    for r in range_fields:
+        for e in equality_fields:
+            pr, pe = pos(r), pos(e)
+            if pr is not None and pe is not None and pr < pe:
+                issues.append(
+                    f"Current index: range field '{r}' appears before equality field '{e}'",
+                )
+        for s in sort_fields:
+            pr, ps = pos(r), pos(s)
+            if pr is not None and ps is not None and pr < ps:
+                issues.append(
+                    f"Current index: range field '{r}' appears before sort field '{s}'",
+                )
+
+    rec_set = set(rec_fields)
+    cur_set = set(cur_fields)
+    if rec_set == cur_set and rec_fields and cur_fields and rec_fields != cur_fields:
+        issues.append(
+            f"Current index key order {cur_fields} differs from recommended ESR order {rec_fields}",
+        )
+
+    return issues
 
 
 def _generate_recommendation(namespace: str, operation: str,
@@ -287,16 +440,44 @@ def _generate_recommendation(namespace: str, operation: str,
             return _generate_generic_collscan_recommendation(namespace, operation, pattern, stats)
         return None
 
+    subopts = _compute_suboptimal_order(
+        fields,
+        index_spec,
+        current_index_info.get('structure', []),
+    )
+    if subopts:
+        coverage_analysis['suboptimal_order'] = subopts
+        for line in subopts:
+            if line not in coverage_analysis['improvement_details']:
+                coverage_analysis['improvement_details'].append(line)
+
+    query_field_types = {f: t for f, t in fields}
+    selectivity = _analyze_selectivity(
+        query_field_types,
+        stats,
+        current_index_info.get('structure', []),
+    )
+    for issue in selectivity.get('issues', []):
+        tag = f"Selectivity: {issue}"
+        if tag not in coverage_analysis['improvement_details']:
+            coverage_analysis['improvement_details'].append(tag)
+
     migration_strategy = _generate_migration_strategy(
         namespace, current_index_info, index_spec, coverage_analysis
     )
 
     reason = _generate_reason(fields, operation, stats, coverage_analysis)
+    if selectivity.get('issues'):
+        reason += ' ' + ' '.join(selectivity['issues'][:2])
+
+    display_pattern = stats.get('pattern') or pattern
+    explain_cmd = _generate_explain_command(namespace, operation, pattern)
+    esr_breakdown = _build_esr_breakdown(fields, index_spec)
 
     rec = {
         'namespace': namespace,
         'operation': operation,
-        'pattern': pattern[:200],
+        'pattern': display_pattern[:200],
         'current_index': current_index_info['type'],
         'current_index_structure': current_index_info.get('structure', []),
         'stats': {
@@ -305,11 +486,13 @@ def _generate_recommendation(namespace: str, operation: str,
             'p95_ms': round(stats.get('percentile_95', 0), 1),
         },
         'coverage_analysis': coverage_analysis,
+        'esr_breakdown': esr_breakdown,
         'recommendation': {
             'index_spec': index_spec,
             'command': _format_create_index(namespace, index_spec),
             'reason': reason,
             'migration_strategy': migration_strategy,
+            'explain_command': explain_cmd,
         }
     }
 
@@ -412,21 +595,28 @@ def _generate_generic_collscan_recommendation(namespace: str, operation: str,
         reason += "Query pattern is complex. Analyze which fields are frequently queried and create appropriate indexes."
         command = f"// Analyze query and create index on frequently used fields\n// db.{namespace.split('.')[-1]}.createIndex({{ field: 1 }})"
 
+    disp = stats.get('pattern') or pattern
+    explain_cmd = _generate_explain_command(namespace, operation, pattern)
+    if selectivity_notes := _analyze_selectivity({}, stats, []).get('issues'):
+        reason += ' ' + ' '.join(selectivity_notes[:2])
+
     rec = {
         'namespace': namespace,
         'operation': operation,
-        'pattern': pattern[:200],
+        'pattern': disp[:200],
         'current_index': 'COLLSCAN',
         'stats': {
             'count': count,
             'mean_ms': round(mean_ms, 1),
             'p95_ms': round(stats.get('percentile_95', 0), 1),
         },
+        'esr_breakdown': [],
         'recommendation': {
             'index_spec': "Manual analysis required",
             'command': command,
             'reason': reason,
             'estimated_improvement': _estimate_improvement(stats),
+            'explain_command': explain_cmd,
         }
     }
 
@@ -732,6 +922,14 @@ def _generate_reason(fields: List[Tuple[str, str]],
             reason += f"Current index may not be optimal for this access pattern. "
             reason += "A better-targeted compound index could significantly improve performance."
 
+    ad = stats.get('avg_docs_examined')
+    an = stats.get('avg_n_returned')
+    if ad is not None and an is not None and an > 0 and (ad / an) > 20:
+        reason += (
+            f" Avg execution: {ad:.0f} docs examined vs {an:.0f} returned "
+            f"({ad / an:.0f}:1)."
+        )
+
     return reason
 
 
@@ -992,6 +1190,22 @@ def _analyze_selectivity(query_field_types: Dict[str, str],
         'issues': [],
         'recommendations': []
     }
+
+    avg_docs = stats.get('avg_docs_examined')
+    avg_nr = stats.get('avg_n_returned')
+    avg_keys = stats.get('avg_keys_examined')
+    if avg_docs is not None and avg_nr is not None and avg_nr > 0:
+        ratio = avg_docs / avg_nr
+        if ratio > 50:
+            analysis['issues'].append(
+                f"Avg docs examined per returned document is high ({ratio:.0f}:1)",
+            )
+    if avg_keys is not None and avg_docs is not None and avg_docs > 0:
+        kr = avg_keys / avg_docs
+        if kr < 0.2:
+            analysis['issues'].append(
+                f"Low avg keysExamined vs docsExamined ratio ({kr:.2f})",
+            )
 
     mean_ms = stats.get('mean', 0)
     count = stats.get('count', 0)

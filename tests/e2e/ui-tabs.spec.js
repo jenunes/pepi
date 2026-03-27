@@ -47,5 +47,15 @@ test("all requested tabs are visible and render primary UI containers", async ({
     await page.click(`.tab-btn[data-tab='${tab.key}']`);
     await expect(page.locator(`#${tab.key}.tab-pane.active`)).toBeVisible();
     await expect(page.locator(tab.paneSelector)).toBeVisible();
+    if (tab.key === "queries") {
+      await page.getByRole("button", { name: /Analyze Queries/i }).click();
+      await expect(page.locator("#queriesTable .queries-primary-table")).toBeVisible({
+        timeout: 30_000
+      });
+      await expect(
+        page.locator('#queriesTable button.queries-expand-btn[aria-label*="metrics"]')
+      ).toBeVisible();
+      await expect(page.locator("#queriesTable th[data-sort-key='sum_ms']")).toHaveText(/Total/);
+    }
   }
 });

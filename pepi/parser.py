@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
+from statistics import median
 from typing import Any, Optional
 
 import click
@@ -303,44 +304,83 @@ def parse_clients(logfile: str) -> dict[str, dict[str, Any]]:
     return clients
 
 
-def extract_query_pattern(operation: str, command: dict[str, Any]) -> str:
-    """Extract a normalized query pattern string for grouping."""
-    def normalize(obj):
-        if isinstance(obj, dict):
-            return {k: normalize(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [normalize(v) for v in obj]
-        else:
-            return '?'
+def _normalize_query_shape(obj: Any) -> Any:
+    """Replace leaf values with '?' for stable grouping keys."""
+    if isinstance(obj, dict):
+        return {k: _normalize_query_shape(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_normalize_query_shape(v) for v in obj]
+    return '?'
 
+
+def _aggregate_stage_shape(stage: dict[str, Any]) -> dict[str, Any]:
+    """Build a normalized summary of one aggregation pipeline stage."""
+    if not stage:
+        return {}
+    op = list(stage.keys())[0]
+    body = stage[op]
+    if op == '$match' and isinstance(body, dict):
+        return {op: _normalize_query_shape(body)}
+    if op == '$sort' and isinstance(body, dict):
+        return {op: _normalize_query_shape(body)}
+    if op == '$lookup' and isinstance(body, dict):
+        sub: dict[str, Any] = {}
+        for k in ('from', 'localField', 'foreignField', 'as'):
+            if k in body:
+                sub[k] = '?' if k == 'from' else _normalize_query_shape(body[k])
+        return {op: sub}
+    if op == '$group' and isinstance(body, dict):
+        gid = body.get('_id')
+        return {op: {'_id': _normalize_query_shape(gid) if gid is not None else '?'}}
+    return {op: '?'}
+
+
+def extract_query_pattern(operation: str, command: dict[str, Any]) -> str:
+    """Extract normalized query pattern for grouping (filter, sort, pipeline shape)."""
     if operation == 'find':
         filt = command.get('filter', {})
-        return json.dumps(normalize(filt), sort_keys=True)
-    elif operation == 'update':
+        sort_raw = command.get('sort') or {}
+        sort_d: dict[str, Any] = sort_raw if isinstance(sort_raw, dict) else {}
+        proj = command.get('projection')
+        if proj is None:
+            proj = command.get('fields')
+        proj_norm: Any
+        if isinstance(proj, dict):
+            proj_norm = _normalize_query_shape(proj)
+        elif proj is None:
+            proj_norm = {}
+        else:
+            proj_norm = '?'
+        shape = {
+            'filter': _normalize_query_shape(filt),
+            'sort': _normalize_query_shape(sort_d),
+            'projection': proj_norm,
+            'has_limit': command.get('limit') is not None,
+            'has_skip': command.get('skip') is not None,
+        }
+        return json.dumps(shape, sort_keys=True)
+    if operation == 'update':
         updates = command.get('updates', [])
-        return json.dumps(normalize(updates), sort_keys=True)
-    elif operation == 'delete':
+        return json.dumps(_normalize_query_shape(updates), sort_keys=True)
+    if operation == 'delete':
         deletes = command.get('deletes', [])
-        return json.dumps(normalize(deletes), sort_keys=True)
-    elif operation == 'insert':
+        return json.dumps(_normalize_query_shape(deletes), sort_keys=True)
+    if operation == 'insert':
         docs = command.get('documents', [])
         if docs and isinstance(docs, list):
             keys = sorted(set(k for doc in docs for k in doc.keys()))
             return 'insert_keys:' + ','.join(keys)
         return 'insert_keys:unknown'
-    elif operation == 'aggregate':
+    if operation == 'aggregate':
         pipeline = command.get('pipeline', [])
         if pipeline and isinstance(pipeline, list):
-            stages = []
+            stages_out = []
             for stage in pipeline:
                 if isinstance(stage, dict) and stage:
-                    stage_keys = list(stage.keys())
-                    if stage_keys:
-                        stages.append(stage_keys[0])
-            return json.dumps(stages)
+                    stages_out.append(_aggregate_stage_shape(stage))
+            return json.dumps(stages_out)
         return '[unknown]'
-    else:
-        return json.dumps(sorted(command.keys()))
+    return json.dumps(sorted(command.keys()))
 
 
 def parse_timeseries_data(logfile: str) -> tuple[list[dict], list[dict], list[dict]]:
@@ -667,9 +707,17 @@ def parse_connection_events(logfile: str) -> list[dict[str, Any]]:
     return connection_events
 
 
+def _deep_copy_json_safe(obj: Any) -> Optional[Any]:
+    """Deep copy via JSON when possible (drops non-JSON-serializable values)."""
+    try:
+        return json.loads(json.dumps(obj))
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict:
     """Parse query patterns and statistics from MongoDB log file, grouped by pattern."""
-    cache_key = get_cache_key(logfile, 'queries')
+    cache_key = get_cache_key(logfile, 'queries_v2')
     cached_result = load_from_cache(cache_key)
     if cached_result:
         click.echo("Using cached query data...")
@@ -681,8 +729,13 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
                 value['indexes'] = set(value['indexes'])
             if 'indexes' not in value:
                 value['indexes'] = set()
+            value.setdefault('repr_command', None)
+            value.setdefault('docs_examined', [])
+            value.setdefault('keys_examined', [])
+            value.setdefault('n_returned', [])
+            value.setdefault('planning_micros', [])
         return queries
-    
+
     def default_query_data():
         return {
             'count': 0,
@@ -690,7 +743,12 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
             'allowDiskUse': False,
             'operations': set(),
             'pattern': None,
-            'indexes': set()
+            'indexes': set(),
+            'repr_command': None,
+            'docs_examined': [],
+            'keys_examined': [],
+            'n_returned': [],
+            'planning_micros': [],
         }
     
     queries = defaultdict(default_query_data)
@@ -742,6 +800,34 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
                     queries[group_key]['allowDiskUse'] = queries[group_key]['allowDiskUse'] or allow_disk_use
                     queries[group_key]['pattern'] = pattern
                     queries[group_key]['indexes'].add(index_used)
+                    if queries[group_key]['repr_command'] is None:
+                        queries[group_key]['repr_command'] = _deep_copy_json_safe(command)
+                    de = attr.get('docsExamined')
+                    if de is not None:
+                        try:
+                            queries[group_key]['docs_examined'].append(int(de))
+                        except (TypeError, ValueError):
+                            pass
+                    ke = attr.get('keysExamined')
+                    if ke is not None:
+                        try:
+                            queries[group_key]['keys_examined'].append(int(ke))
+                        except (TypeError, ValueError):
+                            pass
+                    nr = attr.get('nreturned')
+                    if nr is None:
+                        nr = attr.get('nReturned')
+                    if nr is not None:
+                        try:
+                            queries[group_key]['n_returned'].append(int(nr))
+                        except (TypeError, ValueError):
+                            pass
+                    pm = attr.get('planningTimeMicros')
+                    if pm is not None:
+                        try:
+                            queries[group_key]['planning_micros'].append(int(pm))
+                        except (TypeError, ValueError):
+                            pass
             except Exception:
                 pass
 
@@ -753,7 +839,12 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
             'allowDiskUse': value['allowDiskUse'],
             'operations': list(value['operations']),
             'pattern': value['pattern'],
-            'indexes': list(value['indexes'])
+            'indexes': list(value['indexes']),
+            'repr_command': value.get('repr_command'),
+            'docs_examined': value.get('docs_examined', []),
+            'keys_examined': value.get('keys_examined', []),
+            'n_returned': value.get('n_returned', []),
+            'planning_micros': value.get('planning_micros', []),
         }
     cache_data = {
         'queries': queries_dict,
@@ -762,3 +853,503 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
     save_to_cache(cache_key, cache_data)
     
     return queries
+
+
+def _to_minute_bucket(timestamp: str) -> str:
+    if not timestamp:
+        return ""
+    return timestamp[:16] + ":00Z"
+
+
+def parse_errors_detail(logfile: str) -> dict[str, Any]:
+    """Parse detailed error information for time-series diagnostics."""
+    cache_key = get_cache_key(logfile, 'errors_detail')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached detailed error data...")
+        return cached_result['data']
+
+    total_lines = count_lines(logfile)
+    severity_by_bucket: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    top_errors: dict[tuple[str, str, str], dict[str, Any]] = {}
+    errors_by_component: dict[str, int] = defaultdict(int)
+    bucket_totals: dict[str, int] = defaultdict(int)
+    total_errors = 0
+    total_warnings = 0
+    total_fatal = 0
+
+    with open(logfile, 'r') as f:
+        for line in tqdm(f, total=total_lines, desc="Parsing detailed errors", unit="lines"):
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+
+            timestamp = entry.get('t', {}).get('$date')
+            if not timestamp:
+                continue
+
+            message = str(entry.get('msg', ''))
+            severity = str(entry.get('s', ''))
+            component = str(entry.get('c', 'Unknown'))
+            message_lc = message.lower()
+            has_error_keyword = 'error' in message_lc or 'warning' in message_lc
+            if severity not in {'E', 'W', 'F'} and not has_error_keyword:
+                continue
+
+            bucket_ts = _to_minute_bucket(timestamp)
+            severity_key = severity if severity in {'E', 'W', 'F'} else 'W'
+            severity_by_bucket[bucket_ts][severity_key] += 1
+            bucket_totals[bucket_ts] += 1
+            errors_by_component[component] += 1
+
+            if severity_key == 'E':
+                total_errors += 1
+            elif severity_key == 'W':
+                total_warnings += 1
+            elif severity_key == 'F':
+                total_fatal += 1
+
+            error_key = (message, component, severity_key)
+            if error_key not in top_errors:
+                top_errors[error_key] = {
+                    'message': message,
+                    'component': component,
+                    'severity': severity_key,
+                    'count': 0,
+                    'first_seen': timestamp,
+                    'last_seen': timestamp,
+                }
+            top_errors[error_key]['count'] += 1
+            if timestamp < top_errors[error_key]['first_seen']:
+                top_errors[error_key]['first_seen'] = timestamp
+            if timestamp > top_errors[error_key]['last_seen']:
+                top_errors[error_key]['last_seen'] = timestamp
+
+    if not bucket_totals:
+        empty_data = {
+            'errors_timeline': [],
+            'top_errors': [],
+            'errors_by_component': {},
+            'error_spikes': [],
+            'total_errors': 0,
+            'total_warnings': 0,
+            'total_fatal': 0,
+        }
+        save_to_cache(cache_key, {'data': empty_data})
+        return empty_data
+
+    timeline = []
+    for bucket_ts in sorted(severity_by_bucket.keys()):
+        for sev in ['F', 'E', 'W']:
+            count = severity_by_bucket[bucket_ts].get(sev, 0)
+            if count > 0:
+                timeline.append({'bucket_ts': bucket_ts, 'severity': sev, 'count': count})
+
+    baseline = float(median(bucket_totals.values())) if bucket_totals else 0.0
+    threshold = baseline * 3.0 if baseline > 0 else float('inf')
+    error_spikes = [
+        {'bucket_ts': bucket_ts, 'count': total, 'baseline': baseline}
+        for bucket_ts, total in sorted(bucket_totals.items())
+        if total > threshold
+    ]
+
+    top_error_rows = sorted(top_errors.values(), key=lambda item: item['count'], reverse=True)[:50]
+    data = {
+        'errors_timeline': timeline,
+        'top_errors': top_error_rows,
+        'errors_by_component': dict(sorted(errors_by_component.items(), key=lambda item: item[1], reverse=True)),
+        'error_spikes': error_spikes,
+        'total_errors': total_errors,
+        'total_warnings': total_warnings,
+        'total_fatal': total_fatal,
+    }
+    save_to_cache(cache_key, {'data': data})
+    return data
+
+
+def parse_collscan_trends(logfile: str) -> dict[str, Any]:
+    """Parse detailed COLLSCAN trends for query diagnostics."""
+    cache_key = get_cache_key(logfile, 'collscan_trends')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached COLLSCAN trend data...")
+        return cached_result['data']
+
+    total_lines = count_lines(logfile)
+    bucket_counts: dict[str, dict[str, int]] = defaultdict(lambda: {'collscan': 0, 'ixscan': 0})
+    namespace_totals: dict[str, dict[str, Any]] = defaultdict(lambda: {
+        'count': 0,
+        'total_duration_ms': 0,
+        'patterns': Counter(),
+    })
+    total_collscans = 0
+    total_ixscans = 0
+    total_collscan_duration_ms = 0
+
+    with open(logfile, 'r') as f:
+        for line in tqdm(f, total=total_lines, desc="Parsing COLLSCAN trends", unit="lines"):
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+
+            if entry.get('c') != 'COMMAND' or entry.get('msg') not in ('command', 'Slow query'):
+                continue
+
+            attr = entry.get('attr', {})
+            timestamp = entry.get('t', {}).get('$date')
+            namespace = attr.get('ns', '')
+            command = attr.get('command', {})
+            plan_summary = str(attr.get('planSummary', ''))
+            if not timestamp or not namespace or not command:
+                continue
+
+            bucket_ts = _to_minute_bucket(timestamp)
+            operation = list(command.keys())[0] if command else 'unknown'
+            duration_ms = int(attr.get('durationMillis', 0) or 0)
+
+            if plan_summary == 'COLLSCAN':
+                total_collscans += 1
+                total_collscan_duration_ms += duration_ms
+                bucket_counts[bucket_ts]['collscan'] += 1
+                pattern = extract_query_pattern(operation, command)
+                namespace_totals[namespace]['count'] += 1
+                namespace_totals[namespace]['total_duration_ms'] += duration_ms
+                namespace_totals[namespace]['patterns'][pattern] += 1
+            elif plan_summary.startswith('IXSCAN'):
+                total_ixscans += 1
+                bucket_counts[bucket_ts]['ixscan'] += 1
+
+    collscan_timeline = []
+    ratio_timeline = []
+    for bucket_ts in sorted(bucket_counts.keys()):
+        collscan_count = bucket_counts[bucket_ts]['collscan']
+        ixscan_count = bucket_counts[bucket_ts]['ixscan']
+        denominator = collscan_count + ixscan_count
+        ratio = (collscan_count / denominator) if denominator > 0 else 0.0
+        collscan_timeline.append({'bucket_ts': bucket_ts, 'count': collscan_count})
+        ratio_timeline.append({
+            'bucket_ts': bucket_ts,
+            'collscan_count': collscan_count,
+            'ixscan_count': ixscan_count,
+            'ratio': round(ratio, 4),
+        })
+
+    top_namespaces = []
+    for namespace, stats in namespace_totals.items():
+        top_pattern = ''
+        if stats['patterns']:
+            top_pattern = stats['patterns'].most_common(1)[0][0]
+        top_namespaces.append({
+            'namespace': namespace,
+            'count': stats['count'],
+            'total_duration_ms': stats['total_duration_ms'],
+            'top_pattern': top_pattern,
+        })
+    top_namespaces.sort(key=lambda item: item['count'], reverse=True)
+
+    data = {
+        'collscan_timeline': collscan_timeline,
+        'scan_ratio_timeline': ratio_timeline,
+        'collscan_top_namespaces': top_namespaces[:20],
+        'total_collscans': total_collscans,
+        'total_ixscans': total_ixscans,
+        'total_collscan_duration_ms': total_collscan_duration_ms,
+    }
+    save_to_cache(cache_key, {'data': data})
+    return data
+
+
+def parse_repl_health(logfile: str) -> dict[str, Any]:
+    """Parse replication health events including elections and rollbacks."""
+    cache_key = get_cache_key(logfile, 'repl_health')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached replication health data...")
+        return cached_result['data']
+
+    total_lines = count_lines(logfile)
+    repl_events = []
+    elections = []
+    rollbacks = []
+    heartbeat_failures = []
+    no_primary_periods = []
+    primary_lost_at = None
+
+    with open(logfile, 'r') as f:
+        for line in tqdm(f, total=total_lines, desc="Parsing replication health", unit="lines"):
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+
+            if entry.get('c') != 'REPL':
+                continue
+
+            timestamp = entry.get('t', {}).get('$date')
+            if not timestamp:
+                continue
+            message = str(entry.get('msg', ''))
+            msg_lc = message.lower()
+            attr = entry.get('attr', {}) if isinstance(entry.get('attr', {}), dict) else {}
+
+            event_type = ''
+            if 'rollback' in msg_lc:
+                event_type = 'rollback'
+            elif 'stepped down' in msg_lc:
+                event_type = 'stepdown'
+            elif 'election' in msg_lc or 'vote' in msg_lc:
+                event_type = 'election'
+            elif 'initial sync' in msg_lc:
+                event_type = 'sync'
+            elif 'heartbeat' in msg_lc and ('fail' in msg_lc or 'timeout' in msg_lc):
+                event_type = 'heartbeat_failure'
+            elif 'catchup' in msg_lc:
+                event_type = 'catchup'
+
+            if message == 'Replica set state transition':
+                old_state = str(attr.get('oldState', ''))
+                new_state = str(attr.get('newState', ''))
+                if old_state == 'PRIMARY' and new_state != 'PRIMARY':
+                    primary_lost_at = timestamp
+                if new_state == 'PRIMARY' and primary_lost_at:
+                    try:
+                        start_dt = datetime.fromisoformat(primary_lost_at.replace('Z', '+00:00'))
+                        end_dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                        seconds = (end_dt - start_dt).total_seconds()
+                    except Exception:
+                        seconds = 0.0
+                    no_primary_periods.append({'start': primary_lost_at, 'end': timestamp, 'duration_seconds': max(seconds, 0.0)})
+                    primary_lost_at = None
+
+            if not event_type:
+                continue
+
+            event = {
+                'timestamp': timestamp,
+                'event_type': event_type,
+                'message': message,
+                'details': attr,
+            }
+            repl_events.append(event)
+
+            if event_type == 'election':
+                elections.append({
+                    'timestamp': timestamp,
+                    'reason': str(attr.get('reason', '')),
+                    'duration_ms': attr.get('durationMillis'),
+                    'outcome': str(attr.get('outcome', '')),
+                })
+            elif event_type == 'rollback':
+                rollbacks.append(event)
+            elif event_type == 'heartbeat_failure':
+                heartbeat_failures.append(event)
+
+    stability_score = 100 - (10 * len(elections)) - (20 * len(rollbacks)) - (5 * len(heartbeat_failures))
+    data = {
+        'repl_events': repl_events,
+        'elections': elections,
+        'rollbacks': rollbacks,
+        'heartbeat_failures': heartbeat_failures,
+        'stability_score': max(stability_score, 0),
+        'no_primary_periods': no_primary_periods,
+        'has_elections': len(elections) > 0,
+        'has_rollbacks': len(rollbacks) > 0,
+    }
+    save_to_cache(cache_key, {'data': data})
+    return data
+
+
+def parse_lock_contention(logfile: str) -> dict[str, Any]:
+    """Parse lock contention and flow control diagnostics."""
+    cache_key = get_cache_key(logfile, 'lock_contention')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached lock contention data...")
+        return cached_result['data']
+
+    total_lines = count_lines(logfile)
+    events = []
+    by_type = defaultdict(int)
+    timeline = defaultdict(lambda: defaultdict(int))
+    checkpoint_durations = []
+    flow_control_periods = []
+    flow_start = None
+
+    with open(logfile, 'r') as f:
+        for line in tqdm(f, total=total_lines, desc="Parsing lock contention", unit="lines"):
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+
+            timestamp = entry.get('t', {}).get('$date')
+            if not timestamp:
+                continue
+
+            component = str(entry.get('c', ''))
+            message = str(entry.get('msg', ''))
+            msg_lc = message.lower()
+            attr = entry.get('attr', {}) if isinstance(entry.get('attr', {}), dict) else {}
+
+            if component != 'STORAGE' and not any(key in msg_lc for key in ['flowcontrol', 'ticket', 'checkpoint', 'wiredtiger']):
+                continue
+
+            event_type = ''
+            if 'flowcontrol' in msg_lc:
+                event_type = 'flowcontrol'
+            elif 'ticket' in msg_lc:
+                event_type = 'ticket'
+            elif 'checkpoint' in msg_lc:
+                event_type = 'checkpoint'
+            elif 'transaction too large' in msg_lc or ('cache' in msg_lc and 'pressure' in msg_lc):
+                event_type = 'transaction'
+            else:
+                continue
+
+            duration_ms = attr.get('durationMillis')
+            if duration_ms is None and event_type == 'checkpoint':
+                duration_ms = attr.get('duration_ms')
+
+            event = {
+                'timestamp': timestamp,
+                'event_type': event_type,
+                'details': attr,
+                'duration_ms': duration_ms,
+            }
+            events.append(event)
+            by_type[event_type] += 1
+
+            bucket_ts = _to_minute_bucket(timestamp)
+            timeline[bucket_ts][event_type] += 1
+
+            if event_type == 'checkpoint' and isinstance(duration_ms, (int, float)):
+                checkpoint_durations.append({'timestamp': timestamp, 'duration_ms': int(duration_ms)})
+
+            if event_type == 'flowcontrol':
+                if flow_start is None:
+                    flow_start = timestamp
+                elif flow_start is not None:
+                    flow_control_periods.append({'start': flow_start, 'end': timestamp})
+                    flow_start = None
+
+    if flow_start is not None:
+        flow_control_periods.append({'start': flow_start, 'end': None})
+
+    timeline_rows = []
+    for bucket_ts in sorted(timeline.keys()):
+        for event_type, count in sorted(timeline[bucket_ts].items()):
+            timeline_rows.append({'bucket_ts': bucket_ts, 'event_type': event_type, 'count': count})
+
+    data = {
+        'contention_events': events,
+        'contention_timeline': timeline_rows,
+        'checkpoint_durations': checkpoint_durations,
+        'flow_control_periods': flow_control_periods,
+        'contention_total_by_type': dict(by_type),
+        'has_contention': len(events) > 0,
+    }
+    save_to_cache(cache_key, {'data': data})
+    return data
+
+
+def parse_auth_failures(logfile: str) -> dict[str, Any]:
+    """Parse authentication and authorization failure diagnostics."""
+    cache_key = get_cache_key(logfile, 'auth_failures')
+    cached_result = load_from_cache(cache_key)
+    if cached_result:
+        click.echo("Using cached auth failure data...")
+        return cached_result['data']
+
+    total_lines = count_lines(logfile)
+    by_user = defaultdict(int)
+    by_ip = defaultdict(int)
+    by_type = defaultdict(int)
+    by_bucket = defaultdict(int)
+    grouped_failures = {}
+
+    with open(logfile, 'r') as f:
+        for line in tqdm(f, total=total_lines, desc="Parsing auth failures", unit="lines"):
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+
+            if entry.get('c') != 'ACCESS':
+                continue
+
+            timestamp = entry.get('t', {}).get('$date')
+            if not timestamp:
+                continue
+
+            message = str(entry.get('msg', ''))
+            msg_lc = message.lower()
+            severity = str(entry.get('s', ''))
+            attr = entry.get('attr', {}) if isinstance(entry.get('attr', {}), dict) else {}
+
+            failure_type = ''
+            if 'authentication failed' in msg_lc or 'scram' in msg_lc:
+                failure_type = 'authn'
+            elif 'not authorized' in msg_lc or 'unauthorized' in msg_lc:
+                failure_type = 'authz'
+            elif severity in {'E', 'W'}:
+                failure_type = 'authn'
+
+            if not failure_type:
+                continue
+
+            user = str(attr.get('user') or attr.get('principalName') or '')
+            ip_source = str(attr.get('remote') or attr.get('client') or '')
+            client_ip = ip_source.split(':')[0] if ip_source else ''
+
+            if user:
+                by_user[user] += 1
+            if client_ip:
+                by_ip[client_ip] += 1
+            by_type[failure_type] += 1
+            bucket_ts = _to_minute_bucket(timestamp)
+            by_bucket[bucket_ts] += 1
+
+            group_key = (user, client_ip, message)
+            if group_key not in grouped_failures:
+                grouped_failures[group_key] = {
+                    'user': user,
+                    'ip': client_ip,
+                    'reason': message,
+                    'count': 0,
+                    'first_seen': timestamp,
+                    'last_seen': timestamp,
+                }
+            grouped_failures[group_key]['count'] += 1
+            if timestamp < grouped_failures[group_key]['first_seen']:
+                grouped_failures[group_key]['first_seen'] = timestamp
+            if timestamp > grouped_failures[group_key]['last_seen']:
+                grouped_failures[group_key]['last_seen'] = timestamp
+
+    timeline = [
+        {'bucket_ts': bucket_ts, 'count': count}
+        for bucket_ts, count in sorted(by_bucket.items())
+    ]
+
+    baseline = float(median(by_bucket.values())) if by_bucket else 0.0
+    burst_threshold = baseline * 3.0 if baseline > 0 else float('inf')
+    auth_burst_periods = [
+        {'start': bucket_ts, 'end': bucket_ts, 'count': count, 'baseline': baseline}
+        for bucket_ts, count in sorted(by_bucket.items())
+        if count > burst_threshold
+    ]
+
+    top_failures = sorted(grouped_failures.values(), key=lambda item: item['count'], reverse=True)[:30]
+    data = {
+        'auth_timeline': timeline,
+        'auth_by_user': dict(sorted(by_user.items(), key=lambda item: item[1], reverse=True)),
+        'auth_by_ip': dict(sorted(by_ip.items(), key=lambda item: item[1], reverse=True)),
+        'auth_by_type': dict(by_type),
+        'auth_top_failures': top_failures,
+        'auth_total_failures': sum(by_bucket.values()),
+        'auth_burst_periods': auth_burst_periods,
+        'has_auth_failures': sum(by_bucket.values()) > 0,
+    }
+    save_to_cache(cache_key, {'data': data})
+    return data

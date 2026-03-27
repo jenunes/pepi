@@ -80,6 +80,23 @@ class QueryStats(BaseModel):
     pattern: str = ""
     durations: list[float] = Field(default_factory=list)
     indexes: Union[list[str], Set[str]] = Field(default_factory=set)
+    repr_command: Optional[dict[str, Any]] = None
+    sort_shape: str = ""
+    projection_shape: str = ""
+    has_limit: bool = False
+    has_skip: bool = False
+    aggregate_shape_summary: str = ""
+    sum_docs_examined: int = 0
+    sum_keys_examined: int = 0
+    sum_n_returned: int = 0
+    sum_planning_micros: int = 0
+    avg_docs_examined: Optional[float] = None
+    avg_keys_examined: Optional[float] = None
+    avg_n_returned: Optional[float] = None
+    avg_planning_micros: Optional[float] = None
+    scan_efficiency: Optional[float] = None
+    fetch_efficiency: Optional[float] = None
+    exec_event_count: int = 0
 
     model_config = {"populate_by_name": True}
 
@@ -283,6 +300,160 @@ class TmpHealthResponse(BaseModel):
     message: Optional[str] = None
 
 
+class ErrorTimelineBucket(BaseModel):
+    bucket_ts: str
+    severity: str
+    count: int
+
+
+class TopErrorEntry(BaseModel):
+    message: str
+    component: str
+    severity: str
+    count: int
+    first_seen: str
+    last_seen: str
+
+
+class ErrorSpike(BaseModel):
+    bucket_ts: str
+    count: int
+    baseline: float
+
+
+class ErrorsDetailResult(BaseModel):
+    errors_timeline: list[ErrorTimelineBucket] = Field(default_factory=list)
+    top_errors: list[TopErrorEntry] = Field(default_factory=list)
+    errors_by_component: dict[str, int] = Field(default_factory=dict)
+    error_spikes: list[ErrorSpike] = Field(default_factory=list)
+    total_errors: int = 0
+    total_warnings: int = 0
+    total_fatal: int = 0
+
+
+class ScanRatioBucket(BaseModel):
+    bucket_ts: str
+    collscan_count: int
+    ixscan_count: int
+    ratio: float
+
+
+class CollscanNamespace(BaseModel):
+    namespace: str
+    count: int
+    total_duration_ms: int
+    top_pattern: str
+
+
+class CollscanTimelinePoint(BaseModel):
+    bucket_ts: str
+    count: int
+
+
+class CollscanTrendsResult(BaseModel):
+    collscan_timeline: list[CollscanTimelinePoint] = Field(default_factory=list)
+    scan_ratio_timeline: list[ScanRatioBucket] = Field(default_factory=list)
+    collscan_top_namespaces: list[CollscanNamespace] = Field(default_factory=list)
+    total_collscans: int = 0
+    total_ixscans: int = 0
+    total_collscan_duration_ms: int = 0
+
+
+class ReplEvent(BaseModel):
+    timestamp: str
+    event_type: str
+    message: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ElectionEvent(BaseModel):
+    timestamp: str
+    reason: str = ""
+    duration_ms: Optional[int] = None
+    outcome: str = ""
+
+
+class NoPrimaryPeriod(BaseModel):
+    start: str
+    end: str
+    duration_seconds: float
+
+
+class ReplHealthResult(BaseModel):
+    repl_events: list[ReplEvent] = Field(default_factory=list)
+    elections: list[ElectionEvent] = Field(default_factory=list)
+    rollbacks: list[ReplEvent] = Field(default_factory=list)
+    heartbeat_failures: list[ReplEvent] = Field(default_factory=list)
+    stability_score: int = 100
+    no_primary_periods: list[NoPrimaryPeriod] = Field(default_factory=list)
+    has_elections: bool = False
+    has_rollbacks: bool = False
+
+
+class ContentionEvent(BaseModel):
+    timestamp: str
+    event_type: str
+    details: dict[str, Any] = Field(default_factory=dict)
+    duration_ms: Optional[int] = None
+
+
+class CheckpointDuration(BaseModel):
+    timestamp: str
+    duration_ms: int
+
+
+class FlowControlPeriod(BaseModel):
+    start: str
+    end: Optional[str] = None
+
+
+class ContentionTimelinePoint(BaseModel):
+    bucket_ts: str
+    event_type: str
+    count: int
+
+
+class LockContentionResult(BaseModel):
+    contention_events: list[ContentionEvent] = Field(default_factory=list)
+    contention_timeline: list[ContentionTimelinePoint] = Field(default_factory=list)
+    checkpoint_durations: list[CheckpointDuration] = Field(default_factory=list)
+    flow_control_periods: list[FlowControlPeriod] = Field(default_factory=list)
+    contention_total_by_type: dict[str, int] = Field(default_factory=dict)
+    has_contention: bool = False
+
+
+class AuthFailure(BaseModel):
+    user: str = ""
+    ip: str = ""
+    reason: str
+    count: int
+    first_seen: str
+    last_seen: str
+
+
+class AuthBurstPeriod(BaseModel):
+    start: str
+    end: str
+    count: int
+    baseline: float
+
+
+class AuthTimelinePoint(BaseModel):
+    bucket_ts: str
+    count: int
+
+
+class AuthFailuresResult(BaseModel):
+    auth_timeline: list[AuthTimelinePoint] = Field(default_factory=list)
+    auth_by_user: dict[str, int] = Field(default_factory=dict)
+    auth_by_ip: dict[str, int] = Field(default_factory=dict)
+    auth_by_type: dict[str, int] = Field(default_factory=dict)
+    auth_top_failures: list[AuthFailure] = Field(default_factory=list)
+    auth_total_failures: int = 0
+    auth_burst_periods: list[AuthBurstPeriod] = Field(default_factory=list)
+    has_auth_failures: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Index advisor models
 # ---------------------------------------------------------------------------
@@ -315,12 +486,20 @@ class CoverageAnalysis(BaseModel):
     improvement_details: list[str] = Field(default_factory=list)
 
 
+class ESRFieldBreakdown(BaseModel):
+    field: str
+    classification: str
+    evidence: str = ""
+    position_in_index: Optional[int] = None
+
+
 class IndexRecommendationDetail(BaseModel):
     index_spec: Any = None
     command: str = ""
     reason: str = ""
     migration_strategy: Optional[MigrationStrategy] = None
     estimated_improvement: Optional[str] = None
+    explain_command: str = ""
 
 
 class IndexRecommendation(BaseModel):
@@ -334,6 +513,7 @@ class IndexRecommendation(BaseModel):
     recommendation: IndexRecommendationDetail = Field(default_factory=IndexRecommendationDetail)
     priority: float = 0.0
     priority_level: str = "LOW"
+    esr_breakdown: list[ESRFieldBreakdown] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

@@ -881,6 +881,7 @@ function displayConnectionsData(data) {
 
     // Create initial connections table with all data
     updateConnectionsTable(data);
+    renderLockContentionSection(data);
 }
 
 function displayDataQualityWarnings(dataQuality) {
@@ -1644,21 +1645,549 @@ async function analyzeQueries() {
 let currentQueriesData = null;
 let selectedQueryIndex = null;
 
+/** Client-side Queries table: filters, pagination, sort (global row index = index in currentQueriesData.queries). */
+let queriesTableState = {
+    page: 1,
+    pageSize: 25,
+    clientNamespace: '',
+    clientOperation: '',
+    collscanOnly: false,
+    sortKey: 'sum_ms',
+    sortDirection: 'desc',
+};
+const queriesExpandedGlobalIndices = new Set();
+let queriesClientFilterTimer = null;
+
+function resetQueriesTableState() {
+    queriesTableState = {
+        page: 1,
+        pageSize: 25,
+        clientNamespace: '',
+        clientOperation: '',
+        collscanOnly: false,
+        sortKey: 'sum_ms',
+        sortDirection: 'desc',
+    };
+    queriesExpandedGlobalIndices.clear();
+}
+
+function getQueriesTotalWorkloadMs(queries) {
+    return queries.reduce((sum, q) => sum + (Number(q.sum_ms) || 0), 0);
+}
+
+function filterQueriesEntries(queries) {
+    const ns = (queriesTableState.clientNamespace || '').trim().toLowerCase();
+    const op = queriesTableState.clientOperation || '';
+    const collOnly = queriesTableState.collscanOnly;
+    const out = [];
+    queries.forEach((q, i) => {
+        if (ns && !String(q.namespace).toLowerCase().includes(ns)) return;
+        if (op && q.operation !== op) return;
+        if (collOnly && !(q.indexes && q.indexes.includes('COLLSCAN'))) return;
+        out.push({ query: q, globalIdx: i });
+    });
+    return out;
+}
+
+function sortQueriesEntries(entries, totalWorkloadMs) {
+    const key = queriesTableState.sortKey;
+    const dirMult = queriesTableState.sortDirection === 'asc' ? 1 : -1;
+
+    const pct = (q) =>
+        totalWorkloadMs > 0 ? (Number(q.sum_ms) || 0) / totalWorkloadMs : 0;
+
+    const val = (q) => {
+        switch (key) {
+            case 'namespace':
+                return q.namespace;
+            case 'operation':
+                return q.operation;
+            case 'pattern':
+                return q.pattern;
+            case 'sum_ms':
+                return Number(q.sum_ms) || 0;
+            case 'pct':
+                return pct(q);
+            case 'mean_ms':
+                return q.mean_ms;
+            case 'count':
+                return q.count;
+            case 'index':
+                return (q.indexes || []).join(',');
+            default:
+                return Number(q.sum_ms) || 0;
+        }
+    };
+
+    return [...entries].sort((a, b) => {
+        const va = val(a.query);
+        const vb = val(b.query);
+        if (typeof va === 'number' && typeof vb === 'number') {
+            return dirMult * (va - vb);
+        }
+        return dirMult * String(va).localeCompare(String(vb));
+    });
+}
+
+function paginateQueriesEntries(entries) {
+    const ps = queriesTableState.pageSize;
+    const total = entries.length;
+    if (ps === 0) {
+        queriesTableState.page = 1;
+        return {
+            slice: entries,
+            from: total ? 1 : 0,
+            to: total,
+            total,
+            page: 1,
+            pageCount: 1,
+        };
+    }
+    const pageSize = Number(ps) || 25;
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    let page = Math.min(Math.max(1, queriesTableState.page), pageCount);
+    queriesTableState.page = page;
+    const fromIdx = (page - 1) * pageSize;
+    const slice = entries.slice(fromIdx, fromIdx + pageSize);
+    return {
+        slice,
+        from: total ? fromIdx + 1 : 0,
+        to: fromIdx + slice.length,
+        total,
+        page,
+        pageCount,
+        pageSize,
+    };
+}
+
+function queriesTableSetSort(sortKey) {
+    if (queriesTableState.sortKey === sortKey) {
+        queriesTableState.sortDirection = queriesTableState.sortDirection === 'asc' ? 'desc' : 'asc';
+    } else {
+        queriesTableState.sortKey = sortKey;
+        const stringKeys = ['namespace', 'operation', 'pattern', 'index'];
+        queriesTableState.sortDirection = stringKeys.includes(sortKey) ? 'asc' : 'desc';
+    }
+    queriesTableState.page = 1;
+    renderQueriesTable();
+}
+
+function toggleQueriesDetailRow(globalIdx) {
+    const wrap = document.querySelector('#queriesTable .queries-table-wrap');
+    if (!wrap) return;
+    const table = wrap.querySelector('.queries-primary-table');
+    if (!table) return;
+    const detail = table.querySelector(`tr.queries-row-detail[data-parent-index="${globalIdx}"]`);
+    const btn = table.querySelector(`button.queries-expand-btn[data-global-index="${globalIdx}"]`);
+    if (!detail || !btn) return;
+    const open = !detail.classList.contains('is-open');
+    if (open) {
+        detail.classList.add('is-open');
+        queriesExpandedGlobalIndices.add(globalIdx);
+    } else {
+        detail.classList.remove('is-open');
+        queriesExpandedGlobalIndices.delete(globalIdx);
+    }
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const icon = btn.querySelector('i');
+    if (icon) icon.className = open ? 'fas fa-chevron-down' : 'fas fa-chevron-right';
+}
+
+function queriesTableGoPage(page) {
+    queriesTableState.page = page;
+    renderQueriesTable();
+}
+
+function queriesTablePrevPage() {
+    if (queriesTableState.page > 1) {
+        queriesTableState.page -= 1;
+        renderQueriesTable();
+    }
+}
+
+function queriesTableNextPage() {
+    queriesTableState.page += 1;
+    renderQueriesTable();
+}
+
+function attachQueriesTableToolbarListeners(tableContainer) {
+    const ns = tableContainer.querySelector('#queriesClientNs');
+    if (ns) {
+        ns.addEventListener('input', () => {
+            clearTimeout(queriesClientFilterTimer);
+            queriesClientFilterTimer = setTimeout(() => {
+                queriesTableState.clientNamespace = ns.value;
+                queriesTableState.page = 1;
+                renderQueriesTable();
+            }, 200);
+        });
+    }
+    const op = tableContainer.querySelector('#queriesClientOp');
+    if (op) {
+        op.addEventListener('change', () => {
+            queriesTableState.clientOperation = op.value;
+            queriesTableState.page = 1;
+            renderQueriesTable();
+        });
+    }
+    const coll = tableContainer.querySelector('#queriesClientCollscan');
+    if (coll) {
+        coll.addEventListener('change', () => {
+            queriesTableState.collscanOnly = coll.checked;
+            queriesTableState.page = 1;
+            renderQueriesTable();
+        });
+    }
+    const psz = tableContainer.querySelector('#queriesClientPageSize');
+    if (psz) {
+        psz.addEventListener('change', () => {
+            queriesTableState.pageSize = parseInt(psz.value, 10);
+            queriesTableState.page = 1;
+            renderQueriesTable();
+        });
+    }
+    const thead = tableContainer.querySelector('thead');
+    if (thead) {
+        thead.addEventListener('click', (ev) => {
+            const th = ev.target.closest('th[data-sort-key]');
+            if (!th) return;
+            queriesTableSetSort(th.getAttribute('data-sort-key'));
+        });
+    }
+}
+
+function updateQueriesSortHeaderClasses(tableContainer) {
+    const ths = tableContainer.querySelectorAll('thead th[data-sort-key]');
+    ths.forEach((th) => {
+        th.classList.remove('sort-asc', 'sort-desc');
+        if (th.getAttribute('data-sort-key') === queriesTableState.sortKey) {
+            th.classList.add(queriesTableState.sortDirection === 'asc' ? 'sort-asc' : 'sort-desc');
+        }
+    });
+}
+
+function renderQueriesTable() {
+    const tableContainer = document.getElementById('queriesTable');
+    if (!tableContainer || !currentQueriesData || !currentQueriesData.queries.length) return;
+
+    const queries = currentQueriesData.queries;
+    const totalWorkloadMs = getQueriesTotalWorkloadMs(queries);
+    const operations = [...new Set(queries.map((q) => q.operation))].sort();
+
+    const filtered = filterQueriesEntries(queries);
+    const sorted = sortQueriesEntries(filtered, totalWorkloadMs);
+    const pag = paginateQueriesEntries(sorted);
+
+    const opOpts = ['<option value="">All operations</option>']
+        .concat(
+            operations.map((o) => {
+                const sel = queriesTableState.clientOperation === o ? ' selected' : '';
+                return `<option value="${escapeHtml(o)}"${sel}>${escapeHtml(o)}</option>`;
+            }),
+        )
+        .join('');
+
+    const psVal = queriesTableState.pageSize;
+    const sz25 = psVal === 25 ? ' selected' : '';
+    const sz50 = psVal === 50 ? ' selected' : '';
+    const sz100 = psVal === 100 ? ' selected' : '';
+    const szAll = psVal === 0 ? ' selected' : '';
+
+    tableContainer.innerHTML = `
+        <div class="queries-table-wrap">
+            <div class="queries-client-toolbar">
+                <label class="queries-toolbar-label">Table filter</label>
+                <input type="text" id="queriesClientNs" class="queries-toolbar-input" placeholder="Namespace contains…"
+                    value="${escapeHtml(queriesTableState.clientNamespace)}" autocomplete="off">
+                <select id="queriesClientOp" class="queries-toolbar-select">${opOpts}</select>
+                <label class="queries-toolbar-check"><input type="checkbox" id="queriesClientCollscan" ${queriesTableState.collscanOnly ? 'checked' : ''}> COLLSCAN only</label>
+                <label class="queries-toolbar-pagesize">Rows
+                    <select id="queriesClientPageSize">
+                        <option value="25"${sz25}>25</option>
+                        <option value="50"${sz50}>50</option>
+                        <option value="100"${sz100}>100</option>
+                        <option value="0"${szAll}>All</option>
+                    </select>
+                </label>
+            </div>
+            <div class="queries-table-scroll">
+                <table class="data-table queries-primary-table queries-extended-table">
+                    <colgroup>
+                        <col class="queries-col-expand">
+                        <col class="queries-col-namespace">
+                        <col class="queries-col-operation">
+                        <col class="queries-col-pattern">
+                        <col class="queries-col-num">
+                        <col class="queries-col-num">
+                        <col class="queries-col-num">
+                        <col class="queries-col-num">
+                        <col class="queries-col-index">
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th class="queries-col-expand no-sort" scope="col"></th>
+                            <th class="sortable" data-sort-key="namespace" scope="col" title="Database.collection">Namespace</th>
+                            <th class="sortable" data-sort-key="operation" scope="col">Operation</th>
+                            <th class="sortable" data-sort-key="pattern" scope="col">Pattern</th>
+                            <th class="sortable queries-col-em col-num" data-sort-key="sum_ms" scope="col">Total (ms)</th>
+                            <th class="sortable queries-col-em col-num" data-sort-key="pct" scope="col" title="Share of total workload time">%</th>
+                            <th class="sortable queries-col-em col-num" data-sort-key="mean_ms" scope="col">Mean (ms)</th>
+                            <th class="sortable col-num" data-sort-key="count" scope="col">Count</th>
+                            <th class="sortable" data-sort-key="index" scope="col">Index</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="queries-table-footer">
+                <span class="queries-footer-range">Showing ${pag.from}–${pag.to} of ${pag.total}</span>
+                <div class="queries-footer-nav">
+                    <button type="button" class="btn btn-secondary btn-sm" ${pag.page <= 1 ? 'disabled' : ''} onclick="queriesTablePrevPage()">Prev</button>
+                    <span>Page ${pag.page} / ${pag.pageCount}</span>
+                    <button type="button" class="btn btn-secondary btn-sm" ${pag.page >= pag.pageCount ? 'disabled' : ''} onclick="queriesTableNextPage()">Next</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const tbody = tableContainer.querySelector('tbody');
+    const fragment = document.createDocumentFragment();
+
+    pag.slice.forEach(({ query, globalIdx }) => {
+        const pct =
+            totalWorkloadMs > 0
+                ? ((Number(query.sum_ms) || 0) / totalWorkloadMs * 100).toFixed(1)
+                : '0.0';
+        const patternFullTitle = escapeHtml(query.pattern).replace(/"/g, '&quot;');
+        const isOpen = queriesExpandedGlobalIndices.has(globalIdx);
+        const shapeFull = String(query.sort_shape || query.aggregate_shape_summary || '');
+        const shapeTitleAttr = escapeHtml(shapeFull).replace(/"/g, '&quot;');
+        const fe = query.fetch_efficiency;
+        const feClass = fetchEfficiencyBadgeClass(fe);
+
+        const mainTr = document.createElement('tr');
+        mainTr.className = `queries-row-main${globalIdx % 2 === 0 ? ' queries-row-stripe' : ''}`;
+        mainTr.setAttribute('data-query-index', String(globalIdx));
+
+        const expandedAttr = isOpen ? 'true' : 'false';
+        const chevron = isOpen ? 'fa-chevron-down' : 'fa-chevron-right';
+
+        mainTr.innerHTML = `
+            <td class="queries-col-expand">
+                <button type="button" class="queries-expand-btn" aria-expanded="${expandedAttr}"
+                    aria-label="Show or hide query metrics for this row"
+                    data-global-index="${globalIdx}" onclick="toggleQueriesDetailRow(${globalIdx})">
+                    <i class="fas ${chevron}"></i>
+                </button>
+            </td>
+            <td>${escapeHtml(query.namespace)}</td>
+            <td>${escapeHtml(query.operation)}</td>
+            <td class="col-pattern">
+                <span class="pattern-text pattern-clickable"
+                    title="Full pattern (click for examples). ${patternFullTitle}"
+                    data-namespace="${String(query.namespace).replace(/"/g, '&quot;')}"
+                    data-operation="${String(query.operation).replace(/"/g, '&quot;')}"
+                    data-pattern="${encodeURIComponent(query.pattern)}"
+                    data-row-index="${globalIdx}"
+                    onclick="showQueryExamplesFromElement(this)">
+                    ${escapeHtml(truncateText(query.pattern, 56))}
+                </span>
+            </td>
+            <td class="col-num queries-col-em">${(Number(query.sum_ms) || 0).toFixed(1)}</td>
+            <td class="col-num queries-col-em">${pct}%</td>
+            <td class="col-num queries-col-em">${query.mean_ms.toFixed(1)}</td>
+            <td class="col-num">${query.count}</td>
+            <td class="col-index-wrap">${formatIndexes(query.indexes)}</td>
+        `;
+        fragment.appendChild(mainTr);
+
+        const detailTr = document.createElement('tr');
+        detailTr.className = `queries-row-detail${isOpen ? ' is-open' : ''}`;
+        detailTr.setAttribute('data-parent-index', String(globalIdx));
+        detailTr.innerHTML = `
+            <td colspan="9" class="queries-detail-cell">
+                <div class="queries-detail-grid">
+                    <div class="queries-detail-item">
+                        <span class="queries-detail-label">Sort / pipeline</span>
+                        <span class="mono-tiny queries-detail-mono queries-detail-shape-clamp" title="${shapeTitleAttr}">${queryShapeDetailContent(query)}</span>
+                    </div>
+                    <div class="queries-detail-item">${queryProjectionBadge(query)} <span class="queries-detail-label">Proj</span></div>
+                    <div class="queries-detail-item">${queryLimitSkipCell(query)} <span class="queries-detail-label">Limit/Skip</span></div>
+                    <div class="queries-detail-item">
+                        <span class="queries-detail-label">Avg docs / keys</span>
+                        <span class="mono-tiny">${formatQueryExaminedCell(query)}</span>
+                    </div>
+                    <div class="queries-detail-item">
+                        <span class="queries-detail-label">Scan eff.</span>
+                        <span class="mono-tiny">${formatScanEfficiencyCell(query.scan_efficiency)}</span>
+                    </div>
+                    <div class="queries-detail-item">
+                        <span class="queries-detail-label">Fetch Δ</span>
+                        <span class="eff-badge ${feClass}">${formatFetchEfficiencyCell(fe)}</span>
+                    </div>
+                    <div class="queries-detail-item col-num"><span class="queries-detail-label">Min (ms)</span> ${query.min_ms.toFixed(1)}</div>
+                    <div class="queries-detail-item col-num"><span class="queries-detail-label">Max (ms)</span> ${query.max_ms.toFixed(1)}</div>
+                    <div class="queries-detail-item col-num"><span class="queries-detail-label">P95 (ms)</span> ${query.percentile_95_ms.toFixed(1)}</div>
+                </div>
+            </td>
+        `;
+        fragment.appendChild(detailTr);
+    });
+
+    tbody.appendChild(fragment);
+    attachQueriesTableToolbarListeners(tableContainer);
+    updateQueriesSortHeaderClasses(tableContainer);
+}
+
+function escapeHtml(s) {
+    if (s == null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function formatQueryExaminedCell(query) {
+    const d = query.avg_docs_examined;
+    const k = query.avg_keys_examined;
+    if (d == null && k == null) return '—';
+    const ds = d != null ? Math.round(Number(d)) : '—';
+    const ks = k != null ? Math.round(Number(k)) : '—';
+    return `${ds} / ${ks}`;
+}
+
+function formatFetchEfficiencyCell(fe) {
+    if (fe == null || fe === undefined || Number.isNaN(Number(fe))) return '—';
+    return `${Number(fe).toFixed(1)}:1`;
+}
+
+function fetchEfficiencyBadgeClass(fe) {
+    if (fe == null || fe === undefined || Number.isNaN(Number(fe))) return 'eff-neutral';
+    if (Number(fe) > 50) return 'eff-bad';
+    if (Number(fe) > 10) return 'eff-warn';
+    return 'eff-ok';
+}
+
+/** COLLSCAN summary card severity from ratio (0–1): warn / bad thresholds. */
+function collscanSeverityClass(ratio, warnThreshold, badThreshold) {
+    if (ratio >= badThreshold) return 'collscan-card-bad';
+    if (ratio >= warnThreshold) return 'collscan-card-warn';
+    return '';
+}
+
+/** COLLSCAN time impact card severity from total milliseconds. */
+function collscanDurationSeverityClass(ms, warnMs, badMs) {
+    const n = Number(ms) || 0;
+    if (n >= badMs) return 'collscan-card-bad';
+    if (n >= warnMs) return 'collscan-card-warn';
+    return '';
+}
+
+/** Display duration for COLLSCAN namespace table cells. */
+function formatCollscanDuration(ms) {
+    const n = Number(ms) || 0;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}s`;
+    return `${Math.round(n)}ms`;
+}
+
+function formatScanEfficiencyCell(se) {
+    if (se == null || se === undefined || Number.isNaN(Number(se))) return '—';
+    return `${(Number(se) * 100).toFixed(0)}%`;
+}
+
+function queryShapeSortCell(query) {
+    if (query.operation === 'aggregate' && query.aggregate_shape_summary) {
+        return escapeHtml(truncateText(query.aggregate_shape_summary, 48));
+    }
+    const s = query.sort_shape || '';
+    return s ? escapeHtml(truncateText(s, 42)) : '—';
+}
+
+/** Full sort / pipeline text for expandable detail row (escaped HTML). */
+function queryShapeDetailContent(query) {
+    let raw = '';
+    if (query.operation === 'aggregate' && query.aggregate_shape_summary) {
+        raw = query.aggregate_shape_summary;
+    } else {
+        raw = query.sort_shape || '';
+    }
+    if (!String(raw).trim()) return '—';
+    return escapeHtml(raw);
+}
+
+function queryProjectionBadge(query) {
+    const p = query.projection_shape || '';
+    if (!p || p === '{}' || p === 'null') return '—';
+    return '<span class="shape-badge" title="Projection present">proj</span>';
+}
+
+function queryLimitSkipCell(query) {
+    const parts = [];
+    if (query.has_limit) parts.push('L');
+    if (query.has_skip) parts.push('S');
+    return parts.length ? `<span class="shape-badge">${parts.join('/')}</span>` : '—';
+}
+
+function generateESRBreakdownHTML(breakdown, suboptimalOrder) {
+    if (!breakdown || !breakdown.length) return '';
+    const rows = breakdown.map((b) => {
+        const cls = `esr-badge esr-${String(b.classification || '').replace(/[^a-z]/gi, '')}`;
+        const pos = b.position_in_index != null ? String(b.position_in_index) : '—';
+        return `<tr><td>${escapeHtml(b.field)}</td><td><span class="${cls}">${escapeHtml(b.classification)}</span></td>` +
+            `<td>${escapeHtml(b.evidence || '')}</td><td>${pos}</td></tr>`;
+    }).join('');
+    let warn = '';
+    if (suboptimalOrder && suboptimalOrder.length) {
+        warn = `<div class="esr-suboptimal"><strong>Order / planner notes</strong><ul>` +
+            suboptimalOrder.map((l) => `<li>${escapeHtml(l)}</li>`).join('') + '</ul></div>';
+    }
+    return `
+        <div class="esr-rationale-block">
+            <h5><i class="fas fa-layer-group"></i> Index design rationale (ESR)</h5>
+            <table class="esr-rationale-table data-table">
+                <thead><tr><th>Field</th><th>Class</th><th>Evidence</th><th>Idx#</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+            ${warn}
+        </div>`;
+}
+
 function displayQueriesData(data) {
     const perf = startPerf('displayQueriesData');
-    // Store queries data globally
     currentQueriesData = data;
 
     const statsGrid = document.getElementById('queryStats');
     const tableContainer = document.getElementById('queriesTable');
 
-    // Calculate stats
+    if (!data.queries || !data.queries.length) {
+        statsGrid.innerHTML = '<p class="muted">No query data.</p>';
+        tableContainer.innerHTML = '';
+        renderCollscanTrendsSection(data);
+        endPerf(perf, { rows: 0 });
+        return;
+    }
+
+    resetQueriesTableState();
+    data.queries.sort((a, b) => (Number(b.sum_ms) || 0) - (Number(a.sum_ms) || 0));
+
     const totalQueries = data.queries.reduce((sum, q) => sum + q.count, 0);
     const avgExecutionTime = data.queries.reduce((sum, q) => sum + q.mean_ms, 0) / data.queries.length;
     const slowestQuery = Math.max(...data.queries.map(q => q.max_ms));
     const collscans = data.queries.filter(q => q.indexes && q.indexes.includes('COLLSCAN')).length;
+    const totalWorkloadMs = data.queries.reduce((sum, q) => sum + (Number(q.sum_ms) || 0), 0);
 
-    // Display stats
+    let worstFetchQ = null;
+    for (const q of data.queries) {
+        const fe = q.fetch_efficiency;
+        if (fe != null && !Number.isNaN(Number(fe))) {
+            if (!worstFetchQ || Number(fe) > Number(worstFetchQ.fetch_efficiency)) worstFetchQ = q;
+        }
+    }
+    const worstFetchLine = worstFetchQ
+        ? `Highest docs/returned: ${Number(worstFetchQ.fetch_efficiency).toFixed(1)}:1`
+        : '—';
+
     statsGrid.innerHTML = `
         <div class="stat-card data-quality-card">
             <h3>${data.total_patterns}</h3>
@@ -1677,9 +2206,17 @@ function displayQueriesData(data) {
             </div>
         </div>
         <div class="stat-card data-quality-card">
+            <h3>${totalWorkloadMs.toLocaleString(undefined, { maximumFractionDigits: 0 })}ms</h3>
+            <p>Total Workload <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>Sum of (count × mean) time; table sorted by this column</small>
+            <div class="info-content" style="display: none;">
+                <p>Aggregate time across patterns (sum of per-pattern total duration). Use % column to see share.</p>
+            </div>
+        </div>
+        <div class="stat-card data-quality-card">
             <h3>${avgExecutionTime.toFixed(1)}ms</h3>
-            <p>Avg Execution Time <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
-            <small>${avgExecutionTime > 0 ? 'Measured' : 'None'}</small>
+            <p>Avg of Means <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${avgExecutionTime > 0 ? 'Across patterns' : 'None'}</small>
             <div class="info-content" style="display: none;">
                 <p>Average of mean execution times across all query patterns</p>
             </div>
@@ -1695,60 +2232,26 @@ function displayQueriesData(data) {
         <div class="stat-card data-quality-card">
             <h3>${collscans}</h3>
             <p>Collection Scans <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
-            <small>${collscans > 0 ? 'Inefficient' : 'None'}</small>
+            <small>${collscans > 0 ? 'Patterns w/ COLLSCAN' : 'None'}</small>
             <div class="info-content" style="display: none;">
                 <p>Count of query patterns that perform collection scans (COLLSCAN) without using an index</p>
             </div>
         </div>
+        <div class="stat-card data-quality-card">
+            <h3 style="font-size:1rem;line-height:1.3;">${worstFetchLine}</h3>
+            <p>Worst fetch ratio <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>From slow-query executionStats when logged</small>
+            <div class="info-content" style="display: none;">
+                <p>Highest average docsExamined:nreturned among patterns with stats. High values suggest poor index selectivity.</p>
+            </div>
+        </div>
     `;
 
-    // Create queries chart
     createQueriesChart(data.queries);
 
-    // Create queries table
-    const table = document.createElement('table');
-    table.className = 'data-table';
-    table.innerHTML = `
-        <thead><tr>
-            <th>Namespace</th><th>Operation</th><th>Pattern</th><th>Count</th>
-            <th>Min (ms)</th><th>Max (ms)</th><th>Mean (ms)</th><th>95% (ms)</th><th>Index</th>
-        </tr></thead><tbody></tbody>
-    `;
-    const tbody = table.querySelector('tbody');
-    const fragment = document.createDocumentFragment();
-    data.queries.forEach((query, index) => {
-        const tr = document.createElement('tr');
-        tr.setAttribute('data-query-index', index);
-        tr.innerHTML = `
-            <td>${query.namespace}</td>
-            <td>${query.operation}</td>
-            <td>
-                <span class="pattern-text pattern-clickable"
-                      title="Click to view query examples"
-                      data-namespace="${query.namespace}"
-                      data-operation="${query.operation}"
-                      data-pattern="${encodeURIComponent(query.pattern)}"
-                      data-row-index="${index}"
-                      onclick="showQueryExamplesFromElement(this)">
-                    ${truncateText(query.pattern, 50)}
-                </span>
-            </td>
-            <td>${query.count}</td>
-            <td>${query.min_ms.toFixed(1)}</td>
-            <td>${query.max_ms.toFixed(1)}</td>
-            <td>${query.mean_ms.toFixed(1)}</td>
-            <td>${query.percentile_95_ms.toFixed(1)}</td>
-            <td>${formatIndexes(query.indexes)}</td>
-        `;
-        fragment.appendChild(tr);
-    });
-    tbody.appendChild(fragment);
+    renderQueriesTable();
 
-    tableContainer.innerHTML = '';
-    tableContainer.appendChild(table);
-
-    // Make table sortable
-    makeSortable(table, 'queries');
+    renderCollscanTrendsSection(data);
     endPerf(perf, { rows: data.queries.length });
 }
 
@@ -1937,6 +2440,7 @@ function displayReplicaSetData(data) {
     }
 
     container.innerHTML = html;
+    renderReplicaHealthSection(data);
 }
 
 async function analyzeClients() {
@@ -1983,6 +2487,7 @@ function displayClientsData(data) {
     `).join('');
 
     container.innerHTML = html;
+    renderAuthFailuresSection(data);
 }
 
 // Trim functionality
@@ -2087,6 +2592,9 @@ function showToast(type, message) {
 
 // Table sorting functionality
 function sortTable(table, columnIndex, tableName) {
+    if (table.classList && table.classList.contains('queries-primary-table')) {
+        return;
+    }
     const tbody = table.querySelector('tbody');
     const rows = Array.from(tbody.querySelectorAll('tr'));
     const headers = table.querySelectorAll('th');
@@ -2279,10 +2787,10 @@ function displayQueryExamples(data, rowIndex) {
         existingExamples.remove();
     }
 
-    // Find the table and insert after the clicked row
-    const table = document.querySelector('#queriesTable table');
-    const rows = table.querySelectorAll('tbody tr');
-    const targetRow = rows[rowIndex];
+    const table = document.querySelector('#queriesTable .queries-primary-table');
+    const targetRow = table
+        ? table.querySelector(`tbody tr.queries-row-main[data-query-index="${rowIndex}"]`)
+        : null;
 
     if (!targetRow) return;
 
@@ -2359,11 +2867,14 @@ function displayQueryExamples(data, rowIndex) {
 
     examplesContainer.innerHTML = examplesHtml;
 
-    // Insert after the table
     const tableContainer = document.getElementById('queriesTable');
-    tableContainer.appendChild(examplesContainer);
+    const wrap = tableContainer.querySelector('.queries-table-wrap');
+    if (wrap) {
+        wrap.insertAdjacentElement('afterend', examplesContainer);
+    } else {
+        tableContainer.appendChild(examplesContainer);
+    }
 
-    // Scroll to examples
     examplesContainer.scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -2637,6 +3148,7 @@ function displayTimeSeriesData(data) {
     // Display aggregated tables
     displayAggregatedQueriesTable(data.aggregated_queries);
     displayAggregatedErrorsTable(data.aggregated_errors);
+    renderErrorsDetailSection(data);
 
     // Show info if data was sampled
     if (data.sampled) {
@@ -3009,6 +3521,446 @@ function displayAggregatedErrorsTable(aggregatedErrors) {
     endPerf(perf, { rows: aggregatedErrors.length });
 }
 
+
+function renderErrorsDetailSection(data) {
+    const section = document.getElementById('errorsDetailSection');
+    const componentCards = document.getElementById('errorsByComponentCards');
+    const tableContainer = document.getElementById('topErrorsTable');
+
+    if (!section || !data.errors_timeline || data.errors_timeline.length === 0) {
+        if (section) section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = 'block';
+
+    const grouped = { F: { x: [], y: [] }, E: { x: [], y: [] }, W: { x: [], y: [] } };
+    data.errors_timeline.forEach((item) => {
+        if (!grouped[item.severity]) return;
+        grouped[item.severity].x.push(item.bucket_ts);
+        grouped[item.severity].y.push(item.count);
+    });
+
+    const traces = [
+        { key: 'F', name: 'Fatal', color: '#8e44ad' },
+        { key: 'E', name: 'Errors', color: '#e74c3c' },
+        { key: 'W', name: 'Warnings', color: '#f39c12' },
+    ].map((meta) => ({
+        x: grouped[meta.key].x,
+        y: grouped[meta.key].y,
+        name: meta.name,
+        type: 'bar',
+        marker: { color: meta.color },
+    }));
+
+    const shapes = (data.error_spikes || []).map((spike) => ({
+        type: 'line',
+        x0: spike.bucket_ts,
+        x1: spike.bucket_ts,
+        y0: 0,
+        y1: 1,
+        yref: 'paper',
+        line: { color: '#c0392b', width: 1, dash: 'dot' },
+    }));
+
+    Plotly.newPlot('errorsDetailTimelinePlot', traces, {
+        barmode: 'stack',
+        xaxis: { title: 'Timestamp', type: 'date' },
+        yaxis: { title: 'Events' },
+        margin: { t: 20, r: 20, b: 60, l: 60 },
+        shapes,
+    }, { responsive: true, displaylogo: false });
+
+    componentCards.innerHTML = '';
+    const cardsFrag = document.createDocumentFragment();
+    Object.entries(data.errors_by_component || {}).forEach(([component, count]) => {
+        const card = document.createElement('div');
+        card.className = 'stat-card';
+        card.innerHTML = `<h3>${count}</h3><p>${component}</p>`;
+        cardsFrag.appendChild(card);
+    });
+    componentCards.appendChild(cardsFrag);
+
+    const table = document.createElement('table');
+    table.className = 'timeseries-table';
+    table.innerHTML = '<thead><tr><th>Message</th><th>Component</th><th>Severity</th><th>Count</th><th>First Seen</th><th>Last Seen</th></tr></thead><tbody></tbody>';
+    const body = table.querySelector('tbody');
+    const fragment = document.createDocumentFragment();
+    (data.top_errors || []).forEach((row) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${row.message}</td><td>${row.component}</td><td>${row.severity}</td><td>${row.count}</td><td>${row.first_seen}</td><td>${row.last_seen}</td>`;
+        fragment.appendChild(tr);
+    });
+    body.appendChild(fragment);
+    tableContainer.innerHTML = '';
+    tableContainer.appendChild(table);
+}
+
+function renderCollscanTrendsSection(data) {
+    const section = document.getElementById('collscanTrendsSection');
+    const impactCards = document.getElementById('collscanImpactCards');
+    const tableContainer = document.getElementById('collscanNamespacesTable');
+    if (!section || !impactCards || !tableContainer) return;
+
+    const totalColl = Math.max(0, Number(data?.total_collscans) || 0);
+    const totalIx = Math.max(0, Number(data?.total_ixscans) || 0);
+    const chartSection = section.querySelector('.chart-section');
+
+    const removeStandalonePositiveBanner = () => {
+        const b = document.getElementById('collscanPositiveBanner');
+        if (b) b.remove();
+    };
+
+    if (!data || (totalColl === 0 && totalIx === 0)) {
+        section.style.display = 'none';
+        removeStandalonePositiveBanner();
+        return;
+    }
+
+    if (totalColl === 0 && totalIx > 0) {
+        section.style.display = 'block';
+        removeStandalonePositiveBanner();
+        impactCards.style.display = 'none';
+        tableContainer.style.display = 'none';
+        if (chartSection) {
+            chartSection.style.display = '';
+            chartSection.innerHTML = `
+                <h3><i class="fas fa-chart-line"></i> COLLSCAN Trend</h3>
+                <p class="collscan-intro">A <strong>collection scan (COLLSCAN)</strong> means MongoDB read every document instead of using an index. Frequent COLLSCANs degrade read performance and increase I/O.</p>
+                <details class="collscan-learn-more">
+                    <summary>How to read this section</summary>
+                    <p><strong>Graph</strong>: when COLLSCANs exist, orange = events per minute; red = COLLSCAN / (COLLSCAN + IXSCAN) per minute. Dashed line = 25% warning threshold.</p>
+                    <p><strong>This log</strong>: no COLLSCAN lines were found in the parser sample; index scans (IXSCAN) were recorded instead.</p>
+                    <p>All data comes from the uploaded log file, not live monitoring.</p>
+                </details>
+                <div class="collscan-positive-banner collscan-positive-banner--inline" role="status">
+                    <i class="fas fa-check-circle" aria-hidden="true"></i>
+                    <span>No collection scans detected. ${totalIx.toLocaleString()} index scan (IXSCAN) events in this log sample.</span>
+                </div>
+                <div id="collscanTrendPlot" class="plotly-chart" style="display:none" aria-hidden="true"></div>
+            `;
+        }
+        return;
+    }
+
+    section.style.display = 'block';
+    removeStandalonePositiveBanner();
+    if (chartSection) chartSection.style.display = '';
+    impactCards.style.display = '';
+    tableContainer.style.display = '';
+
+    const denominator = totalColl + totalIx;
+    const collscanRatio = denominator > 0 ? totalColl / denominator : 0;
+    const ratioSev = collscanSeverityClass(collscanRatio, 0.05, 0.25);
+    const durationMs = Number(data.total_collscan_duration_ms) || 0;
+    const durationSev = collscanDurationSeverityClass(durationMs, 5000, 60000);
+
+    if (chartSection) {
+        chartSection.innerHTML = `
+            <h3><i class="fas fa-chart-line"></i> COLLSCAN Trend</h3>
+            <p class="collscan-intro">A <strong>collection scan (COLLSCAN)</strong> means MongoDB read every document instead of using an index. Frequent COLLSCANs degrade read performance and increase I/O.</p>
+            <details class="collscan-learn-more">
+                <summary>How to read this section</summary>
+                <p><strong>Graph</strong>: orange = COLLSCAN events per minute; red = ratio of COLLSCANs to total scans (COLLSCAN + IXSCAN) per minute bucket. Dashed line = 25% warning threshold.</p>
+                <p><strong>Time Impact</strong>: sum of durationMillis on COLLSCAN events in the log (not a live profiler metric).</p>
+                <p><strong>Table</strong>: namespaces ranked by COLLSCAN count. Use the Queries table &quot;Get Index Recommendation&quot; on a pattern for AI-assisted index suggestions.</p>
+                <p>All data comes from the uploaded log file, not live monitoring.</p>
+            </details>
+            <div id="collscanTrendPlot" class="plotly-chart"></div>
+        `;
+    }
+
+    const trendX = (data.collscan_timeline || []).map((point) => point.bucket_ts);
+    const trendY = (data.collscan_timeline || []).map((point) => point.count);
+    const ratioY = (data.scan_ratio_timeline || []).map((point) => point.ratio);
+
+    Plotly.newPlot('collscanTrendPlot', [
+        {
+            x: trendX,
+            y: trendY,
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: 'COLLSCAN Count',
+            line: { color: '#e67e22' },
+            hovertemplate: '%{x|%Y-%m-%d %H:%M}<br><b>%{y}</b> COLLSCAN events<extra></extra>',
+        },
+        {
+            x: trendX,
+            y: ratioY,
+            type: 'scatter',
+            mode: 'lines',
+            name: 'COLLSCAN Ratio',
+            yaxis: 'y2',
+            line: { color: '#c0392b' },
+            hovertemplate: '%{x|%Y-%m-%d %H:%M}<br>COLLSCAN ratio: <b>%{y:.0%}</b><extra></extra>',
+        },
+    ], {
+        xaxis: { title: 'Time (1-min buckets)', type: 'date' },
+        yaxis: { title: 'Events per minute' },
+        yaxis2: { title: 'COLLSCAN / total scans', overlaying: 'y', side: 'right', range: [0, 1] },
+        margin: { t: 50, r: 70, b: 60, l: 60 },
+        legend: {
+            x: 0.01,
+            y: 0.99,
+            xanchor: 'left',
+            yanchor: 'top',
+            bgcolor: 'rgba(255,255,255,0.85)',
+            bordercolor: '#ccc',
+            borderwidth: 1,
+        },
+        shapes: [{
+            type: 'line',
+            xref: 'paper',
+            x0: 0,
+            x1: 1,
+            yref: 'y2',
+            y0: 0.25,
+            y1: 0.25,
+            line: { color: '#c0392b', width: 1.5, dash: 'dash' },
+        }],
+        annotations: [{
+            xref: 'paper',
+            x: 1,
+            xanchor: 'right',
+            yref: 'y2',
+            y: 0.25,
+            yanchor: 'bottom',
+            text: '25%',
+            showarrow: false,
+            font: { size: 10, color: '#c0392b' },
+        }],
+    }, { responsive: true, displaylogo: false });
+
+    impactCards.innerHTML = `
+        <div class="stat-card data-quality-card ${ratioSev}">
+            <h3>${totalColl.toLocaleString()}</h3>
+            <p>Total COLLSCANs <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${(collscanRatio * 100).toFixed(1)}% of logged scans</small>
+            <div class="info-content" style="display: none;">
+                <p>Number of COLLSCAN events in the log. A COLLSCAN reads every document instead of using an index.</p>
+            </div>
+        </div>
+        <div class="stat-card data-quality-card">
+            <h3>${totalIx.toLocaleString()}</h3>
+            <p>Total IXSCANs <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>Index scan events in log</small>
+            <div class="info-content" style="display: none;">
+                <p>Index scan events (planSummary starting with IXSCAN). Higher relative to COLLSCANs is better.</p>
+            </div>
+        </div>
+        <div class="stat-card data-quality-card ${durationSev}">
+            <h3>${(durationMs / 1000).toFixed(1)}s</h3>
+            <p>COLLSCAN Time Impact <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>Sum of durationMillis on COLLSCAN lines</small>
+            <div class="info-content" style="display: none;">
+                <p>Cumulative wall time (durationMillis) spent on COLLSCAN operations in the uploaded log.</p>
+            </div>
+        </div>
+    `;
+
+    const table = document.createElement('table');
+    table.className = 'data-table collscan-ns-table';
+    table.innerHTML = `
+        <colgroup>
+            <col class="collscan-col-ns">
+            <col class="collscan-col-num">
+            <col class="collscan-col-num">
+            <col class="collscan-col-num">
+            <col class="collscan-col-num">
+            <col class="collscan-col-pattern">
+        </colgroup>
+        <thead><tr>
+            <th scope="col">Namespace</th>
+            <th scope="col" class="col-num">Count</th>
+            <th scope="col" class="col-num">% of Total</th>
+            <th scope="col" class="col-num">Total Duration</th>
+            <th scope="col" class="col-num">Avg Duration (ms)</th>
+            <th scope="col">Top Pattern</th>
+        </tr></thead>
+        <tbody></tbody>`;
+    const body = table.querySelector('tbody');
+    const frag = document.createDocumentFragment();
+    const rows = data.collscan_top_namespaces || [];
+    rows.forEach((row, idx) => {
+        const pctNum = totalColl > 0 ? (Number(row.count) / totalColl) * 100 : 0;
+        const pct = pctNum.toFixed(1);
+        const avgDur = Number(row.count) > 0
+            ? (Number(row.total_duration_ms) / Number(row.count)).toFixed(1)
+            : '0.0';
+        let rowSev = '';
+        if (pctNum > 20) rowSev = 'collscan-row-bad';
+        else if (pctNum > 5) rowSev = 'collscan-row-warn';
+        const stripe = idx % 2 === 0 ? ' collscan-row-stripe' : '';
+        const pattern = row.top_pattern || '';
+        const patternTitle = escapeHtml(pattern).replace(/"/g, '&quot;');
+        const tr = document.createElement('tr');
+        tr.className = `${rowSev}${stripe}`.trim();
+        tr.innerHTML = `
+            <td>${escapeHtml(row.namespace)}</td>
+            <td class="col-num">${Number(row.count).toLocaleString()}</td>
+            <td class="col-num">${pct}%</td>
+            <td class="col-num">${formatCollscanDuration(row.total_duration_ms)}</td>
+            <td class="col-num">${avgDur}</td>
+            <td title="${patternTitle}">${escapeHtml(truncateText(pattern, 60))}</td>`;
+        frag.appendChild(tr);
+    });
+    body.appendChild(frag);
+
+    const scrollWrap = document.createElement('div');
+    scrollWrap.className = 'collscan-table-scroll';
+    scrollWrap.appendChild(table);
+
+    tableContainer.innerHTML = '';
+    tableContainer.appendChild(scrollWrap);
+    const guidanceP = document.createElement('p');
+    guidanceP.className = 'collscan-guidance';
+    guidanceP.textContent =
+        'Create indexes for the top patterns above. Use "Get Index Recommendation" in the Queries table for AI-assisted suggestions.';
+    tableContainer.appendChild(guidanceP);
+
+    makeSortable(table, 'collscan-ns');
+}
+
+function renderReplicaHealthSection(data) {
+    const section = document.getElementById('replHealthSection');
+    if (!section) return;
+    const hasEvents = data && data.repl_events && data.repl_events.length > 0;
+    section.style.display = hasEvents ? 'block' : 'none';
+    if (!hasEvents) return;
+
+    const stats = document.getElementById('replHealthStats');
+    const score = data.stability_score || 0;
+    const scoreColor = score >= 80 ? '#27ae60' : score >= 50 ? '#f39c12' : '#e74c3c';
+    stats.innerHTML = `
+        <div class="stat-card"><h3 style="color:${scoreColor}">${score}</h3><p>Stability Score</p></div>
+        <div class="stat-card"><h3>${(data.elections || []).length}</h3><p>Elections</p></div>
+        <div class="stat-card"><h3>${(data.rollbacks || []).length}</h3><p>Rollbacks</p></div>
+        <div class="stat-card"><h3>${(data.heartbeat_failures || []).length}</h3><p>Heartbeat Failures</p></div>
+    `;
+
+    Plotly.newPlot('replEventsTimelinePlot', [{
+        x: (data.repl_events || []).map((event) => event.timestamp),
+        y: (data.repl_events || []).map((event) => event.event_type),
+        mode: 'markers',
+        type: 'scatter',
+        marker: { size: 10, color: '#9b59b6' },
+        text: (data.repl_events || []).map((event) => event.message),
+        hovertemplate: '%{x}<br>%{y}<br>%{text}<extra></extra>',
+    }], {
+        xaxis: { title: 'Timestamp', type: 'date' },
+        yaxis: { title: 'Event Type', type: 'category' },
+        margin: { t: 20, r: 20, b: 60, l: 80 },
+    }, { responsive: true, displaylogo: false });
+
+    const electionsTable = document.getElementById('replElectionsTable');
+    const table = document.createElement('table');
+    table.className = 'data-table';
+    table.innerHTML = '<thead><tr><th>Timestamp</th><th>Reason</th><th>Duration (ms)</th><th>Outcome</th></tr></thead><tbody></tbody>';
+    const tbody = table.querySelector('tbody');
+    const frag = document.createDocumentFragment();
+    (data.elections || []).forEach((item) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${item.timestamp}</td><td>${item.reason || 'N/A'}</td><td>${item.duration_ms ?? 'N/A'}</td><td>${item.outcome || 'N/A'}</td>`;
+        frag.appendChild(tr);
+    });
+    tbody.appendChild(frag);
+    electionsTable.innerHTML = '';
+    electionsTable.appendChild(table);
+
+    const rollbackAlerts = document.getElementById('rollbackAlerts');
+    if (data.has_rollbacks && (data.rollbacks || []).length > 0) {
+        rollbackAlerts.innerHTML = `<div class="data-quality-warning"><strong>Rollback Alert:</strong> ${data.rollbacks.length} rollback event(s) detected.</div>`;
+    } else {
+        rollbackAlerts.innerHTML = '';
+    }
+}
+
+function renderLockContentionSection(data) {
+    const section = document.getElementById('contentionSection');
+    if (!section) return;
+    const hasContention = Boolean(data && data.has_contention);
+    section.style.display = hasContention ? 'block' : 'none';
+    if (!hasContention) return;
+
+    const grouped = {};
+    (data.contention_timeline || []).forEach((point) => {
+        if (!grouped[point.event_type]) {
+            grouped[point.event_type] = { x: [], y: [] };
+        }
+        grouped[point.event_type].x.push(point.bucket_ts);
+        grouped[point.event_type].y.push(point.count);
+    });
+
+    const traces = Object.entries(grouped).map(([eventType, series]) => ({
+        x: series.x,
+        y: series.y,
+        type: 'bar',
+        name: eventType,
+    }));
+
+    Plotly.newPlot('contentionTimelinePlot', traces, {
+        barmode: 'group',
+        xaxis: { title: 'Timestamp', type: 'date' },
+        yaxis: { title: 'Events' },
+        margin: { t: 20, r: 20, b: 60, l: 60 },
+    }, { responsive: true, displaylogo: false });
+
+    Plotly.newPlot('checkpointDurationsPlot', [{
+        x: (data.checkpoint_durations || []).map((item) => item.timestamp),
+        y: (data.checkpoint_durations || []).map((item) => item.duration_ms),
+        type: 'scatter',
+        mode: 'lines+markers',
+        name: 'Checkpoint Duration (ms)',
+        line: { color: '#34495e' },
+    }], {
+        xaxis: { title: 'Timestamp', type: 'date' },
+        yaxis: { title: 'Duration (ms)' },
+        margin: { t: 20, r: 20, b: 60, l: 60 },
+    }, { responsive: true, displaylogo: false });
+}
+
+function renderAuthFailuresSection(data) {
+    const section = document.getElementById('authFailuresSection');
+    if (!section) return;
+    const hasAuthFailures = Boolean(data && data.has_auth_failures);
+    section.style.display = hasAuthFailures ? 'block' : 'none';
+    if (!hasAuthFailures) return;
+
+    Plotly.newPlot('authFailuresTimelinePlot', [{
+        x: (data.auth_timeline || []).map((item) => item.bucket_ts),
+        y: (data.auth_timeline || []).map((item) => item.count),
+        type: 'bar',
+        marker: { color: '#e74c3c' },
+        name: 'Auth Failures',
+    }], {
+        xaxis: { title: 'Timestamp', type: 'date' },
+        yaxis: { title: 'Failures' },
+        margin: { t: 20, r: 20, b: 60, l: 60 },
+    }, { responsive: true, displaylogo: false });
+
+    const breakdown = document.getElementById('authBreakdownCards');
+    breakdown.innerHTML = `
+        <div class="stat-card"><h3>${data.auth_total_failures || 0}</h3><p>Total Auth Failures</p></div>
+        <div class="stat-card"><h3>${(data.auth_by_type && data.auth_by_type.authn) || 0}</h3><p>AuthN Failures</p></div>
+        <div class="stat-card"><h3>${(data.auth_by_type && data.auth_by_type.authz) || 0}</h3><p>AuthZ Failures</p></div>
+    `;
+
+    const tableContainer = document.getElementById('authFailuresTable');
+    const table = document.createElement('table');
+    table.className = 'data-table';
+    table.innerHTML = '<thead><tr><th>User</th><th>IP</th><th>Reason</th><th>Count</th><th>First Seen</th><th>Last Seen</th></tr></thead><tbody></tbody>';
+    const body = table.querySelector('tbody');
+    const frag = document.createDocumentFragment();
+    (data.auth_top_failures || []).forEach((item) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${item.user || 'N/A'}</td><td>${item.ip || 'N/A'}</td><td>${item.reason}</td><td>${item.count}</td><td>${item.first_seen}</td><td>${item.last_seen}</td>`;
+        frag.appendChild(tr);
+    });
+    body.appendChild(frag);
+    tableContainer.innerHTML = '';
+    tableContainer.appendChild(table);
+}
+
 function showLLMInstallationModal(statusData) {
     const modal = document.createElement('div');
     modal.className = 'recommendations-modal';
@@ -3124,7 +4076,11 @@ async function getIndexRecommendationForQuery(queryIndex) {
                 min: query.min_ms,
                 max: query.max_ms,
                 percentile_95: query.percentile_95_ms,
-                indexes: query.indexes || []
+                indexes: query.indexes || [],
+                pattern: query.pattern,
+                avg_docs_examined: query.avg_docs_examined,
+                avg_n_returned: query.avg_n_returned,
+                avg_keys_examined: query.avg_keys_examined,
             }
         };
 
@@ -3288,9 +4244,24 @@ function displaySingleRecommendation(rec, query) {
     content.onclick = (e) => e.stopPropagation();
 
     const cmdId = 'cmd-single-' + Math.random().toString(36).substr(2, 9);
+    const explainId = 'explain-cmd-' + Math.random().toString(36).substr(2, 9);
 
     // Generate coverage analysis HTML
     const coverageHTML = generateCoverageAnalysisHTML(coverage_analysis, rec.current_index_structure);
+    const esrHTML = generateESRBreakdownHTML(rec.esr_breakdown, coverage_analysis.suboptimal_order);
+    const explainCmd = recommendation.explain_command || '';
+    const explainBlock = explainCmd
+        ? `<div class="recommendation-explain">
+                <h5><i class="fas fa-microscope"></i> Verify with explain</h5>
+                <p class="explain-hint">Replace placeholder values with representative data from your collection, then run in mongosh.</p>
+                <div class="recommendation-command">
+                    <code id="${explainId}">${escapeHtml(explainCmd)}</code>
+                    <button class="copy-btn" type="button" onclick="copyIndexCommand('${explainId}')">
+                        <i class="fas fa-copy"></i> Copy
+                    </button>
+                </div>
+           </div>`
+        : '';
 
     // Generate migration strategy HTML
     const migrationHTML = generateMigrationStrategyHTML(migration_strategy);
@@ -3310,26 +4281,28 @@ function displaySingleRecommendation(rec, query) {
             <span class="recommendation-priority ${priority}">${priority} Priority</span>
             
             <div class="recommendation-query-info">
-                <h4>${rec.namespace} - ${rec.operation}</h4>
+                <h4>${escapeHtml(rec.namespace)} - ${escapeHtml(rec.operation)}</h4>
                 <div class="recommendation-stats">
                     <span><i class="fas fa-redo"></i> ${stats.count || 0}× executed</span>
                     <span><i class="fas fa-clock"></i> ${stats.mean_ms || 0}ms avg</span>
                     <span><i class="fas fa-chart-line"></i> ${stats.p95_ms || 0}ms p95</span>
                 </div>
-                <div class="recommendation-pattern">${rec.pattern}</div>
+                <div class="recommendation-pattern">${escapeHtml(rec.pattern)}</div>
             </div>
             
             ${coverageHTML}
+            ${esrHTML}
             
             <div class="recommendation-index">
                 <h5><i class="fas fa-database"></i> Recommended Index</h5>
                 <div class="recommendation-command">
-                    <code id="${cmdId}">${recommendation.command || ''}</code>
+                    <code id="${cmdId}">${escapeHtml(recommendation.command || '')}</code>
                     <button class="copy-btn" onclick="copyIndexCommand('${cmdId}')">
                         <i class="fas fa-copy"></i> Copy
                     </button>
                 </div>
             </div>
+            ${explainBlock}
             
             ${migrationHTML}
             
