@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 # Core domain models (used by parser / stats / cache layers)
 # ---------------------------------------------------------------------------
 
+
 class SamplingMetadata(BaseModel):
     total_lines: int
     is_sampled: bool
@@ -117,6 +118,7 @@ class ClientInfo(BaseModel):
 # API request models
 # ---------------------------------------------------------------------------
 
+
 class TrimRequest(BaseModel):
     from_date: Optional[str] = None
     until_date: Optional[str] = None
@@ -131,6 +133,7 @@ class QueryExamplesRequest(BaseModel):
 class LogFilterRequest(BaseModel):
     text_search: Optional[str] = None
     case_sensitive: bool = False
+    use_regex: bool = False
     event_types: list[str] = Field(default_factory=list)
     components: list[str] = Field(default_factory=list)
     severities: list[str] = Field(default_factory=list)
@@ -140,11 +143,9 @@ class LogFilterRequest(BaseModel):
     context: Optional[str] = None
     date_from: Optional[str] = None
     date_to: Optional[str] = None
+    min_duration_ms: Optional[int] = None
+    slow_query_threshold_ms: Optional[int] = None
     limit: int = 10000
-
-
-class FtdcStartRequest(BaseModel):
-    path: str
 
 
 class SingleQueryRequest(BaseModel):
@@ -158,6 +159,7 @@ class SingleQueryRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # API response models
 # ---------------------------------------------------------------------------
+
 
 class AnalysisResult(BaseModel):
     status: str
@@ -188,11 +190,19 @@ class FileListResponse(BaseModel):
     files: list[FileInfo]
 
 
+class MatchSummary(BaseModel):
+    by_severity: dict[str, int] = Field(default_factory=dict)
+    time_span_start: Optional[str] = None
+    time_span_end: Optional[str] = None
+
+
 class ExtractResponse(BaseModel):
     status: str = "success"
     total_scanned: int
     total_matched: int
     lines: list[str]
+    match_line_numbers: list[int] = Field(default_factory=list)
+    match_summary: Optional[MatchSummary] = None
     truncated: bool = False
 
 
@@ -209,6 +219,8 @@ class FilterOptionsData(BaseModel):
     severities: list[str] = Field(default_factory=list)
     operations: list[str] = Field(default_factory=list)
     namespaces: list[str] = Field(default_factory=list)
+    log_ts_min: Optional[str] = None
+    log_ts_max: Optional[str] = None
 
 
 class FilterOptionsResponse(BaseModel):
@@ -216,30 +228,21 @@ class FilterOptionsResponse(BaseModel):
     data: FilterOptionsData
 
 
-class FsBrowseEntry(BaseModel):
-    name: str
-    path: str
+class LogContextRequest(BaseModel):
+    line_no: int = Field(..., ge=1)
+    before: int = Field(default=5, ge=0, le=200)
+    after: int = Field(default=5, ge=0, le=200)
 
 
-class FsBrowseData(BaseModel):
-    current_path: str
-    directories: list[FsBrowseEntry]
+class LogContextLine(BaseModel):
+    line_no: int
+    content: str
+    is_target: bool = False
 
 
-class FsBrowseResponse(BaseModel):
+class LogContextResponse(BaseModel):
     status: str = "success"
-    data: Optional[FsBrowseData] = None
-    message: Optional[str] = None
-
-
-class FtdcStatusData(BaseModel):
-    running: bool
-    url: Optional[str] = None
-
-
-class FtdcStatusResponse(BaseModel):
-    status: str = "success"
-    data: FtdcStatusData
+    lines: list[LogContextLine]
 
 
 class StatusMessage(BaseModel):
@@ -458,6 +461,7 @@ class AuthFailuresResult(BaseModel):
 # Index advisor models
 # ---------------------------------------------------------------------------
 
+
 class IndexRecommendationStats(BaseModel):
     count: int = 0
     mean_ms: float = 0.0
@@ -519,6 +523,7 @@ class IndexRecommendation(BaseModel):
 # ---------------------------------------------------------------------------
 # Upload store entry (internal state)
 # ---------------------------------------------------------------------------
+
 
 class UploadedFileInfo(BaseModel):
     path: str

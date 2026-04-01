@@ -125,7 +125,8 @@ def run_ingest_job(
                 conn.execute(
                     """
                     INSERT INTO log_events (
-                        file_id, line_no, ts, component, severity, namespace, operation, event_type, duration_ms, message, raw_json
+                        file_id, line_no, ts, component, severity, namespace,
+                        operation, event_type, duration_ms, message, raw_json
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -166,7 +167,9 @@ def run_ingest_job(
                     ip = entry.get("attr", {}).get("remote")
                     conn.execute(
                         """
-                        INSERT INTO connection_events (file_id, ts, ip, event, connection_id, duration_s)
+                        INSERT INTO connection_events (
+                            file_id, ts, ip, event, connection_id, duration_s
+                        )
                         VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
@@ -211,12 +214,15 @@ def run_ingest_job(
 
         for (namespace, operation, pattern_json), durations in query_buckets.items():
             sorted_durations = sorted(durations)
-            p95_idx = max(0, min(len(sorted_durations) - 1, int(0.95 * (len(sorted_durations) - 1))))
+            p95_idx = max(
+                0, min(len(sorted_durations) - 1, int(0.95 * (len(sorted_durations) - 1)))
+            )
             pattern_hash = hashlib.sha256(pattern_json.encode("utf-8")).hexdigest()
             conn.execute(
                 """
                 INSERT INTO query_patterns (
-                    file_id, namespace, operation, pattern_hash, pattern_json, count, min_ms, max_ms, sum_ms, p95_ms, indexes_json
+                    file_id, namespace, operation, pattern_hash, pattern_json,
+                    count, min_ms, max_ms, sum_ms, p95_ms, indexes_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (

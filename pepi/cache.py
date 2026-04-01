@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Cache management for Pepi log analysis results."""
+
+from __future__ import annotations
 
 import hashlib
 import os
@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-CACHE_DIR = Path.home() / '.pepi_cache'
+CACHE_DIR = Path.home() / ".pepi_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 CACHE_TTL_SECONDS = 7 * 24 * 3600  # 7 days
 
@@ -47,7 +47,7 @@ def load_from_cache(cache_key: str) -> Optional[Any]:
             cache_file.unlink(missing_ok=True)
             return None
         try:
-            with open(cache_file, 'rb') as f:
+            with open(cache_file, "rb") as f:
                 data = pickle.load(f)
             # Reset TTL: update mtime to now
             os.utime(cache_file, None)
@@ -62,7 +62,7 @@ def save_to_cache(cache_key: str, data: Any) -> None:
     """Save results to cache."""
     cache_file = get_cache_file(cache_key)
     try:
-        with open(cache_file, 'wb') as f:
+        with open(cache_file, "wb") as f:
             pickle.dump(data, f)
     except Exception:
         # If cache write fails, continue without caching

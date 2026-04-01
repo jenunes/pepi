@@ -94,8 +94,7 @@
             </div>
             <!-- Navigation Tabs -->
             <nav class="tabs" id="mainTabs">
-                <button class="tab-btn active" data-tab="basic" style="display: none;"><i
-                        class="fas fa-info-circle"></i> Basic Info</button>
+                <button class="tab-btn active" data-tab="basic"><i class="fas fa-info-circle"></i> Basic Info</button>
                 <button class="tab-btn" data-tab="extractor" style="display: none;"><i class="fas fa-filter"></i> Raw
                     Extractor</button>
                 <button class="tab-btn" data-tab="connections" style="display: none;"><i
@@ -108,14 +107,12 @@
                     Time Series</button>
                 <button class="tab-btn" data-tab="replica-set" style="display: none;"><i class="fas fa-server"></i>
                     Replica Set</button>
-                <button class="tab-btn active" data-tab="ftdc-viewer"><i class="fas fa-chart-pie"></i> FTDC
-                    Viewer</button>
             </nav>
 
             <!-- Tab Content -->
             <div class="tab-content">
                 <!-- Basic Info Tab -->
-                <div class="tab-pane" id="basic">
+                <div class="tab-pane active" id="basic">
                     <div class="info-grid" id="basicInfo">
                         <!-- Left Column: File Information and Trim -->
                         <div class="info-column">
@@ -241,88 +238,203 @@
                     <div class="extractor-filters">
                         <h3>🔧 Filter Options</h3>
 
-                        <!-- Text Search -->
+                        <div class="extractor-presets filter-row" role="group" aria-label="Quick filter presets">
+                            <span class="extractor-presets-label">Presets:</span>
+                            <button type="button" class="btn btn-secondary btn-sm extractor-preset-btn"
+                                onclick="applyExtractorPreset('slow')">Slow queries</button>
+                            <button type="button" class="btn btn-secondary btn-sm extractor-preset-btn"
+                                onclick="applyExtractorPreset('errors')">Errors &amp; fatals</button>
+                            <button type="button" class="btn btn-secondary btn-sm extractor-preset-btn"
+                                onclick="applyExtractorPreset('auth')">Auth failures</button>
+                            <button type="button" class="btn btn-secondary btn-sm extractor-preset-btn"
+                                onclick="applyExtractorPreset('collscan')">COLLSCAN</button>
+                        </div>
+
                         <div class="filter-row">
-                            <label>Text Search:</label>
-                            <input type="text" id="extractTextSearch" placeholder="e.g., COLLSCAN, userId, error">
+                            <label for="extractTextSearch">Text Search:</label>
+                            <input type="text" id="extractTextSearch" placeholder="Substring or regex pattern"
+                                autocomplete="off">
+                            <label title="Interpret search as regular expression"><input type="checkbox"
+                                    id="extractUseRegex"> Regex</label>
                             <label><input type="checkbox" id="extractCaseSensitive"> Case Sensitive</label>
                         </div>
 
-                        <!-- Event Type -->
                         <div class="filter-row">
-                            <label>Event Type:</label>
-                            <div id="eventTypeOptions">
-                                <!-- Dynamically populated -->
+                            <label for="extractMinDuration">Min duration (ms):</label>
+                            <input type="number" id="extractMinDuration" class="extractor-num-input" min="0"
+                                step="1" placeholder="e.g. 100" title="Only log lines with durationMillis ≥ this value">
+                            <label for="extractSlowThreshold">Slow-query threshold (ms):</label>
+                            <input type="number" id="extractSlowThreshold" class="extractor-num-input" min="1"
+                                step="1" value="100"
+                                title="Used for Slow Query event type and Slow queries preset">
+                        </div>
+
+                        <div class="filter-row">
+                            <label for="extractLogId">Connection ID (log id):</label>
+                            <input type="number" id="extractLogId" class="extractor-num-input" step="1"
+                                placeholder="Mongo connection id" title="Matches top-level id field in JSON">
+                            <label for="extractContext">Context contains:</label>
+                            <input type="text" id="extractContext" placeholder="ctx substring" autocomplete="off">
+                        </div>
+
+                        <div class="filter-row">
+                            <label for="extractDateFrom">Time range:</label>
+                            <span class="extractor-datetime-wrap">From
+                                <input type="datetime-local" id="extractDateFrom" class="extractor-datetime-input">
+                            </span>
+                            <span class="extractor-datetime-wrap">To
+                                <input type="datetime-local" id="extractDateTo" class="extractor-datetime-input">
+                            </span>
+                        </div>
+
+                        <div class="filter-row">
+                            <label for="extractSeverityQuick">Severity (quick):</label>
+                            <div id="extractSeverityQuick" class="extractor-severity-quick"></div>
+                        </div>
+
+                        <details class="extractor-advanced-filters" id="extractorAdvancedFilters">
+                            <summary class="extractor-advanced-summary">Advanced filters</summary>
+
+                            <div class="filter-row">
+                                <label>Event Type:</label>
+                                <div id="eventTypeOptions"></div>
                             </div>
-                        </div>
 
-                        <!-- Component -->
-                        <div class="filter-row">
-                            <label>Component:</label>
-                            <div id="componentOptions">
-                                <!-- Dynamically populated -->
+                            <div class="filter-row">
+                                <label>Component:</label>
+                                <div id="componentOptions"></div>
                             </div>
-                        </div>
 
-                        <!-- Severity -->
-                        <div class="filter-row">
-                            <label>Severity:</label>
-                            <div id="severityOptions">
-                                <!-- Dynamically populated -->
+                            <div class="filter-row">
+                                <label>Severity:</label>
+                                <div id="severityOptions"></div>
                             </div>
-                        </div>
 
-                        <!-- Operation -->
-                        <div class="filter-row">
-                            <label>Operation:</label>
-                            <div id="operationOptions">
-                                <!-- Dynamically populated -->
+                            <div class="filter-row">
+                                <label>Operation:</label>
+                                <div id="operationOptions"></div>
                             </div>
-                        </div>
 
-                        <!-- Namespace -->
-                        <div class="filter-row">
-                            <label>Namespace/Collection:</label>
-                            <select id="extractNamespace" style="display: none;">
-                                <option value="">All namespaces</option>
-                            </select>
-                            <input type="text" id="extractNamespaceCustom" placeholder="e.g., cprng_proddb.cpr_Bids"
-                                style="display: none;">
-                            <label><input type="checkbox" id="useCustomNamespace"> Custom namespace</label>
-                        </div>
-
-                        <!-- Time Range -->
-                        <div class="filter-row">
-                            <label>Time Range:</label>
-                            From: <input type="text" id="extractDateFrom" placeholder="2024-10-10T07:00:00">
-                            To: <input type="text" id="extractDateTo" placeholder="2024-10-10T08:00:00">
-                        </div>
+                            <div class="filter-row">
+                                <label>Namespace/Collection:</label>
+                                <select id="extractNamespace" style="display: none;">
+                                    <option value="">All namespaces</option>
+                                </select>
+                                <input type="text" id="extractNamespaceCustom" placeholder="e.g., db.collection"
+                                    style="display: none;">
+                                <label><input type="checkbox" id="useCustomNamespace"> Custom namespace</label>
+                            </div>
+                        </details>
 
                         <div class="filter-actions">
-                            <button class="btn btn-primary" onclick="applyExtraction()">Apply Filters</button>
-                            <button class="btn btn-secondary" onclick="clearExtractFilters()">Clear All</button>
+                            <button type="button" class="btn btn-primary" onclick="applyExtraction(true)">Apply
+                                Filters</button>
+                            <button type="button" class="btn btn-secondary" onclick="clearExtractFilters()">Clear
+                                All</button>
                         </div>
                     </div>
 
                     <!-- Results -->
                     <div class="extractor-results">
                         <h3>📊 Results</h3>
-                        <div class="results-info">
-                            Matches: <span id="matchCount">0</span> lines
-                            <button class="btn-small" onclick="copyResults()">Copy All</button>
-                            <button class="btn-small" onclick="downloadResults()">Download</button>
-                            <button class="btn-small" onclick="selectAllResults()">Select All</button>
+
+                        <div id="extractorSummaryGrid" class="extractor-summary-grid" aria-live="polite"></div>
+
+                        <div class="results-info extractor-results-toolbar">
+                            <span>Matches: <span id="matchCount">0</span></span>
+                            <span id="extractorFooterRange" class="extractor-footer-range"></span>
+                            <label class="extractor-pagesize-label">Page size
+                                <select id="extractPageSize" onchange="onExtractorPageSizeChange()">
+                                    <option value="25">25</option>
+                                    <option value="50" selected>50</option>
+                                    <option value="100">100</option>
+                                </select>
+                            </label>
+                            <label class="extractor-context-radius-label">Context ±
+                                <select id="extractContextRadius" title="Lines before/after for context view">
+                                    <option value="3">3</option>
+                                    <option value="5" selected>5</option>
+                                    <option value="10">10</option>
+                                </select> lines
+                            </label>
+                            <button type="button" class="btn-small" onclick="copyResults()">Copy visible</button>
+                            <button type="button" class="btn-small" onclick="downloadResults()">Download</button>
+                            <button type="button" class="btn-small" onclick="extractorExportCsv()">CSV</button>
+                            <button type="button" class="btn-small" onclick="extractorExportJson()">JSON</button>
                         </div>
 
-                        <!-- Output format -->
-                        <div class="output-format">
-                            <label>Output Format:</label>
-                            <label><input type="radio" name="outputFormat" value="raw" checked> Raw JSON</label>
-                            <label><input type="radio" name="outputFormat" value="pretty"> Pretty JSON</label>
-                            <button class="btn-small" onclick="applyOutputFormat()">Apply Format</button>
+                        <div class="output-format extractor-view-toggle">
+                            <span class="output-format-label">View:</span>
+                            <label><input type="radio" name="extractorViewMode" value="table"
+                                    onchange="onExtractorViewModeChange(event)"> Table</label>
+                            <label><input type="radio" name="extractorViewMode" value="raw" checked
+                                    onchange="onExtractorViewModeChange(event)"> RAW</label>
+                            <span class="extractor-raw-format">
+                                <label>Raw format:</label>
+                                <label><input type="radio" name="outputFormat" value="raw" checked> One line / JSON</label>
+                                <label><input type="radio" name="outputFormat" value="pretty"> Pretty JSON</label>
+                                <button type="button" class="btn-small" onclick="applyOutputFormat()">Apply
+                                    Format</button>
+                            </span>
                         </div>
 
-                        <textarea id="extractorOutput" readonly></textarea>
+                        <div id="extractorTableSection" class="extractor-table-section" style="display: none;">
+                            <div class="extractor-table-scroll">
+                                <table class="data-table extractor-primary-table extractor-data-table" id="extractorDataTable"
+                                    style="display: none;">
+                                    <colgroup>
+                                        <col class="extractor-col-expand">
+                                        <col class="extractor-col-line">
+                                        <col class="extractor-col-ts">
+                                        <col class="extractor-col-sev">
+                                        <col class="extractor-col-comp">
+                                        <col class="extractor-col-ns">
+                                        <col class="extractor-col-dur">
+                                        <col class="extractor-col-msg">
+                                        <col class="extractor-col-actions">
+                                    </colgroup>
+                                    <thead>
+                                        <tr>
+                                            <th class="extractor-col-expand no-sort" scope="col"></th>
+                                            <th class="sortable col-num" scope="col" data-extractor-sort="line">Line</th>
+                                            <th class="sortable" scope="col" data-extractor-sort="ts">Timestamp</th>
+                                            <th class="sortable" scope="col" data-extractor-sort="sev">Sev</th>
+                                            <th class="sortable" scope="col" data-extractor-sort="comp">Component</th>
+                                            <th class="sortable" scope="col" data-extractor-sort="ns">Namespace</th>
+                                            <th class="sortable col-num" scope="col" data-extractor-sort="dur">Dur (ms)</th>
+                                            <th class="sortable" scope="col" data-extractor-sort="msg">Message</th>
+                                            <th class="no-sort extractor-col-actions" scope="col">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="extractorTableBody"></tbody>
+                                </table>
+                            </div>
+                            <p id="extractorEmptyState" class="extractor-empty-state">Apply filters to see matching log
+                                lines.</p>
+                            <div class="extractor-table-footer">
+                                <button type="button" id="extractorPrevBtn" class="btn btn-secondary btn-sm"
+                                    onclick="extractorPrevPage()">Prev</button>
+                                <span id="extractorPageLabel">Page 1</span>
+                                <button type="button" id="extractorNextBtn" class="btn btn-secondary btn-sm"
+                                    onclick="extractorNextPage()">Next</button>
+                            </div>
+                        </div>
+
+                        <div id="extractorRawSection" class="extractor-raw-section">
+                            <textarea id="extractorOutput" readonly></textarea>
+                        </div>
+                    </div>
+
+                    <div id="extractorContextModal" class="extractor-context-modal" style="display: none;" role="dialog"
+                        aria-modal="true" aria-labelledby="extractorContextModalTitle">
+                        <div class="extractor-context-dialog">
+                            <div class="extractor-context-header">
+                                <h4 id="extractorContextModalTitle">Log context</h4>
+                                <button type="button" class="extractor-context-close" onclick="closeExtractorContextModal()"
+                                    aria-label="Close context dialog">&times;</button>
+                            </div>
+                            <pre id="extractorContextBody" class="extractor-context-pre"></pre>
+                        </div>
                     </div>
                 </div>
 
@@ -462,51 +574,6 @@
                     </div>
                 </div>
 
-                <!-- FTDC Viewer Tab -->
-                <div class="tab-pane active" id="ftdc-viewer">
-                    <div class="analysis-header">
-                        <h2><i class="fas fa-chart-pie"></i> FTDC Viewer Integration</h2>
-                    </div>
-                    <div class="ftdc-container"
-                        style="padding: 20px; background: white; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                        <p>Launch the FTDC Viewer (Grafana + InfluxDB + Exporter) to analyze MongoDB diagnostic.data.
-                        </p>
-
-                        <div class="form-group" style="margin-top: 15px;">
-                            <label>FTDC Directory or File Path:</label>
-                            <div style="display: flex; gap: 10px;">
-                                <input type="text" id="ftdcPath" placeholder="e.g., /path/to/diagnostic.data"
-                                    style="flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 4px;">
-                                <button class="btn btn-secondary" onclick="openFsBrowser()">
-                                    <i class="fas fa-folder-open"></i> Browse
-                                </button>
-                                <button class="btn btn-primary" onclick="startFtdcViewer()">Start Viewer</button>
-                                <button class="btn btn-secondary" onclick="stopFtdcViewer()"
-                                    style="background-color: #e74c3c;">Stop Viewer</button>
-                            </div>
-                        </div>
-
-                        <div id="ftdcStatus"
-                            style="margin-top: 20px; padding: 15px; border-radius: 4px; background: #f8f9fa;">
-                            <strong>Status:</strong> <span id="ftdcStatusText">Checking...</span>
-                            <div id="ftdcLinkContainer" style="display: none; margin-top: 10px;">
-                                <a id="ftdcGrafanaLink" href="#" target="_blank" class="btn btn-success btn-sm"><i
-                                        class="fas fa-external-link-alt"></i> Open Grafana Dashboard</a>
-                            </div>
-                        </div>
-
-                        <div id="ftdcHelp" style="margin-top: 20px; font-size: 0.9em; color: #666;">
-                            <p><strong>Note:</strong> This requires Docker and Docker Compose to be installed and
-                                running on your system.</p>
-                            <p>You can also quickly select from discovered directories:</p>
-                            <ul id="ftdcDiscoveredList" class="discovered-list"
-                                style="list-style-type: none; padding-left: 0; display: flex; flex-direction: column; gap: 5px; max-height: 200px; overflow-y: auto;">
-                                <li>Loading...</li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-
             </div>
         </div>
 
@@ -515,35 +582,6 @@
             <div class="loading-content">
                 <div class="spinner"></div>
                 <p id="loadingText">Processing...</p>
-            </div>
-        </div>
-
-        <!-- File System Browser Modal -->
-        <div id="fsBrowserModal" class="modal"
-            style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
-            <div class="modal-content"
-                style="background-color: #fefefe; margin: 10% auto; padding: 20px; border: 1px solid #888; width: 60%; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);">
-                <div
-                    style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid #ccc; padding-bottom: 10px;">
-                    <h3 style="margin: 0;"><i class="fas fa-folder-open"></i> Select FTDC Directory</h3>
-                    <span class="close-modal" onclick="closeFsBrowser()"
-                        style="color: #aaa; font-size: 28px; font-weight: bold; cursor: pointer;">&times;</span>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <strong>Current Path:</strong>
-                    <div id="fsCurrentPath"
-                        style="padding: 10px; background: #e9ecef; border-radius: 4px; border: 1px solid #ced4da; font-family: monospace; overflow-x: auto; white-space: nowrap;">
-                        Loading...</div>
-                </div>
-                <div id="fsBrowserList"
-                    style="max-height: 400px; overflow-y: auto; border: 1px solid #ced4da; border-radius: 4px; padding: 5px; background: white;">
-                    <!-- Directories will be populated here -->
-                </div>
-                <div
-                    style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 15px; border-top: 1px solid #ccc; padding-top: 15px;">
-                    <button class="btn btn-secondary" onclick="closeFsBrowser()">Cancel</button>
-                    <button class="btn btn-primary" onclick="selectCurrentFsPath()">Select This Directory</button>
-                </div>
             </div>
         </div>
 

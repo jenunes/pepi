@@ -5,13 +5,14 @@ import errno
 import json
 import logging
 import os
+import re
 import socket
-import threading
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,19 +26,19 @@ from . import (
     count_lines,
     get_date_range,
     get_sampling_metadata,
+    parse_auth_failures,
     parse_clients,
+    parse_collscan_trends,
     parse_connection_events,
     parse_connections,
     parse_connections_timeseries_by_ip,
+    parse_errors_detail,
+    parse_lock_contention,
     parse_queries,
+    parse_repl_health,
     parse_replica_set_config,
     parse_replica_set_state,
     parse_timeseries_data,
-    parse_errors_detail,
-    parse_collscan_trends,
-    parse_repl_health,
-    parse_lock_contention,
-    parse_auth_failures,
     trim_log_file,
     validate_connection_data_consistency,
 )
@@ -55,28 +56,29 @@ from .ingest_store import (
     query_timeseries,
 )
 from .ingest_worker import run_ingest_job
-from .version import __version__
 from .types import (
     AnalysisResult,
     ExtractResponse,
     FileInfo,
     FileListResponse,
     FilterOptionsResponse,
-    FsBrowseResponse,
-    FtdcStartRequest,
-    FtdcStatusResponse,
     IngestStatusResponse,
+    LogContextLine,
+    LogContextRequest,
+    LogContextResponse,
     LogFilterRequest,
+    MatchSummary,
     PreflightData,
     PreflightResponse,
     PreflightThresholds,
     QueryExamplesRequest,
     SingleQueryRequest,
     StatusMessage,
-    TrimRequest,
     TmpHealthResponse,
+    TrimRequest,
     UploadResponse,
 )
+from .version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +86,12 @@ script_dir = Path(__file__).parent
 web_static_dir = script_dir / "web_static"
 
 _LOCALHOST_ORIGINS = [
-    "http://localhost:8000", "http://127.0.0.1:8000",
-    "http://localhost:8001", "http://127.0.0.1:8001",
-    "http://localhost:8002", "http://127.0.0.1:8002",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:8001",
+    "http://127.0.0.1:8001",
+    "http://localhost:8002",
+    "http://127.0.0.1:8002",
 ]
 
 
@@ -110,9 +115,9 @@ async def lifespan(app: FastAPI):
     yield
 
     for info in app.state.upload_store.values():
-        if not info.get('is_preloaded') and os.path.exists(info['path']):
+        if not info.get("is_preloaded") and os.path.exists(info["path"]):
             try:
-                os.unlink(info['path'])
+                os.unlink(info["path"])
             except OSError:
                 pass
     cleanup_stale_upload_files(app.state.upload_tmp_dir)
@@ -154,6 +159,7 @@ async def log_requests(request: Request, call_next):
 # Dependency injection helpers
 # ---------------------------------------------------------------------------
 
+
 def get_upload_store(request: Request) -> dict:
     return request.app.state.upload_store
 
@@ -176,9 +182,9 @@ def get_upload_tmp_dir(request: Request) -> str:
 
 def _is_accepted_log_filename(filename: str) -> bool:
     """Accept .log, .txt, .json, and MongoDB rotated logs (e.g. mongod.log.2026-03-06T21-30-43)."""
-    if filename.endswith(('.log', '.txt', '.json')):
+    if filename.endswith((".log", ".txt", ".json")):
         return True
-    if '.log.' in filename:
+    if ".log." in filename:
         return True
     return False
 
@@ -263,7 +269,9 @@ def assert_min_free_space(tmp_dir: str, required_bytes: int, headroom_factor: fl
         raise OSError(errno.ENOSPC, "No space left on device")
 
 
-def estimate_required_upload_bytes(request: Request, min_required_bytes: int, headroom_factor: float) -> int:
+def estimate_required_upload_bytes(
+    request: Request, min_required_bytes: int, headroom_factor: float
+) -> int:
     content_length = request.headers.get("content-length")
     if not content_length:
         return min_required_bytes
@@ -322,7 +330,9 @@ async def upload_log_file(
     try:
         file_size = 0
         min_required_bytes, headroom_factor = get_tmp_requirements()
-        required_bytes = estimate_required_upload_bytes(request, min_required_bytes, headroom_factor)
+        required_bytes = estimate_required_upload_bytes(
+            request, min_required_bytes, headroom_factor
+        )
         assert_min_free_space(upload_tmp_dir, required_bytes, 1.0)
         while chunk := await file.read(1024 * 1024):
             temp_file.write(chunk)
@@ -331,11 +341,11 @@ async def upload_log_file(
 
         file_id = os.path.basename(temp_file.name)
         upload_store[file_id] = {
-            'path': temp_file.name,
-            'original_name': file.filename,
-            'size': file_size,
+            "path": temp_file.name,
+            "original_name": file.filename,
+            "size": file_size,
             # Deferred line counting for large uploads.
-            'lines': 0,
+            "lines": 0,
         }
 
         return UploadResponse(
@@ -354,7 +364,10 @@ async def upload_log_file(
                 detail={
                     "error_code": "NO_SPACE_LEFT",
                     "detail": "No space left on device for upload temporary files.",
-                    "hint": "Free disk space, set PEPI_UPLOAD_TMPDIR to a larger partition, or trim the file to a smaller time range.",
+                    "hint": (
+                        "Free disk space, set PEPI_UPLOAD_TMPDIR to a larger partition, "
+                        "or trim the file to a smaller time range."
+                    ),
                 },
             )
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
@@ -389,24 +402,27 @@ def get_tmp_health(
         message=message,
     )
 
+
 @app.get("/api/files", response_model=FileListResponse)
 def list_uploaded_files(upload_store: dict = Depends(get_upload_store)):
     """List all uploaded files."""
     files = []
     stale_ids = []
     for file_id, info in upload_store.items():
-        if os.path.exists(info['path']):
+        if os.path.exists(info["path"]):
             preflight = _build_preflight_data(file_id, info["size"])
-            files.append(FileInfo(
-                file_id=file_id,
-                filename=info['original_name'],
-                size=info['size'],
-                lines=info['lines'],
-                is_preloaded=info.get('is_preloaded', False),
-                sample_percentage=info.get('sample_percentage', 100),
-                preflight_tier=preflight.tier,
-                can_proceed=preflight.can_proceed,
-            ))
+            files.append(
+                FileInfo(
+                    file_id=file_id,
+                    filename=info["original_name"],
+                    size=info["size"],
+                    lines=info["lines"],
+                    is_preloaded=info.get("is_preloaded", False),
+                    sample_percentage=info.get("sample_percentage", 100),
+                    preflight_tier=preflight.tier,
+                    can_proceed=preflight.can_proceed,
+                )
+            )
         else:
             stale_ids.append(file_id)
     for fid in stale_ids:
@@ -518,6 +534,7 @@ def cancel_ingest(
         }
     return IngestStatusResponse(status="success", data=latest)
 
+
 @app.post("/api/analyze/{file_id}/basic", response_model=AnalysisResult)
 def analyze_basic_info(
     file_id: str,
@@ -533,7 +550,7 @@ def analyze_basic_info(
 
         # Single pass: read first 1000 lines (covers start_date + version info)
         first_lines: list[str] = []
-        with open(file_path, 'r') as f:
+        with open(file_path, "r") as f:
             for i, line in enumerate(f):
                 if i >= 1000:
                     break
@@ -542,8 +559,8 @@ def analyze_basic_info(
         for line in first_lines[:100]:
             try:
                 entry = json.loads(line.strip())
-                if entry.get('t', {}).get('$date'):
-                    start_date = entry['t']['$date']
+                if entry.get("t", {}).get("$date"):
+                    start_date = entry["t"]["$date"]
                     break
             except (json.JSONDecodeError, ValueError, KeyError):
                 continue
@@ -551,28 +568,28 @@ def analyze_basic_info(
         for line in first_lines:
             try:
                 entry = json.loads(line)
-                if entry.get('msg') == 'Operating System':
-                    os_info = entry.get('attr', {}).get('os', {})
-                    os_version = os_info.get('name')
-                    kernel_version = os_info.get('version')
-                elif entry.get('msg') == 'Build Info':
-                    db_version = entry.get('attr', {}).get('buildInfo', {}).get('version')
-                elif entry.get('msg') == 'Options set by command line':
-                    cmd_options = entry.get('attr', {}).get('options')
+                if entry.get("msg") == "Operating System":
+                    os_info = entry.get("attr", {}).get("os", {})
+                    os_version = os_info.get("name")
+                    kernel_version = os_info.get("version")
+                elif entry.get("msg") == "Build Info":
+                    db_version = entry.get("attr", {}).get("buildInfo", {}).get("version")
+                elif entry.get("msg") == "Options set by command line":
+                    cmd_options = entry.get("attr", {}).get("options")
             except (json.JSONDecodeError, ValueError, KeyError):
                 continue
 
         # Stream last 100 lines without loading entire file
         last_lines: collections.deque[str] = collections.deque(maxlen=100)
-        with open(file_path, 'r') as f:
+        with open(file_path, "r") as f:
             for line in f:
                 last_lines.append(line)
 
         for line in reversed(last_lines):
             try:
                 entry = json.loads(line.strip())
-                if entry.get('t', {}).get('$date'):
-                    end_date = entry['t']['$date']
+                if entry.get("t", {}).get("$date"):
+                    end_date = entry["t"]["$date"]
                     break
             except (json.JSONDecodeError, ValueError, KeyError):
                 continue
@@ -583,8 +600,8 @@ def analyze_basic_info(
         return AnalysisResult(
             status="success",
             data={
-                "filename": upload_store[file_id]['original_name'],
-                "size": upload_store[file_id]['size'],
+                "filename": upload_store[file_id]["original_name"],
+                "size": upload_store[file_id]["size"],
                 "lines": total_lines,
                 "start_date": start_date,
                 "end_date": end_date,
@@ -597,6 +614,7 @@ def analyze_basic_info(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
 
 @app.post("/api/analyze/{file_id}/connections", response_model=AnalysisResult)
 def analyze_connections(
@@ -623,7 +641,9 @@ def analyze_connections(
                 ingest_data["connection_events"] = []
             return AnalysisResult(status="success", data=ingest_data)
 
-        connections_data, total_opened, total_closed = parse_connections(file_path, sample_percentage=sample)
+        connections_data, total_opened, total_closed = parse_connections(
+            file_path, sample_percentage=sample
+        )
         overall_stats, ip_stats = calculate_connection_stats(connections_data)
 
         slow_queries, connections_timeseries, errors = parse_timeseries_data(file_path)
@@ -634,7 +654,9 @@ def analyze_connections(
             logger.warning("Failed to parse IP-specific connections: %s", e)
             connections_by_ip_timeseries = {}
 
-        validation_results = validate_connection_data_consistency(connections_by_ip_timeseries, connections_timeseries)
+        validation_results = validate_connection_data_consistency(
+            connections_by_ip_timeseries, connections_timeseries
+        )
 
         try:
             connection_events = parse_connection_events(file_path)
@@ -645,9 +667,9 @@ def analyze_connections(
         connections_dict = {}
         for ip, data in connections_data.items():
             connections_dict[ip] = {
-                'opened': data['opened'],
-                'closed': data['closed'],
-                'durations': data['durations'] if include_details else [],
+                "opened": data["opened"],
+                "closed": data["closed"],
+                "durations": data["durations"] if include_details else [],
             }
 
         total_lines = _get_or_compute_line_count(upload_store, file_id)
@@ -669,16 +691,17 @@ def analyze_connections(
                 "sampling_metadata": sampling_metadata,
                 "data_quality": {
                     "validation_results": validation_results,
-                    "warnings": validation_results.get('warnings', []),
-                    "recommendations": validation_results.get('recommendations', []),
-                    "quality_score": validation_results.get('data_quality_score', 1.0),
-                    "is_consistent": validation_results.get('is_consistent', True),
+                    "warnings": validation_results.get("warnings", []),
+                    "recommendations": validation_results.get("recommendations", []),
+                    "quality_score": validation_results.get("data_quality_score", 1.0),
+                    "is_consistent": validation_results.get("is_consistent", True),
                 },
                 **lock_contention,
             },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Connection analysis failed: {str(e)}")
+
 
 @app.post("/api/analyze/{file_id}/queries", response_model=AnalysisResult)
 def analyze_queries_route(
@@ -703,36 +726,38 @@ def analyze_queries_route(
 
         results = []
         for (ns, op, pattern), stats in query_stats.items():
-            idx = stats['indexes']
-            results.append({
-                "namespace": ns,
-                "operation": op,
-                "pattern": pattern,
-                "count": stats['count'],
-                "min_ms": stats['min'],
-                "max_ms": stats['max'],
-                "mean_ms": stats['mean'],
-                "percentile_95_ms": stats['percentile_95'],
-                "sum_ms": stats['sum'],
-                "allow_disk_use": stats['allowDiskUse'],
-                "indexes": list(idx) if isinstance(idx, set) else idx,
-                "sort_shape": stats.get('sort_shape', ''),
-                "projection_shape": stats.get('projection_shape', ''),
-                "has_limit": stats.get('has_limit', False),
-                "has_skip": stats.get('has_skip', False),
-                "aggregate_shape_summary": stats.get('aggregate_shape_summary', ''),
-                "sum_docs_examined": stats.get('sum_docs_examined', 0),
-                "sum_keys_examined": stats.get('sum_keys_examined', 0),
-                "sum_n_returned": stats.get('sum_n_returned', 0),
-                "sum_planning_micros": stats.get('sum_planning_micros', 0),
-                "avg_docs_examined": stats.get('avg_docs_examined'),
-                "avg_keys_examined": stats.get('avg_keys_examined'),
-                "avg_n_returned": stats.get('avg_n_returned'),
-                "avg_planning_micros": stats.get('avg_planning_micros'),
-                "scan_efficiency": stats.get('scan_efficiency'),
-                "fetch_efficiency": stats.get('fetch_efficiency'),
-                "exec_event_count": stats.get('exec_event_count', 0),
-            })
+            idx = stats["indexes"]
+            results.append(
+                {
+                    "namespace": ns,
+                    "operation": op,
+                    "pattern": pattern,
+                    "count": stats["count"],
+                    "min_ms": stats["min"],
+                    "max_ms": stats["max"],
+                    "mean_ms": stats["mean"],
+                    "percentile_95_ms": stats["percentile_95"],
+                    "sum_ms": stats["sum"],
+                    "allow_disk_use": stats["allowDiskUse"],
+                    "indexes": list(idx) if isinstance(idx, set) else idx,
+                    "sort_shape": stats.get("sort_shape", ""),
+                    "projection_shape": stats.get("projection_shape", ""),
+                    "has_limit": stats.get("has_limit", False),
+                    "has_skip": stats.get("has_skip", False),
+                    "aggregate_shape_summary": stats.get("aggregate_shape_summary", ""),
+                    "sum_docs_examined": stats.get("sum_docs_examined", 0),
+                    "sum_keys_examined": stats.get("sum_keys_examined", 0),
+                    "sum_n_returned": stats.get("sum_n_returned", 0),
+                    "sum_planning_micros": stats.get("sum_planning_micros", 0),
+                    "avg_docs_examined": stats.get("avg_docs_examined"),
+                    "avg_keys_examined": stats.get("avg_keys_examined"),
+                    "avg_n_returned": stats.get("avg_n_returned"),
+                    "avg_planning_micros": stats.get("avg_planning_micros"),
+                    "scan_efficiency": stats.get("scan_efficiency"),
+                    "fetch_efficiency": stats.get("fetch_efficiency"),
+                    "exec_event_count": stats.get("exec_event_count", 0),
+                }
+            )
 
         collscan_trends = parse_collscan_trends(file_path)
 
@@ -747,6 +772,7 @@ def analyze_queries_route(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query analysis failed: {str(e)}")
 
+
 @app.post("/api/analyze/{file_id}/query-examples", response_model=AnalysisResult)
 def get_query_examples(
     file_id: str,
@@ -758,45 +784,48 @@ def get_query_examples(
     namespace = request.namespace
     operation = request.operation
     pattern = request.pattern
-    
+
     logger.info(
         "Looking for query examples ns=%s op=%s pattern=%s",
         namespace,
         operation,
         pattern[:100],
     )
-    
+
     try:
         examples = []
         match_attempts = 0
-        with open(file_path, 'r') as f:
+        with open(file_path, "r") as f:
             for line in f:
                 try:
                     entry = json.loads(line)
-                    if (entry.get('c') == 'COMMAND' and 
-                        entry.get('msg') in ('command', 'Slow query') and
-                        entry.get('attr')):
-                        attr = entry['attr']
-                        
+                    if (
+                        entry.get("c") == "COMMAND"
+                        and entry.get("msg") in ("command", "Slow query")
+                        and entry.get("attr")
+                    ):
+                        attr = entry["attr"]
+
                         # Check if this matches our pattern
-                        ns = attr.get('ns', '')
-                        command = attr.get('command', {})
+                        ns = attr.get("ns", "")
+                        command = attr.get("command", {})
                         if not command or ns != namespace:
                             continue
-                            
-                        op = list(command.keys())[0] if command else 'unknown'
+
+                        op = list(command.keys())[0] if command else "unknown"
                         if op != operation:
                             continue
-                            
+
                         from . import extract_query_pattern
+
                         query_pattern = extract_query_pattern(op, command)
                         match_attempts += 1
                         if match_attempts <= 3:  # Log first few attempts
                             logger.debug("Comparing %s == %s", query_pattern[:100], pattern[:100])
-                        
+
                         if query_pattern == pattern:
                             pass
-                        elif op == 'aggregate':
+                        elif op == "aggregate":
                             try:
                                 if json.loads(query_pattern) == json.loads(pattern):
                                     pass
@@ -806,36 +835,39 @@ def get_query_examples(
                                 continue
                         else:
                             continue
-                            
+
                         # This is a match - add the example
-                        examples.append({
-                            'timestamp': entry.get('t', {}).get('$date', ''),
-                            'duration_ms': attr.get('durationMillis', 0),
-                            'command': command,
-                            'plan_summary': attr.get('planSummary', 'N/A'),
-                            'raw_log_line': line.strip()  # Store the original log line
-                        })
-                        
+                        examples.append(
+                            {
+                                "timestamp": entry.get("t", {}).get("$date", ""),
+                                "duration_ms": attr.get("durationMillis", 0),
+                                "command": command,
+                                "plan_summary": attr.get("planSummary", "N/A"),
+                                "raw_log_line": line.strip(),  # Store the original log line
+                            }
+                        )
+
                         # Limit to 5 examples
                         if len(examples) >= 5:
                             break
-                            
+
                 except Exception:
                     continue
-        
+
         logger.info("Found %d examples (checked %d patterns)", len(examples), match_attempts)
-        
+
         return AnalysisResult(
             status="success",
             data={
                 "examples": examples,
                 "namespace": namespace,
                 "operation": operation,
-                "pattern": pattern
-            }
+                "pattern": pattern,
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get query examples: {str(e)}")
+
 
 @app.post("/api/analyze/{file_id}/replica-set", response_model=AnalysisResult)
 def analyze_replica_set(
@@ -844,11 +876,11 @@ def analyze_replica_set(
 ):
     """Analyze replica set configuration and state."""
     file_path = get_validated_file_path(file_id, upload_store)
-    
+
     try:
         configs = parse_replica_set_config(file_path)
         states, node_status = parse_replica_set_state(file_path)
-        
+
         repl_health = parse_repl_health(file_path)
 
         return AnalysisResult(
@@ -858,10 +890,11 @@ def analyze_replica_set(
                 "states": states,
                 "node_status": node_status,
                 **repl_health,
-            }
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Replica set analysis failed: {str(e)}")
+
 
 @app.post("/api/analyze/{file_id}/clients", response_model=AnalysisResult)
 def analyze_clients(
@@ -870,10 +903,10 @@ def analyze_clients(
 ):
     """Analyze client/driver information."""
     file_path = get_validated_file_path(file_id, upload_store)
-    
+
     try:
         clients_data = parse_clients(file_path)
-        
+
         auth_failures = parse_auth_failures(file_path)
 
         return AnalysisResult(
@@ -881,10 +914,11 @@ def analyze_clients(
             data={
                 "clients": clients_data,
                 **auth_failures,
-            }
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Client analysis failed: {str(e)}")
+
 
 @app.post("/api/analyze/{file_id}/timeseries", response_model=AnalysisResult)
 def analyze_timeseries(
@@ -899,72 +933,72 @@ def analyze_timeseries(
     file_path = get_validated_file_path(file_id, upload_store)
     if source not in {"raw", "ingest"}:
         raise HTTPException(status_code=400, detail="Invalid source. Allowed: raw, ingest")
-    
+
     try:
         if source == "ingest":
             data = query_timeseries(ingest_conn, file_id, include_raw=include_raw)
             if namespace:
-                data["slow_queries"] = [q for q in data["slow_queries"] if q["namespace"] == namespace]
+                data["slow_queries"] = [
+                    q for q in data["slow_queries"] if q["namespace"] == namespace
+                ]
                 data["aggregated_queries"] = [
                     q for q in data["aggregated_queries"] if q["namespace"] == namespace
                 ]
-                data["unique_namespaces"] = sorted({q["namespace"] for q in data["aggregated_queries"]})
+                data["unique_namespaces"] = sorted(
+                    {q["namespace"] for q in data["aggregated_queries"]}
+                )
             return AnalysisResult(status="success", data=data)
 
         slow_queries, connections, errors = parse_timeseries_data(file_path)
-        
+
         # Filter slow queries by namespace if specified
         if namespace:
-            slow_queries = [q for q in slow_queries if q['namespace'] == namespace]
-        
+            slow_queries = [q for q in slow_queries if q["namespace"] == namespace]
+
         # Sample data if too large (> 10,000 points) to prevent browser overload
         max_points = 10000
         if len(slow_queries) > max_points:
             import random
+
             slow_queries = random.sample(slow_queries, max_points)
-        
+
         # Get unique namespaces for filtering
-        unique_namespaces = sorted(set(q['namespace'] for q in slow_queries))
-        
+        unique_namespaces = sorted(set(q["namespace"] for q in slow_queries))
+
         # Aggregate slow queries by namespace
         from collections import defaultdict
-        namespace_stats = defaultdict(lambda: {'count': 0, 'total_duration': 0})
+
+        namespace_stats = defaultdict(lambda: {"count": 0, "total_duration": 0})
         for q in slow_queries:
-            ns = q['namespace']
-            namespace_stats[ns]['count'] += 1
-            namespace_stats[ns]['total_duration'] += q['duration_ms']
-        
+            ns = q["namespace"]
+            namespace_stats[ns]["count"] += 1
+            namespace_stats[ns]["total_duration"] += q["duration_ms"]
+
         # Calculate average duration and format for response
         aggregated_queries = [
             {
-                'namespace': ns,
-                'count': stats['count'],
-                'mean_duration_ms': round(stats['total_duration'] / stats['count'], 1)
+                "namespace": ns,
+                "count": stats["count"],
+                "mean_duration_ms": round(stats["total_duration"] / stats["count"], 1),
             }
             for ns, stats in namespace_stats.items()
         ]
-        aggregated_queries.sort(key=lambda x: x['count'], reverse=True)
-        
+        aggregated_queries.sort(key=lambda x: x["count"], reverse=True)
+
         # Aggregate errors by message
         error_stats = defaultdict(int)
         for e in errors:
-            error_stats[e['message']] += 1
-        
-        aggregated_errors = [
-            {
-                'message': msg,
-                'count': count
-            }
-            for msg, count in error_stats.items()
-        ]
-        aggregated_errors.sort(key=lambda x: x['count'], reverse=True)
-        
+            error_stats[e["message"]] += 1
+
+        aggregated_errors = [{"message": msg, "count": count} for msg, count in error_stats.items()]
+        aggregated_errors.sort(key=lambda x: x["count"], reverse=True)
+
         # Get MongoDB info from slow queries
         total_slow_queries = len(slow_queries)
         sampled = len(slow_queries) == max_points
 
         errors_detail = parse_errors_detail(file_path)
-        
+
         return AnalysisResult(
             status="success",
             data={
@@ -977,10 +1011,11 @@ def analyze_timeseries(
                 "total_slow_queries": total_slow_queries,
                 "sampled": sampled,
                 **errors_detail,
-            }
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Time-series analysis failed: {str(e)}")
+
 
 @app.post("/api/analyze/{file_id}/index-recommendations", response_model=AnalysisResult)
 def get_index_recommendations(
@@ -992,81 +1027,82 @@ def get_index_recommendations(
 ):
     """Get index recommendations for queries."""
     file_path = get_validated_file_path(file_id, upload_store)
-    
+
     try:
         # If we have a single query with raw log line, use it directly
         if request and request.raw_log_line:
             logger.info("Using raw log line for index recommendation analysis")
             # Parse the actual command from the log line
             log_entry = json.loads(request.raw_log_line)
-            command = log_entry.get('attr', {}).get('command', {})
-            plan_summary = log_entry.get('attr', {}).get('planSummary', 'COLLSCAN')
-            
+            command = log_entry.get("attr", {}).get("command", {})
+            plan_summary = log_entry.get("attr", {}).get("planSummary", "COLLSCAN")
+
             # Pass the ENTIRE command object as JSON to the AI
             # This includes filter, sort, projection, limit, skip, pipeline, etc.
             full_command_json = json.dumps(command)
-            
+
             logger.debug("Passing full command JSON prefix: %s", full_command_json[:200])
             logger.debug("Plan summary: %s", plan_summary)
-            
+
             # Enhance stats with planSummary for coverage analysis
             enhanced_stats = request.stats.copy()
-            enhanced_stats['plan_summary'] = plan_summary
-            enhanced_stats.setdefault('pattern', request.pattern)
+            enhanced_stats["plan_summary"] = plan_summary
+            enhanced_stats.setdefault("pattern", request.pattern)
 
             # Analyze single query
             recommendation = analyze_single_query(
                 namespace=request.namespace,
                 operation=request.operation,
                 pattern=full_command_json,
-                stats=enhanced_stats
+                stats=enhanced_stats,
             )
-            
+
             return AnalysisResult(
                 status="success",
                 data={
                     "recommendations": [recommendation] if recommendation else [],
                     "total_analyzed": 1,
-                    "has_llm": False
-                }
+                    "has_llm": False,
+                },
             )
-        
+
         # Otherwise, parse all queries from log file (bulk analysis)
         queries_data = parse_queries(file_path)
         query_stats = calculate_query_stats(queries_data)
-        
+
         # Enhance query stats with planSummary information for coverage analysis
         for (namespace, operation, pattern), stats in query_stats.items():
             # Get the most common planSummary from the indexes set
-            indexes = stats.get('indexes', set())
+            indexes = stats.get("indexes", set())
             if indexes:
                 # Find the most common planSummary (not COLLSCAN if possible)
                 plan_summaries = list(indexes)
                 # Prefer non-COLLSCAN planSummaries
-                non_collscan = [ps for ps in plan_summaries if ps != 'COLLSCAN']
+                non_collscan = [ps for ps in plan_summaries if ps != "COLLSCAN"]
                 if non_collscan:
-                    stats['plan_summary'] = non_collscan[0]  # Use first non-COLLSCAN
+                    stats["plan_summary"] = non_collscan[0]  # Use first non-COLLSCAN
                 else:
-                    stats['plan_summary'] = 'COLLSCAN'
+                    stats["plan_summary"] = "COLLSCAN"
             else:
-                stats['plan_summary'] = 'COLLSCAN'
-        
+                stats["plan_summary"] = "COLLSCAN"
+
         # Generate recommendations (LLM only if single_query=True)
         recommendations = ia_analyze_queries(query_stats)
-        
+
         # Limit to top N
         recommendations = recommendations[:top_n]
-        
+
         return AnalysisResult(
             status="success",
             data={
                 "recommendations": recommendations,
                 "total_analyzed": len(query_stats),
-                "has_llm": False
-            }
+                "has_llm": False,
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Index recommendation failed: {str(e)}")
+
 
 @app.post("/api/trim/{file_id}", response_model=AnalysisResult)
 def trim_log(
@@ -1076,51 +1112,49 @@ def trim_log(
 ):
     """Trim log file by date/time range."""
     file_path = get_validated_file_path(file_id, upload_store)
-    
+
     try:
         start_dt, end_dt = get_date_range(trim_request.from_date, trim_request.until_date)
         filtered_lines, total_lines, skipped_lines = trim_log_file(file_path, start_dt, end_dt)
-        
+
         if not filtered_lines:
             return AnalysisResult(
-                status="error",
-                data={},
-                message="No lines found in the specified date range"
+                status="error", data={}, message="No lines found in the specified date range"
             )
-        
+
         # Create a new temporary file with trimmed content
-        original_name = upload_store[file_id]['original_name']
+        original_name = upload_store[file_id]["original_name"]
         base_name = Path(original_name).stem
         extension = Path(original_name).suffix
-        
+
         # Create a more permanent temporary file
         temp_dir = tempfile.gettempdir()
         temp_filename = f"{base_name}_trimmed{extension}"
         temp_file_path = os.path.join(temp_dir, temp_filename)
-        
-        with open(temp_file_path, 'w', encoding='utf-8') as f:
+
+        with open(temp_file_path, "w", encoding="utf-8") as f:
             for line in filtered_lines:
                 f.write(line)
-        
+
         # Ensure file is properly written and closed
         if not os.path.exists(temp_file_path):
             raise Exception("Failed to create trimmed file")
-        
+
         file_size = os.path.getsize(temp_file_path)
         if file_size == 0:
             raise Exception("Trimmed file is empty")
-        
+
         # Generate new file ID with timestamp to ensure uniqueness
         new_file_id = f"trimmed_{int(time.time())}_{file_id}"
-        
+
         # Store trimmed file
         upload_store[new_file_id] = {
-            'path': temp_file_path,
-            'original_name': f"{base_name}_trimmed{extension}",
-            'size': os.path.getsize(temp_file_path),
-            'lines': len(filtered_lines)
+            "path": temp_file_path,
+            "original_name": f"{base_name}_trimmed{extension}",
+            "size": os.path.getsize(temp_file_path),
+            "lines": len(filtered_lines),
         }
-        
+
         return AnalysisResult(
             status="success",
             data={
@@ -1130,11 +1164,12 @@ def trim_log(
                 "included_lines": len(filtered_lines),
                 "skipped_lines": skipped_lines,
                 "start_date": start_dt.isoformat() if start_dt else None,
-                "end_date": end_dt.isoformat() if end_dt else None
-            }
+                "end_date": end_dt.isoformat() if end_dt else None,
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Trimming failed: {str(e)}")
+
 
 @app.get("/api/download/{file_id}")
 async def download_file(
@@ -1143,25 +1178,26 @@ async def download_file(
 ):
     """Download a processed log file."""
     file_path = get_validated_file_path(file_id, upload_store)
-    original_name = upload_store[file_id]['original_name']
-    
+    original_name = upload_store[file_id]["original_name"]
+
     try:
         # Check file size
         file_size = os.path.getsize(file_path)
         if file_size == 0:
             raise HTTPException(status_code=400, detail="File is empty")
-        
+
         return FileResponse(
             path=file_path,
             filename=original_name,
-            media_type='application/octet-stream',
+            media_type="application/octet-stream",
             headers={
-                "Content-Disposition": f"attachment; filename=\"{original_name}\"",
-                "Content-Length": str(file_size)
-            }
+                "Content-Disposition": f'attachment; filename="{original_name}"',
+                "Content-Length": str(file_size),
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
 
 @app.delete("/api/files/{file_id}", response_model=StatusMessage)
 async def delete_file(
@@ -1169,24 +1205,27 @@ async def delete_file(
     upload_store: dict = Depends(get_upload_store),
     ingest_conn=Depends(get_ingest_conn),
 ):
-    """Delete an uploaded file. For preloaded files, only removes from store (does not delete the original file)."""
+    """Delete an uploaded file.
+
+    For preloaded files, only removes from store (does not delete the original file).
+    """
     get_validated_file_path(file_id, upload_store)
 
     info = upload_store[file_id]
-    file_path = info['path']
-    if not info.get('is_preloaded', False):
+    file_path = info["path"]
+    if not info.get("is_preloaded", False):
         if os.path.exists(file_path):
             os.unlink(file_path)
     delete_file_ingest_data(ingest_conn, file_id)
-    
+
     del upload_store[file_id]
-    
+
     return StatusMessage(message="File deleted successfully")
 
 
 def preload_file(upload_store: dict) -> str | None:
     """Pre-load a file if specified via environment variable. Uses the original path (no copy)."""
-    preload_path = os.environ.get('PEPI_PRELOAD_FILE')
+    preload_path = os.environ.get("PEPI_PRELOAD_FILE")
     if not preload_path:
         return None
     preload_path = os.path.abspath(os.path.expanduser(preload_path))
@@ -1195,23 +1234,24 @@ def preload_file(upload_store: dict) -> str | None:
     try:
         original_name = os.path.basename(preload_path)
         file_size = os.path.getsize(preload_path)
-        sample_percentage = int(os.environ.get('PEPI_SAMPLE_PERCENTAGE', '100'))
+        sample_percentage = int(os.environ.get("PEPI_SAMPLE_PERCENTAGE", "100"))
         file_id = f"{original_name}_{os.getpid()}"
         if file_id in upload_store:
             file_id = f"{original_name}_{os.getpid()}_{id(preload_path)}"
         upload_store[file_id] = {
-            'path': preload_path,
-            'original_name': original_name,
-            'size': file_size,
-            'lines': 0,
-            'is_preloaded': True,
-            'sample_percentage': sample_percentage,
+            "path": preload_path,
+            "original_name": original_name,
+            "size": file_size,
+            "lines": 0,
+            "is_preloaded": True,
+            "sample_percentage": sample_percentage,
         }
         logger.info("Pre-loaded file %s (ID: %s)", original_name, file_id)
         return file_id
     except Exception as e:
         logger.error("Failed to pre-load file %s: %s", preload_path, str(e))
     return None
+
 
 @app.post("/api/analyze/{file_id}/extract", response_model=ExtractResponse)
 def extract_logs(
@@ -1227,135 +1267,221 @@ def extract_logs(
     if source not in {"raw", "ingest"}:
         raise HTTPException(status_code=400, detail="Invalid source. Allowed: raw, ingest")
     if source == "ingest":
-        data = query_extract(
-            ingest_conn,
-            file_id,
-            offset=offset,
-            limit=filters.limit,
-            text_search=filters.text_search,
-            case_sensitive=filters.case_sensitive,
-            components=filters.components,
-            severities=filters.severities,
-            operations=filters.operations,
-            namespace=filters.namespace,
-            date_from=filters.date_from,
-            date_to=filters.date_to,
-        )
+        try:
+            data = query_extract(
+                ingest_conn,
+                file_id,
+                offset=offset,
+                limit=filters.limit,
+                text_search=filters.text_search,
+                case_sensitive=filters.case_sensitive,
+                use_regex=filters.use_regex,
+                event_types=filters.event_types,
+                components=filters.components,
+                severities=filters.severities,
+                operations=filters.operations,
+                namespace=filters.namespace,
+                log_id=filters.log_id,
+                context=filters.context,
+                date_from=filters.date_from,
+                date_to=filters.date_to,
+                min_duration_ms=filters.min_duration_ms,
+                slow_query_threshold_ms=filters.slow_query_threshold_ms,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        ms = data.get("match_summary") or {}
         return ExtractResponse(
             total_scanned=data["total_scanned"],
             total_matched=data["total_matched"],
             lines=data["lines"],
+            match_line_numbers=data.get("match_line_numbers") or [],
+            match_summary=MatchSummary(
+                by_severity=ms.get("by_severity") or {},
+                time_span_start=ms.get("time_span_start"),
+                time_span_end=ms.get("time_span_end"),
+            )
+            if ms
+            else None,
             truncated=data["truncated"],
         )
-    matched_lines = []
+
+    matched_lines: list[str] = []
+    match_line_numbers: list[int] = []
     matched_count = 0
     total_lines = 0
     page_limit = max(1, min(filters.limit, 5000))
+    summary_by_severity: dict[str, int] = collections.defaultdict(int)
+    summary_ts_min: str | None = None
+    summary_ts_max: str | None = None
 
-    with open(file_path, 'r') as f:
-        for line in f:
+    compiled_regex: re.Pattern[str] | None = None
+    if filters.text_search and filters.use_regex:
+        try:
+            flags = 0 if filters.case_sensitive else re.IGNORECASE
+            compiled_regex = re.compile(filters.text_search, flags)
+        except re.error as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid regex: {exc}") from exc
+
+    with open(file_path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
             total_lines += 1
-            
-            # Quick text search first (fastest)
+            raw_line = line.rstrip("\n")
+
             if filters.text_search:
-                if filters.case_sensitive:
+                if compiled_regex is not None:
+                    if not compiled_regex.search(line):
+                        continue
+                elif filters.case_sensitive:
                     if filters.text_search not in line:
                         continue
                 else:
                     if filters.text_search.lower() not in line.lower():
                         continue
-            
-            # Parse JSON for detailed filtering
+
             try:
-                entry = json.loads(line.strip())
+                entry = json.loads(raw_line.strip())
             except (json.JSONDecodeError, ValueError):
                 continue
-            
-            # Apply filters
-            if not apply_filters(entry, line, filters):
+
+            if not apply_filters(entry, raw_line, filters):
                 continue
-            
+
             matched_count += 1
+            sev = entry.get("s") if entry.get("s") is not None else "—"
+            summary_by_severity[str(sev)] += 1
+            ts = entry.get("t", {}).get("$date")
+            if ts:
+                if summary_ts_min is None or ts < summary_ts_min:
+                    summary_ts_min = ts
+                if summary_ts_max is None or ts > summary_ts_max:
+                    summary_ts_max = ts
+
             if matched_count <= offset:
                 continue
 
-            matched_lines.append(line.strip())
+            if len(matched_lines) < page_limit:
+                matched_lines.append(raw_line.strip())
+                match_line_numbers.append(total_lines)
 
-            if len(matched_lines) >= page_limit:
-                break
-    
+    match_summary = MatchSummary(
+        by_severity=dict(summary_by_severity),
+        time_span_start=summary_ts_min,
+        time_span_end=summary_ts_max,
+    )
+
     return ExtractResponse(
         total_scanned=total_lines,
         total_matched=matched_count,
         lines=matched_lines,
-        truncated=len(matched_lines) >= page_limit,
+        match_line_numbers=match_line_numbers,
+        match_summary=match_summary if matched_count else MatchSummary(),
+        truncated=matched_count > offset + len(matched_lines),
     )
 
 
-def apply_filters(entry, line, filters):
+def apply_filters(entry, line, filters: LogFilterRequest) -> bool:
     """Check if entry matches all filters."""
-    
-    # Event type filters
+    slow_thresh = (
+        filters.slow_query_threshold_ms if filters.slow_query_threshold_ms is not None else 100
+    )
+
+    if filters.min_duration_ms is not None:
+        dur = entry.get("attr", {}).get("durationMillis")
+        if dur is None:
+            return False
+        if int(dur) < filters.min_duration_ms:
+            return False
+
     if filters.event_types:
         matched = False
-        if 'COLLSCAN' in filters.event_types and 'COLLSCAN' in line:
+        if "COLLSCAN" in filters.event_types and "COLLSCAN" in line:
             matched = True
-        if 'IXSCAN' in filters.event_types and 'IXSCAN' in line:
+        if "IXSCAN" in filters.event_types and "IXSCAN" in line:
             matched = True
-        if 'slow_query' in filters.event_types:
-            if entry.get('attr', {}).get('durationMillis', 0) > 100:
+        if "slow_query" in filters.event_types:
+            if int(entry.get("attr", {}).get("durationMillis", 0) or 0) > slow_thresh:
                 matched = True
-        if 'error' in filters.event_types and entry.get('s') in ['E', 'F']:
+        if "error" in filters.event_types and entry.get("s") in ["E", "F"]:
             matched = True
-        
+
         if not matched:
             return False
-    
-    # Component filter
+
     if filters.components:
-        if entry.get('c') not in filters.components:
+        if entry.get("c") not in filters.components:
             return False
-    
-    # Severity filter
+
     if filters.severities:
-        if entry.get('s') not in filters.severities:
+        if entry.get("s") not in filters.severities:
             return False
-    
-    # Operation filter
+
     if filters.operations:
-        cmd = entry.get('attr', {}).get('command', {})
+        cmd = entry.get("attr", {}).get("command", {})
         op = next(iter(cmd.keys())) if cmd else None
         if op not in filters.operations:
             return False
-    
-    # Namespace filter
+
     if filters.namespace:
-        ns = entry.get('attr', {}).get('ns', '')
+        ns = entry.get("attr", {}).get("ns", "")
         if filters.namespace not in ns:
             return False
-    
-    # Log ID filter
-    if filters.log_id:
-        if entry.get('id') != filters.log_id:
+
+    if filters.log_id is not None:
+        if entry.get("id") != filters.log_id:
             return False
-    
-    # Context filter
+
     if filters.context:
-        if filters.context not in entry.get('ctx', ''):
+        if filters.context not in entry.get("ctx", ""):
             return False
-    
-    # Time range filter
+
     if filters.date_from or filters.date_to:
-        timestamp = entry.get('t', {}).get('$date')
+        timestamp = entry.get("t", {}).get("$date")
         if not timestamp:
             return False
-        
+
         if filters.date_from and timestamp < filters.date_from:
             return False
         if filters.date_to and timestamp > filters.date_to:
             return False
-    
+
     return True
+
+
+def read_log_context_from_file(
+    file_path: str, line_no: int, before: int, after: int
+) -> list[dict[str, Any]]:
+    """Return physical file lines around line_no (1-based), inclusive."""
+    start = max(1, line_no - before)
+    end = line_no + after
+    out: list[dict[str, Any]] = []
+    with open(file_path, encoding="utf-8", errors="replace") as handle:
+        for i, line in enumerate(handle, start=1):
+            if i < start:
+                continue
+            if i > end:
+                break
+            out.append(
+                {
+                    "line_no": i,
+                    "content": line.rstrip("\n"),
+                    "is_target": i == line_no,
+                }
+            )
+    return out
+
+
+@app.post("/api/analyze/{file_id}/log-context", response_model=LogContextResponse)
+def extract_log_context(
+    file_id: str,
+    body: LogContextRequest,
+    upload_store: dict = Depends(get_upload_store),
+):
+    """Return raw file lines before/after a 1-based physical line number."""
+    file_path = get_validated_file_path(file_id, upload_store)
+    rows = read_log_context_from_file(file_path, body.line_no, body.before, body.after)
+    return LogContextResponse(lines=[LogContextLine(**row) for row in rows])
+
 
 @app.get("/api/analyze/{file_id}/filter-options", response_model=FilterOptionsResponse)
 def get_filter_options(
@@ -1364,7 +1490,7 @@ def get_filter_options(
 ):
     """Get available filter options based on log content."""
     file_path = get_validated_file_path(file_id, upload_store)
-    
+
     # Scan log to find available options
     available_components = set()
     available_severities = set()
@@ -1374,48 +1500,50 @@ def get_filter_options(
     has_ixscan = False
     has_slow_queries = False
     has_errors = False
-    
-    with open(file_path, 'r') as f:
-        for line in f:
+    log_ts_min: str | None = None
+    log_ts_max: str | None = None
+
+    with open(file_path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
             try:
                 entry = json.loads(line.strip())
-                
-                # Collect components
-                if entry.get('c'):
-                    available_components.add(entry['c'])
-                
-                # Collect severities
-                if entry.get('s'):
-                    available_severities.add(entry['s'])
-                
-                # Check for COLLSCAN/IXSCAN
-                if 'COLLSCAN' in line:
+
+                if entry.get("c"):
+                    available_components.add(entry["c"])
+
+                if entry.get("s"):
+                    available_severities.add(entry["s"])
+
+                if "COLLSCAN" in line:
                     has_collscan = True
-                if 'IXSCAN' in line:
+                if "IXSCAN" in line:
                     has_ixscan = True
-                
-                # Check for slow queries
-                if entry.get('attr', {}).get('durationMillis', 0) > 100:
+
+                if entry.get("attr", {}).get("durationMillis", 0) > 100:
                     has_slow_queries = True
-                
-                # Check for errors
-                if entry.get('s') in ['E', 'F']:
+
+                if entry.get("s") in ["E", "F"]:
                     has_errors = True
-                
-                # Collect operations
-                cmd = entry.get('attr', {}).get('command', {})
+
+                cmd = entry.get("attr", {}).get("command", {})
                 if cmd:
                     op = next(iter(cmd.keys()))
                     available_operations.add(op)
-                
-                # Collect namespaces
-                ns = entry.get('attr', {}).get('ns')
+
+                ns = entry.get("attr", {}).get("ns")
                 if ns:
                     available_namespaces.add(ns)
-                    
+
+                timestamp = entry.get("t", {}).get("$date")
+                if timestamp:
+                    if log_ts_min is None or timestamp < log_ts_min:
+                        log_ts_min = timestamp
+                    if log_ts_max is None or timestamp > log_ts_max:
+                        log_ts_max = timestamp
+
             except (json.JSONDecodeError, ValueError, KeyError):
                 continue
-    
+
     return {
         "status": "success",
         "data": {
@@ -1423,179 +1551,69 @@ def get_filter_options(
                 "COLLSCAN": has_collscan,
                 "IXSCAN": has_ixscan,
                 "slow_query": has_slow_queries,
-                "error": has_errors
+                "error": has_errors,
             },
             "components": sorted(list(available_components)),
             "severities": sorted(list(available_severities)),
             "operations": sorted(list(available_operations)),
-            "namespaces": sorted(list(available_namespaces))[:20]  # Limit to top 20
-        }
+            "namespaces": sorted(list(available_namespaces))[:20],
+            "log_ts_min": log_ts_min,
+            "log_ts_max": log_ts_max,
+        },
     }
 
-@app.get("/api/fs/browse", response_model=FsBrowseResponse)
-async def browse_fs(path: str = None):
-    """Browse the server file system to select a directory."""
-    if not path:
-        path = os.path.expanduser("~")
-        
-    try:
-        path = os.path.abspath(path)
-        if not os.path.exists(path) or not os.path.isdir(path):
-            return {"status": "error", "message": "Directory does not exist."}
-            
-        directories = []
-        
-        # Add parent directory ".." if not at root
-        parent = os.path.dirname(path)
-        if parent and parent != path:
-            directories.append({"name": "..", "path": parent})
-            
-        with os.scandir(path) as it:
-            for entry in it:
-                if entry.is_dir() and not entry.name.startswith('.'):
-                    directories.append({"name": entry.name, "path": entry.path})
-                    
-        # Sort directories (ignoring "..")
-        sorted_dirs = [d for d in directories if d["name"] == ".."] + sorted([d for d in directories if d["name"] != ".."], key=lambda x: x["name"].lower())
-        
-        return {
-            "status": "success", 
-            "data": {
-                "current_path": path,
-                "directories": sorted_dirs
-            }
-        }
-    except PermissionError:
-        return {"status": "error", "message": "Permission denied."}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-# --- FTDC Endpoints ---
-
-@app.get("/api/ftdc/list", response_model=AnalysisResult)
-async def list_ftdc_dirs():
-    """Returns some discovered FTDC directories."""
-    dirs = []
-    base_paths = [os.path.expanduser("~/repositories"), os.path.expanduser("~/")]
-    for base in base_paths:
-        if os.path.exists(base):
-            try:
-                for entry in os.scandir(base):
-                    if entry.is_dir():
-                        diag_path = os.path.join(entry.path, "data", "diagnostic.data")
-                        if os.path.exists(diag_path):
-                            dirs.append(diag_path)
-                        diag_path2 = os.path.join(entry.path, "diagnostic.data")
-                        if os.path.exists(diag_path2):
-                            dirs.append(diag_path2)
-            except PermissionError:
-                pass
-    return {"status": "success", "data": {"directories": dirs}}
-
-@app.post("/api/ftdc/start", response_model=StatusMessage)
-async def start_ftdc(request: FtdcStartRequest):
-    try:
-        from pepi.ftdc import launch_viewer
-        import threading
-        t = threading.Thread(target=launch_viewer, args=(request.path, False))
-        t.start()
-        return {"status": "success", "message": "FTDC Viewer starting"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/ftdc/status", response_model=FtdcStatusResponse)
-async def status_ftdc():
-    import urllib.request
-    try:
-        # First check if Grafana is actually responding
-        urllib.request.urlopen("http://localhost:3001/api/health", timeout=1)
-        
-        # If Grafana is up, let's see if the exporter has finished and output the exact URL yet
-        from pepi.ftdc import get_ftdc_dashboard_url
-        url = get_ftdc_dashboard_url()
-        
-        # If it returns the default URL, the exporter isn't done ingesting yet.
-        # We want the frontend to keep checking until we get the exact timestamped URL.
-        if "from=" not in url:
-             return {"status": "success", "data": {"running": False}}
-             
-        # Exporter is done! Return the precise URL.
-        return {"status": "success", "data": {"running": True, "url": url}}
-    except (OSError, ImportError, ValueError):
-        return {"status": "success", "data": {"running": False}}
-
-@app.post("/api/ftdc/stop", response_model=StatusMessage)
-async def stop_ftdc():
-    try:
-        import subprocess
-        from pepi.ftdc import get_docker_compose_cmd
-        compose_file = os.path.join(os.path.dirname(__file__), "ftdc", "docker-compose.yml")
-        cmd = get_docker_compose_cmd() + ["-f", compose_file, "down"]
-        
-        env = os.environ.copy()
-        env.setdefault("INPUT_DIR", "/tmp")
-        env.setdefault("PARALLEL", "10")
-        env.setdefault("BATCH_SIZE", "200")
-        env.setdefault("INFLUX_DB_DATA_DIRECTORY", "/tmp")
-        env.setdefault("INFLUX_ADMIN_PASSWORD", "admin")
-        env.setdefault("INFLUX_API_TOKEN", "token")
-        env.setdefault("GRAFANA_ADMIN_PASSWORD", "admin")
-        env.setdefault("INFLUX_ORG", "org")
-        env.setdefault("INFLUX_BUCKET", "bucket")
-
-        subprocess.run(cmd, env=env, check=True)
-        return {"status": "success", "message": "FTDC Viewer stopped"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 def find_available_port(start_port=8000):
     """Find an available port for pepi web-ui, allowing max 3 instances."""
-    import subprocess
     import psutil
-    
+
     # Define the allowed ports for pepi (max 3 instances)
     allowed_ports = [8000, 8001, 8002]
-    
+
     try:
         # Find existing pepi processes and their ports
         pepi_processes = []
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
-                if proc.info['cmdline'] and any('pepi.web_api' in cmd for cmd in proc.info['cmdline']):
+                if proc.info["cmdline"] and any(
+                    "pepi.web_api" in cmd for cmd in proc.info["cmdline"]
+                ):
                     # Get the port this process is using
                     for conn in proc.net_connections():
-                        if conn.status == 'LISTEN' and conn.laddr.ip in ['0.0.0.0', '127.0.0.1']:
-                            pepi_processes.append({
-                                'pid': proc.info['pid'],
-                                'port': conn.laddr.port,
-                                'cmdline': ' '.join(proc.info['cmdline'])
-                            })
+                        if conn.status == "LISTEN" and conn.laddr.ip in ["0.0.0.0", "127.0.0.1"]:
+                            pepi_processes.append(
+                                {
+                                    "pid": proc.info["pid"],
+                                    "port": conn.laddr.port,
+                                    "cmdline": " ".join(proc.info["cmdline"]),
+                                }
+                            )
                             break
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        
+
         # Show existing pepi processes
         if pepi_processes:
             logger.info("Found %d existing pepi web-ui process(es)", len(pepi_processes))
             for proc in pepi_processes:
-                logger.info("Existing pepi process PID %s on port %s", proc['pid'], proc['port'])
-        
+                logger.info("Existing pepi process PID %s on port %s", proc["pid"], proc["port"])
+
         # Check if we've reached the limit
         if len(pepi_processes) >= 3:
             logger.error("Maximum of 3 pepi web-ui instances already running.")
             logger.error("Please stop one of the existing instances before starting a new one.")
             raise RuntimeError("Maximum pepi instances reached (3)")
-        
+
         # Find the first available port from our allowed list
-        used_ports = [proc['port'] for proc in pepi_processes if proc['port'] in allowed_ports]
-        
+        used_ports = [proc["port"] for proc in pepi_processes if proc["port"] in allowed_ports]
+
         for port in allowed_ports:
             if port not in used_ports:
                 # Double-check the port is actually available by trying to bind
                 try:
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                        s.bind(('0.0.0.0', port))
+                        s.bind(("0.0.0.0", port))
                         logger.info("Selected port %s for this instance", port)
                         return port
                 except OSError as e:
@@ -1605,9 +1623,9 @@ def find_available_port(start_port=8000):
                     else:
                         logger.warning("Port %s unavailable (%s), trying next", port, e)
                     continue
-        
+
         raise RuntimeError("No available ports in range 8000-8002")
-        
+
     except ImportError:
         # Fallback if psutil is not available
         logger.warning("psutil not available, using basic port detection")
@@ -1615,7 +1633,7 @@ def find_available_port(start_port=8000):
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    s.bind(('0.0.0.0', port))
+                    s.bind(("0.0.0.0", port))
                     return port
             except OSError:
                 continue
@@ -1644,20 +1662,21 @@ def cleanup_stale_port_files() -> None:
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     logger.info("Starting Pepi Web Interface")
-    
+
     # Find an available port
     try:
         cleanup_stale_port_files()
         port = find_available_port(8000)
-        
+
         # Write the port to a temporary file so the main process can read it
         import tempfile
+
         port_file = tempfile.gettempdir() + f"/pepi_port_{os.getpid()}.txt"
-        with open(port_file, 'w') as f:
+        with open(port_file, "w") as f:
             f.write(str(port))
-        
+
         try:
             uvicorn.run(app, host="0.0.0.0", port=port, access_log=False, log_level="error")
         finally:

@@ -4587,13 +4587,525 @@ function displayPerformanceGuidance(namespace, operation, stats, coverage_analys
 // Raw Log Extractor Functions
 let filterOptions = null;
 
+const extractorState = {
+    pageIndex: 0,
+    pageSize: 50,
+    totalMatched: 0,
+    totalScanned: 0,
+    truncated: false,
+    lines: [],
+    lineNumbers: [],
+    matchSummary: null,
+    lastFiltersPayload: null,
+    sortKey: 'line',
+    sortDir: 'asc',
+    expandedLineNos: new Set(),
+    searchHighlight: '',
+    searchUseRegex: false,
+    searchCaseSensitive: false,
+    /** Source of truth for Table vs RAW; kept in sync with radios inside #extractor */
+    viewMode: 'raw',
+};
+
+function syncExtractorViewModeFromDom() {
+    const root = document.getElementById('extractor');
+    if (!root) return;
+    const rawEl = root.querySelector('input[name="extractorViewMode"][value="raw"]');
+    const tableEl = root.querySelector('input[name="extractorViewMode"][value="table"]');
+    if (rawEl?.checked) {
+        extractorState.viewMode = 'raw';
+    } else if (tableEl?.checked) {
+        extractorState.viewMode = 'table';
+    } else {
+        extractorState.viewMode = 'raw';
+    }
+}
+
+function onExtractorViewModeChange(ev) {
+    const t = ev && ev.target;
+    if (t && t.name === 'extractorViewMode' && (t.value === 'raw' || t.value === 'table')) {
+        extractorState.viewMode = t.value;
+    } else {
+        syncExtractorViewModeFromDom();
+    }
+    const mode = extractorState.viewMode;
+    const tableSec = document.getElementById('extractorTableSection');
+    const rawSec = document.getElementById('extractorRawSection');
+    const root = document.getElementById('extractor');
+    const rawFmt = root ? root.querySelector('.extractor-raw-format') : null;
+    if (tableSec && rawSec) {
+        if (mode === 'raw') {
+            tableSec.style.display = 'none';
+            rawSec.style.display = 'block';
+            if (rawFmt) rawFmt.style.display = 'flex';
+            applyOutputFormat(false);
+        } else {
+            tableSec.style.display = 'block';
+            rawSec.style.display = 'none';
+            if (rawFmt) rawFmt.style.display = 'none';
+            renderExtractorResults();
+        }
+    }
+}
+
+function initExtractorSeverityQuick() {
+    const el = document.getElementById('extractSeverityQuick');
+    if (!el || el.dataset.initialized === '1') return;
+    const pairs = [
+        ['E', 'Error'],
+        ['W', 'Warning'],
+        ['I', 'Info'],
+        ['F', 'Fatal'],
+    ];
+    el.innerHTML = pairs
+        .map(
+            ([v, label]) =>
+                `<label class="extractor-quick-sev"><input type="checkbox" class="extractor-severity-quick" value="${v}"> ${label}</label>`,
+        )
+        .join('');
+    el.dataset.initialized = '1';
+}
+
+function isoToDatetimeLocal(iso) {
+    if (!iso) return '';
+    const d = new Date(iso.includes('T') ? iso : `${iso}`);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function normalizeExtractDateForApi(value) {
+    if (!value || !String(value).trim()) return null;
+    const v = String(value).trim();
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return `${v}:00`;
+    return v;
+}
+
+function prefillExtractorDateRangeFromFilterOptions() {
+    if (!filterOptions) return;
+    const fromEl = document.getElementById('extractDateFrom');
+    const toEl = document.getElementById('extractDateTo');
+    if (!fromEl || !toEl) return;
+    if (!fromEl.value && filterOptions.log_ts_min) {
+        fromEl.value = isoToDatetimeLocal(filterOptions.log_ts_min);
+    }
+    if (!toEl.value && filterOptions.log_ts_max) {
+        toEl.value = isoToDatetimeLocal(filterOptions.log_ts_max);
+    }
+}
+
+function getExtractSeverities() {
+    const fromAdv = getCheckedValues('#extractor .extractor-advanced-filters .severity');
+    const fromQuick = getCheckedValues('#extractor .extractor-severity-quick');
+    return [...new Set([...fromAdv, ...fromQuick])];
+}
+
+function buildExtractFiltersPayload() {
+    let namespace = '';
+    if (document.getElementById('useCustomNamespace').checked) {
+        namespace = document.getElementById('extractNamespaceCustom').value;
+    } else {
+        namespace = document.getElementById('extractNamespace').value;
+    }
+    const minDurRaw = document.getElementById('extractMinDuration').value.trim();
+    const slowThRaw = document.getElementById('extractSlowThreshold').value.trim();
+    const logIdRaw = document.getElementById('extractLogId').value.trim();
+    let log_id = null;
+    if (logIdRaw !== '') {
+        const n = parseInt(logIdRaw, 10);
+        if (!Number.isNaN(n)) log_id = n;
+    }
+    let min_duration_ms = null;
+    if (minDurRaw !== '') {
+        const n = parseInt(minDurRaw, 10);
+        if (!Number.isNaN(n)) min_duration_ms = n;
+    }
+    let slow_query_threshold_ms = null;
+    if (slowThRaw !== '') {
+        const n = parseInt(slowThRaw, 10);
+        if (!Number.isNaN(n)) slow_query_threshold_ms = n;
+    }
+    const textVal = document.getElementById('extractTextSearch').value;
+    return {
+        text_search: textVal || null,
+        case_sensitive: document.getElementById('extractCaseSensitive').checked,
+        use_regex: document.getElementById('extractUseRegex').checked,
+        event_types: getCheckedValues('#extractor .extractor-advanced-filters .event-type'),
+        components: getCheckedValues('#extractor .extractor-advanced-filters .component'),
+        severities: getExtractSeverities(),
+        operations: getCheckedValues('#extractor .extractor-advanced-filters .operation'),
+        namespace: namespace || null,
+        log_id,
+        context: document.getElementById('extractContext').value.trim() || null,
+        date_from: normalizeExtractDateForApi(document.getElementById('extractDateFrom').value),
+        date_to: normalizeExtractDateForApi(document.getElementById('extractDateTo').value),
+        min_duration_ms,
+        slow_query_threshold_ms,
+        limit: extractorState.pageSize,
+    };
+}
+
+function parseExtractorLine(line) {
+    try {
+        const o = JSON.parse(line);
+        const ts = o.t && o.t.$date ? String(o.t.$date) : '';
+        const duration = o.attr && o.attr.durationMillis != null ? Number(o.attr.durationMillis) : null;
+        const ns = (o.attr && o.attr.ns) || '—';
+        const msg = o.msg != null ? String(o.msg) : '';
+        return {
+            ts,
+            severity: o.s != null ? String(o.s) : '—',
+            component: o.c != null ? String(o.c) : '—',
+            ns,
+            duration,
+            msg,
+            logId: o.id != null ? String(o.id) : '—',
+            raw: line,
+            parsed: o,
+        };
+    } catch {
+        return {
+            ts: '',
+            severity: '—',
+            component: '—',
+            ns: '—',
+            duration: null,
+            msg: truncateText(line, 120),
+            logId: '—',
+            raw: line,
+            parsed: null,
+        };
+    }
+}
+
+function formatExtractorDisplayTs(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return escapeHtml(ts);
+    return escapeHtml(d.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC'));
+}
+
+function extractorSeverityBadgeClass(sev) {
+    const s = String(sev || '').toUpperCase();
+    if (s === 'E' || s === 'F') return 'extractor-sev-badge extractor-sev-err';
+    if (s === 'W') return 'extractor-sev-badge extractor-sev-warn';
+    if (s.startsWith('D')) return 'extractor-sev-badge extractor-sev-dbg';
+    return 'extractor-sev-badge extractor-sev-info';
+}
+
+function highlightExtractorPlainInEscaped(escapedText, needle, caseSensitive) {
+    if (!needle || !escapedText) return escapedText;
+    const escNeedle = escapeHtml(needle);
+    const re = new RegExp(escNeedle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi');
+    return escapedText.replace(re, (m) => `<mark class="extractor-search-mark">${m}</mark>`);
+}
+
+function renderExtractorSummaryCards() {
+    const grid = document.getElementById('extractorSummaryGrid');
+    if (!grid) return;
+    const total = extractorState.totalMatched;
+    const scanned = extractorState.totalScanned;
+    const summary = extractorState.matchSummary || {};
+    const bySev = summary.by_severity || {};
+    const eCount = (bySev.E || 0) + (bySev.F || 0);
+    const wCount = bySev.W || 0;
+    const iCount = (bySev.I || 0) + Object.keys(bySev).reduce((acc, k) => {
+        if (k.startsWith('D')) acc += bySev[k] || 0;
+        return acc;
+    }, 0);
+    const spanStart = summary.time_span_start || '—';
+    const spanEnd = summary.time_span_end || '—';
+    grid.innerHTML = `
+        <div class="stat-card data-quality-card extractor-summary-card">
+            <h3>${total.toLocaleString()}</h3>
+            <p>Total matches <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>Across full log for current filters</small>
+            <div class="info-content" style="display: none;">
+                <p>Total lines matching filters (not only this page). Use pagination to browse results.</p>
+            </div>
+        </div>
+        <div class="stat-card data-quality-card extractor-summary-card">
+            <h3>${scanned.toLocaleString()}</h3>
+            <p>Lines scanned <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>Physical lines in file / ingest store</small>
+            <div class="info-content" style="display: none;">
+                <p>Total JSON lines considered in the log file for this extraction.</p>
+            </div>
+        </div>
+        <div class="stat-card data-quality-card extractor-summary-card">
+            <h3>${eCount.toLocaleString()} / ${wCount.toLocaleString()}</h3>
+            <p>Error+Fatal / Warnings <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>Severity breakdown (matched set)</small>
+            <div class="info-content" style="display: none;">
+                <p>Counts of E+F versus W among all matches. Info/Debug aggregate: ${iCount.toLocaleString()}</p>
+            </div>
+        </div>
+        <div class="stat-card data-quality-card extractor-summary-card">
+            <h3 style="font-size:0.95rem;line-height:1.3;">${escapeHtml(String(spanStart))} →</h3>
+            <p>Time span <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>${escapeHtml(String(spanEnd))}</small>
+            <div class="info-content" style="display: none;">
+                <p>Earliest and latest <code>t.$date</code> among matched entries (when present).</p>
+            </div>
+        </div>
+    `;
+}
+
+function compareExtractorRows(a, b, sortKey) {
+    const dir = extractorState.sortDir === 'asc' ? 1 : -1;
+    const fieldMap = {
+        line: 'lineNo',
+        ts: 'ts',
+        sev: 'severity',
+        comp: 'component',
+        ns: 'ns',
+        dur: 'duration',
+        msg: 'msg',
+    };
+    const field = fieldMap[sortKey] || sortKey;
+    const va = a[field];
+    const vb = b[field];
+    if (sortKey === 'line' || sortKey === 'dur') {
+        const na = Number(va);
+        const nb = Number(vb);
+        if (!Number.isNaN(na) && !Number.isNaN(nb)) return (na - nb) * dir;
+        if (Number.isNaN(na) && !Number.isNaN(nb)) return 1 * dir;
+        if (!Number.isNaN(na) && Number.isNaN(nb)) return -1 * dir;
+    }
+    return String(va ?? '').localeCompare(String(vb ?? '')) * dir;
+}
+
+function sortExtractorRowsForDisplay(rows) {
+    const key = extractorState.sortKey;
+    const copy = [...rows];
+    copy.sort((a, b) => compareExtractorRows(a, b, key));
+    return copy;
+}
+
+function renderExtractorResults() {
+    const table = document.getElementById('extractorDataTable');
+    const tbody = document.getElementById('extractorTableBody');
+    const emptyEl = document.getElementById('extractorEmptyState');
+    if (!table || !tbody) return;
+
+    document.getElementById('matchCount').textContent = String(extractorState.totalMatched);
+    renderExtractorSummaryCards();
+
+    const offset = extractorState.pageIndex * extractorState.pageSize;
+    const startIdx = extractorState.totalMatched === 0 ? 0 : offset + 1;
+    const endIdx = offset + extractorState.lines.length;
+    const rangeEl = document.getElementById('extractorFooterRange');
+    if (rangeEl) {
+        rangeEl.textContent =
+            extractorState.totalMatched > 0
+                ? `Showing ${startIdx}–${endIdx} of ${extractorState.totalMatched}`
+                : '';
+    }
+    const pageCount = Math.max(1, Math.ceil(extractorState.totalMatched / extractorState.pageSize) || 1);
+    const pageLabel = document.getElementById('extractorPageLabel');
+    if (pageLabel) {
+        pageLabel.textContent = `Page ${extractorState.pageIndex + 1} / ${pageCount}`;
+    }
+    const prevBtn = document.getElementById('extractorPrevBtn');
+    const nextBtn = document.getElementById('extractorNextBtn');
+    if (prevBtn) prevBtn.disabled = extractorState.pageIndex <= 0;
+    if (nextBtn) nextBtn.disabled = extractorState.pageIndex + 1 >= pageCount;
+
+    if (extractorState.lines.length === 0) {
+        table.style.display = 'none';
+        tbody.innerHTML = '';
+        if (emptyEl) {
+            emptyEl.style.display = 'block';
+            emptyEl.textContent = extractorState.lastFiltersPayload
+                ? 'No lines matched the current filters.'
+                : 'Apply filters to see matching log lines.';
+        }
+        return;
+    }
+
+    if (emptyEl) emptyEl.style.display = 'none';
+    table.style.display = 'table';
+
+    const rows = extractorState.lines.map((line, idx) => {
+        const lineNo = extractorState.lineNumbers[idx] != null ? extractorState.lineNumbers[idx] : offset + idx + 1;
+        const p = parseExtractorLine(line);
+        return { ...p, lineNo, pageIndex: idx };
+    });
+
+    const sorted = sortExtractorRowsForDisplay(rows);
+    const fragment = document.createDocumentFragment();
+    sorted.forEach((row, stripeIdx) => {
+        const lineNo = row.lineNo;
+        const isOpen = extractorState.expandedLineNos.has(String(lineNo));
+        const msgPlain = escapeHtml(row.msg);
+        const msgCell =
+            extractorState.searchHighlight && !extractorState.searchUseRegex
+                ? highlightExtractorPlainInEscaped(
+                      msgPlain,
+                      extractorState.searchHighlight,
+                      extractorState.searchCaseSensitive,
+                  )
+                : msgPlain;
+
+        const mainTr = document.createElement('tr');
+        mainTr.className = `extractor-row-main${stripeIdx % 2 === 0 ? ' extractor-row-stripe' : ''}`;
+        mainTr.innerHTML = `
+            <td class="extractor-col-expand">
+                <button type="button" class="extractor-expand-btn" aria-expanded="${isOpen ? 'true' : 'false'}"
+                    aria-label="Expand or collapse JSON for line ${lineNo}"
+                    onclick="toggleExtractorDetailRow(${lineNo})">
+                    <i class="fas ${isOpen ? 'fa-chevron-down' : 'fa-chevron-right'}"></i>
+                </button>
+            </td>
+            <td class="col-num">${lineNo}</td>
+            <td>${formatExtractorDisplayTs(row.ts)}</td>
+            <td><span class="${extractorSeverityBadgeClass(row.severity)}">${escapeHtml(row.severity)}</span></td>
+            <td>${escapeHtml(row.component)}</td>
+            <td>${escapeHtml(truncateText(row.ns, 48))}</td>
+            <td class="col-num">${row.duration != null && !Number.isNaN(row.duration) ? escapeHtml(String(row.duration)) : '—'}</td>
+            <td class="extractor-msg-cell">${msgCell}</td>
+            <td class="extractor-actions-cell">
+                <button type="button" class="btn-small" onclick="copyExtractorLine(${lineNo})">Copy</button>
+                <button type="button" class="btn-small" onclick="openExtractorContext(${lineNo})">Context</button>
+            </td>
+        `;
+        fragment.appendChild(mainTr);
+
+        let detailInner = '';
+        try {
+            const obj = row.parsed != null ? row.parsed : JSON.parse(row.raw);
+            detailInner = `<pre class="extractor-json-pre">${syntaxHighlightJson(obj)}</pre>`;
+        } catch {
+            detailInner = `<pre class="extractor-json-pre">${escapeHtml(row.raw)}</pre>`;
+        }
+
+        const detailTr = document.createElement('tr');
+        detailTr.className = `extractor-row-detail${isOpen ? ' is-open' : ''}`;
+        detailTr.setAttribute('data-parent-line', String(lineNo));
+        detailTr.innerHTML = `<td colspan="9" class="extractor-detail-cell">${detailInner}</td>`;
+        fragment.appendChild(detailTr);
+    });
+
+    tbody.innerHTML = '';
+    tbody.appendChild(fragment);
+    attachExtractorTableSortHandlers();
+    table.querySelectorAll('th[data-extractor-sort]').forEach((h) => {
+        h.classList.remove('sort-asc', 'sort-desc');
+        const k = h.getAttribute('data-extractor-sort');
+        if (k === extractorState.sortKey) {
+            h.classList.add(extractorState.sortDir === 'asc' ? 'sort-asc' : 'sort-desc');
+        }
+    });
+}
+
+function attachExtractorTableSortHandlers() {
+    const table = document.getElementById('extractorDataTable');
+    if (!table || table.dataset.sortBound === '1') return;
+    table.dataset.sortBound = '1';
+    table.querySelectorAll('th[data-extractor-sort]').forEach((th) => {
+        th.addEventListener('click', () => {
+            const key = th.getAttribute('data-extractor-sort');
+            if (!key) return;
+            if (extractorState.sortKey === key) {
+                extractorState.sortDir = extractorState.sortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                extractorState.sortKey = key;
+                extractorState.sortDir = 'asc';
+            }
+            table.querySelectorAll('th[data-extractor-sort]').forEach((h) => {
+                h.classList.remove('sort-asc', 'sort-desc');
+            });
+            th.classList.add(extractorState.sortDir === 'asc' ? 'sort-asc' : 'sort-desc');
+            renderExtractorResults();
+        });
+    });
+}
+
+function toggleExtractorDetailRow(lineNo) {
+    const key = String(lineNo);
+    if (extractorState.expandedLineNos.has(key)) {
+        extractorState.expandedLineNos.delete(key);
+    } else {
+        extractorState.expandedLineNos.add(key);
+    }
+    renderExtractorResults();
+}
+
+function copyExtractorLine(lineNo) {
+    const idx = extractorState.lineNumbers.findIndex((n) => n === lineNo);
+    const line = idx >= 0 ? extractorState.lines[idx] : null;
+    if (!line) {
+        showToast('warning', 'Line not on current page');
+        return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(line).then(() => showToast('success', 'Copied line'));
+    } else {
+        showToast('error', 'Clipboard not available');
+    }
+}
+
+async function openExtractorContext(lineNo) {
+    if (!currentFileId) return;
+    const sel = document.getElementById('extractContextRadius');
+    const n = sel ? parseInt(sel.value, 10) : 5;
+    const radius = Number.isNaN(n) ? 5 : Math.min(200, Math.max(0, n));
+    const modal = document.getElementById('extractorContextModal');
+    const pre = document.getElementById('extractorContextBody');
+    if (!modal || !pre) return;
+    modal.style.display = 'flex';
+    pre.textContent = 'Loading…';
+    try {
+        const data = await fetchJson(`/api/analyze/${currentFileId}/log-context`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_no: lineNo, before: radius, after: radius }),
+        });
+        const lines = data.lines || [];
+        pre.textContent = lines
+            .map((row) => `${row.is_target ? '>> ' : '   '}${row.line_no}: ${row.content}`)
+            .join('\n');
+    } catch (e) {
+        if (e.name === 'AbortError') return;
+        pre.textContent = `Error: ${e.message}`;
+        showToast('error', e.message);
+    }
+}
+
+function closeExtractorContextModal() {
+    const modal = document.getElementById('extractorContextModal');
+    if (modal) modal.style.display = 'none';
+}
+
+function onExtractorPageSizeChange() {
+    const sel = document.getElementById('extractPageSize');
+    extractorState.pageSize = parseInt(sel?.value, 10) || 50;
+    extractorState.pageIndex = 0;
+    if (extractorState.lastFiltersPayload) applyExtraction(false);
+}
+
+function extractorPrevPage() {
+    if (extractorState.pageIndex <= 0) return;
+    extractorState.pageIndex -= 1;
+    applyExtraction(false);
+}
+
+function extractorNextPage() {
+    const pageCount = Math.max(1, Math.ceil(extractorState.totalMatched / extractorState.pageSize) || 1);
+    if (extractorState.pageIndex + 1 >= pageCount) return;
+    extractorState.pageIndex += 1;
+    applyExtraction(false);
+}
+
 async function loadFilterOptions() {
     if (!currentFileId) return;
+    initExtractorSeverityQuick();
 
     try {
         const data = await fetchJson(`/api/analyze/${currentFileId}/filter-options`);
         filterOptions = data.data;
         lastFilterOptionsFileId = currentFileId;
+        prefillExtractorDateRangeFromFilterOptions();
         populateFilterOptions();
     } catch (error) {
         if (error.name === 'AbortError') return;
@@ -4605,15 +5117,14 @@ async function loadFilterOptions() {
 function populateFilterOptions() {
     if (!filterOptions) return;
 
-    // Event Types
     const eventTypeContainer = document.getElementById('eventTypeOptions');
     eventTypeContainer.innerHTML = '';
-
+    const slowTh = document.getElementById('extractSlowThreshold')?.value || '100';
     const eventTypeLabels = {
-        'COLLSCAN': 'COLLSCAN',
-        'IXSCAN': 'IXSCAN',
-        'slow_query': 'Slow Query (>100ms)',
-        'error': 'Errors'
+        COLLSCAN: 'COLLSCAN',
+        IXSCAN: 'IXSCAN',
+        slow_query: `Slow Query (>${slowTh}ms)`,
+        error: 'Errors',
     };
 
     Object.entries(filterOptions.event_types).forEach(([key, available]) => {
@@ -4624,65 +5135,126 @@ function populateFilterOptions() {
         }
     });
 
-    // Components
     const componentContainer = document.getElementById('componentOptions');
     componentContainer.innerHTML = '';
-
-    filterOptions.components.forEach(component => {
+    filterOptions.components.forEach((component) => {
         const label = document.createElement('label');
         label.innerHTML = `<input type="checkbox" class="component" value="${component}"> ${component}`;
         componentContainer.appendChild(label);
     });
 
-    // Severities
     const severityContainer = document.getElementById('severityOptions');
     severityContainer.innerHTML = '';
-
     const severityLabels = {
-        'I': 'Info',
-        'W': 'Warning',
-        'E': 'Error',
-        'F': 'Fatal',
-        'D': 'Debug',
-        'D1': 'Debug 1',
-        'D2': 'Debug 2',
-        'D3': 'Debug 3',
-        'D4': 'Debug 4',
-        'D5': 'Debug 5'
+        I: 'Info',
+        W: 'Warning',
+        E: 'Error',
+        F: 'Fatal',
+        D: 'Debug',
+        D1: 'Debug 1',
+        D2: 'Debug 2',
+        D3: 'Debug 3',
+        D4: 'Debug 4',
+        D5: 'Debug 5',
     };
-
-    filterOptions.severities.forEach(severity => {
+    filterOptions.severities.forEach((severity) => {
         const label = document.createElement('label');
         const displayName = severityLabels[severity] || severity;
         label.innerHTML = `<input type="checkbox" class="severity" value="${severity}"> ${displayName}`;
         severityContainer.appendChild(label);
     });
 
-    // Operations
     const operationContainer = document.getElementById('operationOptions');
     operationContainer.innerHTML = '';
-
-    filterOptions.operations.forEach(operation => {
+    filterOptions.operations.forEach((operation) => {
         const label = document.createElement('label');
         label.innerHTML = `<input type="checkbox" class="operation" value="${operation}"> ${operation}`;
         operationContainer.appendChild(label);
     });
 
-    // Namespaces
     const namespaceSelect = document.getElementById('extractNamespace');
     namespaceSelect.innerHTML = '<option value="">All namespaces</option>';
-
-    filterOptions.namespaces.forEach(namespace => {
+    filterOptions.namespaces.forEach((namespace) => {
         const option = document.createElement('option');
         option.value = namespace;
         option.textContent = namespace;
         namespaceSelect.appendChild(option);
     });
-
-    // Show namespace dropdown if we have namespaces
     if (filterOptions.namespaces.length > 0) {
         namespaceSelect.style.display = 'inline-block';
     }
+}
+
+function resetExtractorFiltersForPreset() {
+    document.querySelectorAll('#extractor .event-type').forEach((cb) => {
+        cb.checked = false;
+    });
+    document.querySelectorAll('#extractor .extractor-severity-quick').forEach((cb) => {
+        cb.checked = false;
+    });
+    document.querySelectorAll('#extractor .extractor-advanced-filters .severity').forEach((cb) => {
+        cb.checked = false;
+    });
+    document.querySelectorAll('#extractor .extractor-advanced-filters .component').forEach((cb) => {
+        cb.checked = false;
+    });
+    document.querySelectorAll('#extractor .extractor-advanced-filters .operation').forEach((cb) => {
+        cb.checked = false;
+    });
+    document.getElementById('extractTextSearch').value = '';
+    document.getElementById('extractMinDuration').value = '';
+    document.getElementById('extractDateFrom').value = '';
+    document.getElementById('extractDateTo').value = '';
+    document.getElementById('extractLogId').value = '';
+    document.getElementById('extractContext').value = '';
+    const useRegex = document.getElementById('extractUseRegex');
+    if (useRegex) useRegex.checked = false;
+    document.getElementById('extractCaseSensitive').checked = false;
+    const nsSel = document.getElementById('extractNamespace');
+    const nsCustom = document.getElementById('extractNamespaceCustom');
+    const useNs = document.getElementById('useCustomNamespace');
+    if (nsSel) nsSel.value = '';
+    if (nsCustom) nsCustom.value = '';
+    if (useNs) useNs.checked = false;
+    if (nsSel) {
+        nsSel.style.display =
+            filterOptions && filterOptions.namespaces && filterOptions.namespaces.length > 0
+                ? 'inline-block'
+                : 'none';
+    }
+    if (nsCustom) nsCustom.style.display = 'none';
+}
+
+function applyExtractorPreset(kind) {
+    initExtractorSeverityQuick();
+    resetExtractorFiltersForPreset();
+
+    const slowTh = parseInt(document.getElementById('extractSlowThreshold').value, 10) || 100;
+    let collscanCheckboxFound = false;
+
+    if (kind === 'slow') {
+        document.getElementById('extractMinDuration').value = String(slowTh);
+        document.querySelectorAll('#extractor .event-type').forEach((cb) => {
+            if (cb.value === 'slow_query') cb.checked = true;
+        });
+    } else if (kind === 'errors') {
+        document.querySelectorAll('#extractor .extractor-severity-quick').forEach((cb) => {
+            cb.checked = cb.value === 'E' || cb.value === 'F';
+        });
+    } else if (kind === 'auth') {
+        document.getElementById('extractTextSearch').value = 'authenticate';
+    } else if (kind === 'collscan') {
+        document.querySelectorAll('#extractor .event-type').forEach((cb) => {
+            if (cb.value === 'COLLSCAN') {
+                collscanCheckboxFound = true;
+                cb.checked = true;
+            }
+        });
+        if (!collscanCheckboxFound) {
+            document.getElementById('extractTextSearch').value = 'COLLSCAN';
+        }
+    }
+    applyExtraction(true);
 }
 
 // Handle namespace toggle
@@ -4702,303 +5274,255 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     }
+    onExtractorViewModeChange();
 });
 
-// Store the raw lines for format changes
 let currentExtractionLines = [];
 
-async function applyExtraction() {
+async function applyExtraction(resetPage = true) {
     if (!currentFileId) return;
-    await refreshIngestStatus(currentFileId);
-    // Handle namespace (dropdown vs custom input)
-    let namespace = '';
-    if (document.getElementById('useCustomNamespace').checked) {
-        namespace = document.getElementById('extractNamespaceCustom').value;
-    } else {
-        namespace = document.getElementById('extractNamespace').value;
+    if (resetPage) {
+        extractorState.pageIndex = 0;
+        extractorState.expandedLineNos = new Set();
     }
+    await refreshIngestStatus(currentFileId);
 
-    const pageSize = isLargeDatasetMode ? 5000 : 10000;
-    const filters = {
-        text_search: document.getElementById('extractTextSearch').value,
-        case_sensitive: document.getElementById('extractCaseSensitive').checked,
-        event_types: getCheckedValues('.event-type'),
-        components: getCheckedValues('.component'),
-        severities: getCheckedValues('.severity'),
-        operations: getCheckedValues('.operation'),
-        namespace: namespace,
-        date_from: document.getElementById('extractDateFrom').value,
-        date_to: document.getElementById('extractDateTo').value,
-        limit: pageSize
-    };
+    const filters = buildExtractFiltersPayload();
+    extractorState.lastFiltersPayload = { ...filters };
+    const offset = extractorState.pageIndex * extractorState.pageSize;
+    extractorState.searchHighlight = document.getElementById('extractTextSearch').value.trim();
+    extractorState.searchUseRegex = document.getElementById('extractUseRegex').checked;
+    extractorState.searchCaseSensitive = document.getElementById('extractCaseSensitive').checked;
 
-    showToast('info', 'Extracting logs...');
+    showLoading('Extracting logs…');
     try {
-        const data = await fetchJson(`/api/analyze/${currentFileId}/extract?offset=0&source=${currentAnalysisSource}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(filters)
-        }, 'extract');
+        const data = await fetchJson(
+            `/api/analyze/${currentFileId}/extract?offset=${offset}&source=${currentAnalysisSource}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(filters),
+            },
+            'extract',
+        );
 
-        // Store raw lines for format changes
-        currentExtractionLines = data.lines;
+        currentExtractionLines = data.lines || [];
         extractionPrettyCache = null;
+        extractorState.lines = currentExtractionLines;
+        extractorState.lineNumbers = data.match_line_numbers || [];
+        extractorState.totalMatched = data.total_matched ?? 0;
+        extractorState.totalScanned = data.total_scanned ?? 0;
+        extractorState.truncated = !!data.truncated;
+        extractorState.matchSummary = data.match_summary || null;
 
-        // Update match count
-        document.getElementById('matchCount').textContent = data.total_matched;
-
-        // Apply current format
-        applyOutputFormat();
+        syncExtractorViewModeFromDom();
+        if (extractorState.viewMode === 'table') {
+            renderExtractorResults();
+        } else {
+            document.getElementById('matchCount').textContent = String(extractorState.totalMatched);
+            renderExtractorSummaryCards();
+            applyOutputFormat(false);
+        }
 
         if (data.truncated) {
-            showToast('warning', `Results truncated to ${filters.limit} lines`);
+            const n = extractorState.pageSize;
+            const total = extractorState.totalMatched.toLocaleString();
+            showToast(
+                'warning',
+                `Showing up to ${n} lines per request; ${total} matches in total. Use the Next button below to load the next page.`,
+            );
         } else {
-            showToast('success', `Found ${data.total_matched} matches`);
+            showToast('success', `Found ${extractorState.totalMatched} matches`);
         }
     } catch (error) {
         if (error.name === 'AbortError') return;
         showToast('error', `Extraction failed: ${error.message}`);
+    } finally {
+        hideLoading();
     }
 }
 
-function applyOutputFormat() {
+function applyOutputFormat(showToastOk = true) {
     if (currentExtractionLines.length === 0) {
-        showToast('warning', 'No data to format. Please apply filters first.');
+        if (showToastOk) showToast('warning', 'No data to format. Apply filters first.');
+        const ta = document.getElementById('extractorOutput');
+        if (ta) ta.value = '';
         return;
     }
 
-    const format = document.querySelector('input[name="outputFormat"]:checked').value;
+    const format = document.querySelector('input[name="outputFormat"]:checked')?.value || 'raw';
     let output = '';
 
     if (format === 'raw') {
         output = currentExtractionLines.join('\n');
     } else if (format === 'pretty') {
         if (!extractionPrettyCache) {
-            extractionPrettyCache = currentExtractionLines.map(line => {
-                try {
-                    return JSON.stringify(JSON.parse(line), null, 2);
-                } catch {
-                    return line;
-                }
-            }).join('\n---\n');
+            extractionPrettyCache = currentExtractionLines
+                .map((line) => {
+                    try {
+                        return JSON.stringify(JSON.parse(line), null, 2);
+                    } catch {
+                        return line;
+                    }
+                })
+                .join('\n---\n');
         }
         output = extractionPrettyCache;
     }
 
-    document.getElementById('extractorOutput').value = output;
-    showToast('success', 'Output format applied');
+    const ta = document.getElementById('extractorOutput');
+    if (ta) ta.value = output;
+    if (showToastOk) showToast('success', 'Output format applied');
 }
 
 function getCheckedValues(selector) {
-    return Array.from(document.querySelectorAll(selector + ':checked'))
-        .map(el => el.value);
+    return Array.from(document.querySelectorAll(selector + ':checked')).map((el) => el.value);
 }
 
 function copyResults() {
+    syncExtractorViewModeFromDom();
+    if (extractorState.viewMode === 'table') {
+        const text = extractorState.lines.join('\n');
+        if (!text) {
+            showToast('warning', 'Nothing to copy on this page');
+            return;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => showToast('success', 'Copied page lines'));
+        }
+        return;
+    }
     const output = document.getElementById('extractorOutput');
+    if (!output) return;
     output.select();
     document.execCommand('copy');
     showToast('success', 'Copied to clipboard');
 }
 
 function downloadResults() {
-    const output = document.getElementById('extractorOutput').value;
-    const blob = new Blob([output], { type: 'text/plain' });
+    syncExtractorViewModeFromDom();
+    const payload =
+        extractorState.viewMode === 'table'
+            ? extractorState.lines.join('\n')
+            : document.getElementById('extractorOutput')?.value || '';
+    if (!payload) {
+        showToast('warning', 'Nothing to download');
+        return;
+    }
+    const blob = new Blob([payload], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `extracted-logs-${Date.now()}.log`;
     a.click();
+    URL.revokeObjectURL(url);
     showToast('success', 'Downloaded');
 }
 
-function selectAllResults() {
-    document.getElementById('extractorOutput').select();
+function extractorExportCsv() {
+    if (!extractorState.lines.length) {
+        showToast('warning', 'No rows on this page');
+        return;
+    }
+    const rows = extractorState.lines.map((line, idx) => {
+        const lineNo = extractorState.lineNumbers[idx] != null ? extractorState.lineNumbers[idx] : '';
+        const p = parseExtractorLine(line);
+        return [lineNo, p.ts, p.severity, p.component, p.ns, p.duration != null ? p.duration : '', p.msg, line];
+    });
+    const esc = (cell) => {
+        const s = String(cell ?? '');
+        if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+        return s;
+    };
+    const header = ['line', 'timestamp', 'severity', 'component', 'namespace', 'duration_ms', 'message', 'raw_json'];
+    const body = rows.map((r) => r.map(esc).join(',')).join('\n');
+    const csv = `${header.join(',')}\n${body}`;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `extracted-page-${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('success', 'CSV exported (current page)');
+}
+
+function extractorExportJson() {
+    if (!extractorState.lines.length) {
+        showToast('warning', 'No rows on this page');
+        return;
+    }
+    const records = extractorState.lines.map((line, idx) => {
+        const lineNo = extractorState.lineNumbers[idx] != null ? extractorState.lineNumbers[idx] : null;
+        let parsed = null;
+        try {
+            parsed = JSON.parse(line);
+        } catch {
+            parsed = null;
+        }
+        return { line_no: lineNo, raw: line, parsed };
+    });
+    const blob = new Blob([JSON.stringify(records, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `extracted-page-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('success', 'JSON exported (current page)');
 }
 
 function clearExtractFilters() {
     document.getElementById('extractTextSearch').value = '';
     document.getElementById('extractCaseSensitive').checked = false;
+    const useRegex = document.getElementById('extractUseRegex');
+    if (useRegex) useRegex.checked = false;
     document.getElementById('extractNamespace').value = '';
     document.getElementById('extractNamespaceCustom').value = '';
     document.getElementById('useCustomNamespace').checked = false;
     document.getElementById('extractDateFrom').value = '';
     document.getElementById('extractDateTo').value = '';
-    document.querySelectorAll('.event-type, .component, .severity, .operation')
-        .forEach(cb => cb.checked = false);
+    const md = document.getElementById('extractMinDuration');
+    if (md) md.value = '';
+    const lid = document.getElementById('extractLogId');
+    if (lid) lid.value = '';
+    const ctx = document.getElementById('extractContext');
+    if (ctx) ctx.value = '';
+    document.querySelectorAll('#extractor .event-type, #extractor .component, #extractor .severity, #extractor .operation').forEach((cb) => {
+        cb.checked = false;
+    });
+    document.querySelectorAll('#extractor .extractor-severity-quick').forEach((cb) => {
+        cb.checked = false;
+    });
 
-    // Clear stored data and output
     currentExtractionLines = [];
-    document.getElementById('extractorOutput').value = '';
+    extractionPrettyCache = null;
+    const ta = document.getElementById('extractorOutput');
+    if (ta) ta.value = '';
     document.getElementById('matchCount').textContent = '0';
-}
 
-// --- FTDC Viewer ---
+    extractorState.pageIndex = 0;
+    extractorState.lines = [];
+    extractorState.lineNumbers = [];
+    extractorState.totalMatched = 0;
+    extractorState.totalScanned = 0;
+    extractorState.truncated = false;
+    extractorState.matchSummary = null;
+    extractorState.lastFiltersPayload = null;
+    extractorState.expandedLineNos = new Set();
+    extractorState.searchHighlight = '';
 
-let currentFsPath = '';
-
-async function openFsBrowser(path = '') {
-    const currentInputPath = document.getElementById('ftdcPath').value;
-    const modal = document.getElementById('fsBrowserModal');
-    modal.style.display = 'block';
-
-    // Try to open the currently typed path, or fallback to root/home
-    await loadFsDirectory(path || currentInputPath || '');
-}
-
-function closeFsBrowser() {
-    const modal = document.getElementById('fsBrowserModal');
-    modal.style.display = 'none';
-}
-
-async function loadFsDirectory(path) {
-    const listElement = document.getElementById('fsBrowserList');
-    listElement.innerHTML = '<div style="padding: 10px; text-align: center;"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
-
-    try {
-        const url = path ? `/api/fs/browse?path=${encodeURIComponent(path)}` : '/api/fs/browse';
-        const response = await fetch(url);
-        const data = await response.json();
-
-        if (data.status === 'success') {
-            currentFsPath = data.data.current_path;
-            document.getElementById('fsCurrentPath').textContent = currentFsPath;
-
-            listElement.innerHTML = '';
-            data.data.directories.forEach(dir => {
-                const item = document.createElement('div');
-                item.style.padding = '8px 10px';
-                item.style.borderBottom = '1px solid #f1f3f5';
-                item.style.cursor = 'pointer';
-                item.style.display = 'flex';
-                item.style.alignItems = 'center';
-                item.style.gap = '8px';
-
-                // Add hover effect
-                item.onmouseover = () => item.style.backgroundColor = '#f8f9fa';
-                item.onmouseout = () => item.style.backgroundColor = 'transparent';
-
-                item.innerHTML = `<i class="fas ${dir.name === '..' ? 'fa-level-up-alt' : 'fa-folder'}"></i> <span>${dir.name}</span>`;
-                item.onclick = () => loadFsDirectory(dir.path);
-
-                listElement.appendChild(item);
-            });
-
-            if (data.data.directories.length === 0) {
-                listElement.innerHTML = '<div style="padding: 10px; color: #6c757d;">No subdirectories found.</div>';
-            }
-        } else {
-            listElement.innerHTML = `<div style="padding: 10px; color: #dc3545;">Error: ${data.message}</div>`;
-        }
-    } catch (e) {
-        listElement.innerHTML = `<div style="padding: 10px; color: #dc3545;">Failed to load directory.</div>`;
+    const tbody = document.getElementById('extractorTableBody');
+    const table = document.getElementById('extractorDataTable');
+    if (tbody) tbody.innerHTML = '';
+    if (table) table.style.display = 'none';
+    const emptyEl = document.getElementById('extractorEmptyState');
+    if (emptyEl) {
+        emptyEl.style.display = 'block';
+        emptyEl.textContent = 'Apply filters to see matching log lines.';
     }
+    const grid = document.getElementById('extractorSummaryGrid');
+    if (grid) grid.innerHTML = '';
+    const rangeEl = document.getElementById('extractorFooterRange');
+    if (rangeEl) rangeEl.textContent = '';
 }
-
-function selectCurrentFsPath() {
-    if (currentFsPath) {
-        document.getElementById('ftdcPath').value = currentFsPath;
-        closeFsBrowser();
-    }
-}
-
-async function loadFtdcDirs() {
-    try {
-        const response = await fetch('/api/ftdc/list');
-        const data = await response.json();
-        const list = document.getElementById('ftdcDiscoveredList');
-        if (list) {
-            list.innerHTML = '';
-            if (data.status === 'success' && data.data.directories.length > 0) {
-                data.data.directories.forEach(dir => {
-                    const li = document.createElement('li');
-                    li.style.cursor = 'pointer';
-                    li.style.padding = '5px';
-                    li.style.border = '1px solid #eee';
-                    li.style.borderRadius = '4px';
-                    li.innerHTML = `<i class="fas fa-folder"></i> ${dir}`;
-                    li.onclick = () => {
-                        document.getElementById('ftdcPath').value = dir;
-                    };
-                    list.appendChild(li);
-                });
-            } else {
-                list.innerHTML = '<li>No directories found</li>';
-            }
-        }
-    } catch (e) {
-        console.error("Failed to load FTDC dirs", e);
-    }
-}
-
-async function startFtdcViewer() {
-    const path = document.getElementById('ftdcPath').value;
-    if (!path) {
-        showToast('warning', 'Please enter or select a path');
-        return;
-    }
-    document.getElementById('ftdcStatusText').textContent = 'Starting... (This might take a minute)';
-    document.getElementById('ftdcStatusText').className = 'text-warning';
-
-    try {
-        const response = await fetch('/api/ftdc/start', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: path })
-        });
-        const data = await response.json();
-        if (data.status === 'success') {
-            showToast('success', 'FTDC Viewer starting');
-            setTimeout(checkFtdcStatus, 3000);
-        } else {
-            showToast('error', data.message || 'Failed to start');
-        }
-    } catch (e) {
-        showToast('error', 'Error starting FTDC viewer');
-    }
-}
-
-async function stopFtdcViewer() {
-    document.getElementById('ftdcStatusText').textContent = 'Stopping...';
-
-    try {
-        const response = await fetch('/api/ftdc/stop', { method: 'POST' });
-        const data = await response.json();
-        if (data.status === 'success') {
-            showToast('success', 'FTDC Viewer stopped');
-            document.getElementById('ftdcStatusText').textContent = 'Stopped';
-            document.getElementById('ftdcStatusText').className = '';
-            document.getElementById('ftdcLinkContainer').style.display = 'none';
-        } else {
-            showToast('error', data.message || 'Failed to stop');
-        }
-    } catch (e) {
-        showToast('error', 'Error stopping FTDC viewer');
-    }
-}
-
-async function checkFtdcStatus() {
-    try {
-        const response = await fetch('/api/ftdc/status');
-        const data = await response.json();
-        if (data.status === 'success' && data.data.running) {
-            document.getElementById('ftdcStatusText').textContent = 'Running';
-            document.getElementById('ftdcStatusText').className = 'text-success';
-            document.getElementById('ftdcLinkContainer').style.display = 'block';
-            document.getElementById('ftdcGrafanaLink').href = data.data.url;
-        } else {
-            document.getElementById('ftdcStatusText').textContent = 'Not Running / Starting...';
-            document.getElementById('ftdcStatusText').className = '';
-            document.getElementById('ftdcLinkContainer').style.display = 'none';
-        }
-    } catch (e) {
-        console.error(e);
-    }
-}
-
-// Check status on load and load dirs if FTDC tab clicked
-document.addEventListener('DOMContentLoaded', () => {
-    checkFtdcStatus();
-    loadFtdcDirs();
-});
-setInterval(checkFtdcStatus, 5000); // Check status every 5 seconds

@@ -27,7 +27,7 @@ def get_sample_rate_from_percentage(
             return get_sample_rate(total_lines)
         return 1  # No sampling
     elif sample_percentage == 0:
-        return float('inf')  # Skip all
+        return float("inf")  # Skip all
     else:
         # Convert percentage to sample rate: 50% = every 2nd line
         return int(100 / sample_percentage)
@@ -66,11 +66,11 @@ def get_sampling_metadata(
         sampled_lines = total_lines
 
     return {
-        'total_lines': total_lines,
-        'is_sampled': is_sampled,
-        'sample_rate': sample_rate,
-        'sampled_lines': sampled_lines,
-        'estimated_original_size': total_lines if not is_sampled else total_lines * sample_rate,
-        'is_user_forced': is_user_forced,
-        'user_percentage': user_sample_percentage
+        "total_lines": total_lines,
+        "is_sampled": is_sampled,
+        "sample_rate": sample_rate,
+        "sampled_lines": sampled_lines,
+        "estimated_original_size": total_lines if not is_sampled else total_lines * sample_rate,
+        "is_user_forced": is_user_forced,
+        "user_percentage": user_sample_percentage,
     }

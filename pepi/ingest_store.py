@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -82,11 +84,16 @@ def bootstrap_schema(conn: sqlite3.Connection) -> None:
             value REAL NOT NULL
         );
 
-        CREATE INDEX IF NOT EXISTS idx_log_events_file_ts ON log_events(file_id, ts);
-        CREATE INDEX IF NOT EXISTS idx_log_events_file_ns_op ON log_events(file_id, namespace, operation);
-        CREATE INDEX IF NOT EXISTS idx_log_events_file_evt_cmp_sev ON log_events(file_id, event_type, component, severity);
-        CREATE INDEX IF NOT EXISTS idx_conn_events_file_ts_ip ON connection_events(file_id, ts, ip);
-        CREATE INDEX IF NOT EXISTS idx_timeseries_file_metric_ts ON timeseries_agg(file_id, metric, bucket_ts);
+        CREATE INDEX IF NOT EXISTS idx_log_events_file_ts
+            ON log_events(file_id, ts);
+        CREATE INDEX IF NOT EXISTS idx_log_events_file_ns_op
+            ON log_events(file_id, namespace, operation);
+        CREATE INDEX IF NOT EXISTS idx_log_events_file_evt_cmp_sev
+            ON log_events(file_id, event_type, component, severity);
+        CREATE INDEX IF NOT EXISTS idx_conn_events_file_ts_ip
+            ON connection_events(file_id, ts, ip);
+        CREATE INDEX IF NOT EXISTS idx_timeseries_file_metric_ts
+            ON timeseries_agg(file_id, metric, bucket_ts);
         """
     )
     conn.commit()
@@ -95,8 +102,14 @@ def bootstrap_schema(conn: sqlite3.Connection) -> None:
 def upsert_job(conn: sqlite3.Connection, job_data: dict[str, Any]) -> None:
     conn.execute(
         """
-        INSERT INTO ingest_jobs (job_id, file_id, status, bytes_processed, lines_processed, started_at, finished_at, error_message)
-        VALUES (:job_id, :file_id, :status, :bytes_processed, :lines_processed, :started_at, :finished_at, :error_message)
+        INSERT INTO ingest_jobs (
+            job_id, file_id, status, bytes_processed, lines_processed,
+            started_at, finished_at, error_message
+        )
+        VALUES (
+            :job_id, :file_id, :status, :bytes_processed, :lines_processed,
+            :started_at, :finished_at, :error_message
+        )
         ON CONFLICT(job_id) DO UPDATE SET
             status=excluded.status,
             bytes_processed=excluded.bytes_processed,
@@ -169,7 +182,9 @@ def query_connections_summary(conn: sqlite3.Connection, file_id: str) -> dict[st
     connections_timeseries = []
     for row in ts_rows:
         current += int(row["value"])
-        connections_timeseries.append({"timestamp": row["bucket_ts"], "connection_count": max(current, 0)})
+        connections_timeseries.append(
+            {"timestamp": row["bucket_ts"], "connection_count": max(current, 0)}
+        )
 
     return {
         "connections": connections,
@@ -262,7 +277,11 @@ def query_timeseries(conn: sqlite3.Connection, file_id: str, include_raw: bool) 
             for row in sq_rows
         ]
         errors = [
-            {"timestamp": row["ts"], "message": row["message"] or "Unknown", "severity": row["severity"] or ""}
+            {
+                "timestamp": row["ts"],
+                "message": row["message"] or "Unknown",
+                "severity": row["severity"] or "",
+            }
             for row in err_rows
         ]
     return {
@@ -277,10 +296,187 @@ def query_timeseries(conn: sqlite3.Connection, file_id: str, include_raw: bool) 
             }
             for row in agg_queries
         ],
-        "aggregated_errors": [{"message": row["message"], "count": int(row["cnt"])} for row in agg_errors],
+        "aggregated_errors": [
+            {"message": row["message"], "count": int(row["cnt"])} for row in agg_errors
+        ],
         "unique_namespaces": sorted(unique_namespaces),
-        "total_slow_queries": len(slow_queries) if include_raw else sum(int(row["cnt"]) for row in agg_queries),
+        "total_slow_queries": len(slow_queries)
+        if include_raw
+        else sum(int(row["cnt"]) for row in agg_queries),
         "sampled": False,
+    }
+
+
+def _event_types_sql(event_types: list[str], slow_threshold: int) -> tuple[str, list[Any]]:
+    if not event_types:
+        return "", []
+    parts: list[str] = []
+    params: list[Any] = []
+    for et in event_types:
+        if et == "COLLSCAN":
+            parts.append("INSTR(raw_json, 'COLLSCAN') > 0")
+        elif et == "IXSCAN":
+            parts.append("INSTR(raw_json, 'IXSCAN') > 0")
+        elif et == "slow_query":
+            parts.append("COALESCE(duration_ms, 0) > ?")
+            params.append(slow_threshold)
+        elif et == "error":
+            parts.append("(severity IN ('E', 'F') OR event_type = 'error')")
+    if not parts:
+        return "", []
+    return "(" + " OR ".join(parts) + ")", params
+
+
+def _build_extract_where(
+    *,
+    file_id: str,
+    text_search: str | None,
+    case_sensitive: bool,
+    include_text_clause: bool,
+    event_types: list[str],
+    slow_threshold: int,
+    min_duration_ms: int | None,
+    log_id: int | None,
+    context: str | None,
+    components: list[str],
+    severities: list[str],
+    operations: list[str],
+    namespace: str | None,
+    date_from: str | None,
+    date_to: str | None,
+) -> tuple[str, list[Any]]:
+    where = ["file_id = ?"]
+    params: list[Any] = [file_id]
+
+    if include_text_clause and text_search:
+        if case_sensitive:
+            where.append("(INSTR(raw_json, ?) > 0 OR INSTR(COALESCE(message, ''), ?) > 0)")
+            params.extend([text_search, text_search])
+        else:
+            needle = text_search.lower()
+            where.append(
+                "(INSTR(LOWER(raw_json), ?) > 0 OR INSTR(LOWER(COALESCE(message, '')), ?) > 0)"
+            )
+            params.extend([needle, needle])
+
+    et_sql, et_params = _event_types_sql(event_types, slow_threshold)
+    if et_sql:
+        where.append(et_sql)
+        params.extend(et_params)
+
+    if min_duration_ms is not None:
+        where.append("COALESCE(duration_ms, 0) >= ?")
+        params.append(min_duration_ms)
+
+    if log_id is not None:
+        where.append("CAST(json_extract(raw_json, '$.id') AS INTEGER) = ?")
+        params.append(log_id)
+
+    if context:
+        where.append(
+            "(INSTR(COALESCE(json_extract(raw_json, '$.ctx'), ''), ?) > 0 "
+            "OR INSTR(COALESCE(message, ''), ?) > 0)"
+        )
+        params.extend([context, context])
+
+    if components:
+        where.append(f"component IN ({','.join('?' for _ in components)})")
+        params.extend(components)
+    if severities:
+        where.append(f"severity IN ({','.join('?' for _ in severities)})")
+        params.extend(severities)
+    if operations:
+        where.append(f"operation IN ({','.join('?' for _ in operations)})")
+        params.extend(operations)
+    if namespace:
+        where.append("INSTR(COALESCE(namespace, ''), ?) > 0")
+        params.append(namespace)
+    if date_from:
+        where.append("ts >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("ts <= ?")
+        params.append(date_to)
+
+    return " AND ".join(where), params
+
+
+def _fetch_match_summary(
+    conn: sqlite3.Connection, where_sql: str, params: list[Any]
+) -> dict[str, Any]:
+    by_severity: dict[str, int] = {}
+    rows = conn.execute(
+        f"SELECT severity, COUNT(*) AS c FROM log_events WHERE {where_sql} GROUP BY severity",
+        params,
+    ).fetchall()
+    for row in rows:
+        key = row["severity"] if row["severity"] is not None else "—"
+        by_severity[str(key)] = int(row["c"])
+    span = conn.execute(
+        f"SELECT MIN(ts) AS tmin, MAX(ts) AS tmax FROM log_events WHERE {where_sql}",
+        params,
+    ).fetchone()
+    return {
+        "by_severity": by_severity,
+        "time_span_start": span["tmin"] if span else None,
+        "time_span_end": span["tmax"] if span else None,
+    }
+
+
+def _query_extract_regex_stream(
+    conn: sqlite3.Connection,
+    *,
+    where_sql: str,
+    params: list[Any],
+    compiled: re.Pattern[str],
+    offset: int,
+    page_limit: int,
+) -> dict[str, Any]:
+    by_severity: defaultdict[str, int] = defaultdict(int)
+    time_min: str | None = None
+    time_max: str | None = None
+    matched_count = 0
+    lines: list[str] = []
+    match_line_numbers: list[int] = []
+
+    cur = conn.execute(
+        f"""
+        SELECT line_no, raw_json, severity, ts
+        FROM log_events
+        WHERE {where_sql}
+        ORDER BY line_no
+        """,
+        params,
+    )
+    for row in cur:
+        raw = row["raw_json"]
+        if not raw or not compiled.search(raw):
+            continue
+        matched_count += 1
+        sev = row["severity"] if row["severity"] is not None else "—"
+        by_severity[str(sev)] += 1
+        ts = row["ts"]
+        if ts:
+            if time_min is None or ts < time_min:
+                time_min = ts
+            if time_max is None or ts > time_max:
+                time_max = ts
+        if matched_count <= offset:
+            continue
+        if len(lines) < page_limit:
+            lines.append(raw.strip())
+            match_line_numbers.append(int(row["line_no"]))
+
+    return {
+        "total_matched": matched_count,
+        "lines": lines,
+        "match_line_numbers": match_line_numbers,
+        "truncated": offset + len(lines) < matched_count,
+        "match_summary": {
+            "by_severity": dict(by_severity),
+            "time_span_start": time_min,
+            "time_span_end": time_max,
+        },
     }
 
 
@@ -292,63 +488,110 @@ def query_extract(
     limit: int,
     text_search: str | None,
     case_sensitive: bool,
+    use_regex: bool,
+    event_types: list[str],
     components: list[str],
     severities: list[str],
     operations: list[str],
     namespace: str | None,
+    log_id: int | None,
+    context: str | None,
     date_from: str | None,
     date_to: str | None,
+    min_duration_ms: int | None,
+    slow_query_threshold_ms: int | None,
 ) -> dict[str, Any]:
-    where = ["file_id = ?"]
-    params: list[Any] = [file_id]
-
-    if text_search:
-        if case_sensitive:
-            where.append("message LIKE ?")
-            params.append(f"%{text_search}%")
-        else:
-            where.append("LOWER(message) LIKE LOWER(?)")
-            params.append(f"%{text_search}%")
-    if components:
-        where.append(f"component IN ({','.join('?' for _ in components)})")
-        params.extend(components)
-    if severities:
-        where.append(f"severity IN ({','.join('?' for _ in severities)})")
-        params.extend(severities)
-    if operations:
-        where.append(f"operation IN ({','.join('?' for _ in operations)})")
-        params.extend(operations)
-    if namespace:
-        where.append("namespace = ?")
-        params.append(namespace)
-    if date_from:
-        where.append("ts >= ?")
-        params.append(date_from)
-    if date_to:
-        where.append("ts <= ?")
-        params.append(date_to)
-
-    where_sql = " AND ".join(where)
     page_limit = max(1, min(limit, 5000))
-    total_scanned = conn.execute("SELECT COUNT(*) FROM log_events WHERE file_id = ?", (file_id,)).fetchone()[0]
-    total_matched = conn.execute(
-        f"SELECT COUNT(*) FROM log_events WHERE {where_sql}",
-        params,
-    ).fetchone()[0]
+    off = max(0, offset)
+    slow_thresh = slow_query_threshold_ms if slow_query_threshold_ms is not None else 100
+
+    total_scanned = int(
+        conn.execute("SELECT COUNT(*) FROM log_events WHERE file_id = ?", (file_id,)).fetchone()[0]
+    )
+
+    if use_regex and text_search:
+        try:
+            flags = 0 if case_sensitive else re.IGNORECASE
+            compiled = re.compile(text_search, flags)
+        except re.error as exc:
+            raise ValueError(f"Invalid regex: {exc}") from exc
+        where_sql, params = _build_extract_where(
+            file_id=file_id,
+            text_search=text_search,
+            case_sensitive=case_sensitive,
+            include_text_clause=False,
+            event_types=event_types,
+            slow_threshold=slow_thresh,
+            min_duration_ms=min_duration_ms,
+            log_id=log_id,
+            context=context,
+            components=components,
+            severities=severities,
+            operations=operations,
+            namespace=namespace,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        streamed = _query_extract_regex_stream(
+            conn,
+            where_sql=where_sql,
+            params=params,
+            compiled=compiled,
+            offset=off,
+            page_limit=page_limit,
+        )
+        return {
+            "total_scanned": total_scanned,
+            "total_matched": streamed["total_matched"],
+            "lines": streamed["lines"],
+            "match_line_numbers": streamed["match_line_numbers"],
+            "truncated": streamed["truncated"],
+            "match_summary": streamed["match_summary"],
+        }
+
+    where_sql, params = _build_extract_where(
+        file_id=file_id,
+        text_search=text_search,
+        case_sensitive=case_sensitive,
+        include_text_clause=True,
+        event_types=event_types,
+        slow_threshold=slow_thresh,
+        min_duration_ms=min_duration_ms,
+        log_id=log_id,
+        context=context,
+        components=components,
+        severities=severities,
+        operations=operations,
+        namespace=namespace,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    total_matched = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM log_events WHERE {where_sql}",
+            params,
+        ).fetchone()[0]
+    )
+    summary = _fetch_match_summary(conn, where_sql, params)
     rows = conn.execute(
         f"""
-        SELECT raw_json
+        SELECT raw_json, line_no
         FROM log_events
         WHERE {where_sql}
         ORDER BY line_no
         LIMIT ? OFFSET ?
         """,
-        [*params, page_limit, offset],
+        [*params, page_limit, off],
     ).fetchall()
-    lines = [row["raw_json"] for row in rows if row["raw_json"]]
+    lines = [row["raw_json"].strip() for row in rows if row["raw_json"]]
+    match_line_numbers = [int(row["line_no"]) for row in rows if row["raw_json"]]
+
     return {
-        "total_scanned": int(total_scanned),
-        "total_matched": int(total_matched),
+        "total_scanned": total_scanned,
+        "total_matched": total_matched,
         "lines": lines,
-        "truncated": (offset + len(lines)) < int(total_matched),
+        "match_line_numbers": match_line_numbers,
+        "truncated": off + len(lines) < total_matched,
+        "match_summary": summary,
     }

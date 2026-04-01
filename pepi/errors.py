@@ -12,12 +12,13 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException
 
 if TYPE_CHECKING:
-    from pepi.types import UploadedFileInfo
+    pass
 
 
 # ---------------------------------------------------------------------------
 # Custom exception hierarchy
 # ---------------------------------------------------------------------------
+
 
 class PepiError(Exception):
     """Base exception for all Pepi errors."""
@@ -65,6 +66,7 @@ class UpgradeError(PepiError):
 # ---------------------------------------------------------------------------
 # FastAPI dependency: validate file_id and return path
 # ---------------------------------------------------------------------------
+
 
 def get_validated_file_path(file_id: str, upload_store: dict[str, dict]) -> str:
     """Validate that file_id exists in the store and the file is on disk.
