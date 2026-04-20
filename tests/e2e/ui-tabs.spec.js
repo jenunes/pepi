@@ -49,3 +49,10 @@ test("all requested tabs are visible and render primary UI containers", async ({
     await expect(page.locator(tab.paneSelector)).toBeVisible();
   }
 });
+
+test("removed FTDC tab is no longer present", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator('.tab-btn[data-tab="ftdc-viewer"]')).toHaveCount(0);
+  await expect(page.locator('#ftdc-viewer')).toHaveCount(0);
+  await expect(page.locator('#fsBrowserModal')).toHaveCount(0);
+});

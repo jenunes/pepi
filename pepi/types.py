@@ -126,10 +126,6 @@ class LogFilterRequest(BaseModel):
     limit: int = 10000
 
 
-class FtdcStartRequest(BaseModel):
-    path: str
-
-
 class SingleQueryRequest(BaseModel):
     namespace: str
     operation: str
@@ -197,32 +193,6 @@ class FilterOptionsData(BaseModel):
 class FilterOptionsResponse(BaseModel):
     status: str = "success"
     data: FilterOptionsData
-
-
-class FsBrowseEntry(BaseModel):
-    name: str
-    path: str
-
-
-class FsBrowseData(BaseModel):
-    current_path: str
-    directories: list[FsBrowseEntry]
-
-
-class FsBrowseResponse(BaseModel):
-    status: str = "success"
-    data: Optional[FsBrowseData] = None
-    message: Optional[str] = None
-
-
-class FtdcStatusData(BaseModel):
-    running: bool
-    url: Optional[str] = None
-
-
-class FtdcStatusResponse(BaseModel):
-    status: str = "success"
-    data: FtdcStatusData
 
 
 class StatusMessage(BaseModel):

@@ -143,15 +143,6 @@ class CustomCommand(click.Command):
                 formatter.write_text("")
                 formatter.write_text("The web interface will open in your default browser at http://localhost:8000")
         
-        elif option == '--ftdc':
-            with formatter.section("FTDC Viewer"):
-                formatter.write_text("--ftdc PATH         Launch FTDC Viewer for a specific diagnostic.data path")
-                formatter.write_text("")
-                formatter.write_text("Usage:")
-                formatter.write_text("  pepi --ftdc /path/to/diagnostic.data")
-                formatter.write_text("")
-                formatter.write_text("The FTDC viewer will start Docker containers and open Grafana in your browser.")
-        
         else:
             formatter.write_text(f"Unknown option: {option}")
             formatter.write_text("Use --help to see all available options.")
@@ -173,7 +164,7 @@ class CustomCommand(click.Command):
             formatter.write_text("--clients           Print client/driver information")
             formatter.write_text("--queries           Print query pattern statistics and performance analysis")
             formatter.write_text("--connections       Print connection information and statistics")
-            formatter.write_text("--ftdc              Launch FTDC Viewer for a given diagnostic.data path")
+
         
         with formatter.section("Log File Operations"):
             formatter.write_text("--trim              Trim log file by date/time range (use with --from and --until)")
@@ -189,7 +180,7 @@ class CustomCommand(click.Command):
             formatter.write_text("  --queries --help")
             formatter.write_text("  --trim --help")
             formatter.write_text("  --web-ui --help")
-            formatter.write_text("  --ftdc --help")
+
 
     def main(self, args=None, prog_name=None, complete_var=None, standalone_mode=True, **kwargs):
         try:
@@ -345,9 +336,7 @@ def launch_web_ui(logfile: Optional[str] = None, sample_percentage: int = 100) -
               help='Check for updates and upgrade Pepi.')
 @click.option('--sample', type=click.IntRange(0, 100), default=100,
               help='Percentage of log lines to sample (0-100). Default: 100 (no sampling)')
-@click.option('--ftdc', type=click.Path(exists=True),
-              help='Launch FTDC Viewer for a given diagnostic.data path.')
-def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache, trim, from_date, until_date, web_ui, version, upgrade, sample, ftdc):
+def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compare, queries, report_full_patterns, namespace, operation, report_histogram, clear_cache, trim, from_date, until_date, web_ui, version, upgrade, sample):
     """pepi: MongoDB log analysis tool."""
     
     if version:
@@ -360,11 +349,6 @@ def main(logfile, rs_conf, rs_state, connections, stats, clients, sort_by, compa
         perform_upgrade()
         return
         
-    if ftdc:
-        from pepi.ftdc import launch_viewer
-        launch_viewer(ftdc)
-        return
-    
     if not logfile and not web_ui:
         click.echo("Pepi didn't find anything to fetch")
         return
