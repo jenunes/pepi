@@ -44,7 +44,12 @@ def _extract_message(entry: dict[str, Any]) -> str:
 
 
 def _event_type(entry: dict[str, Any], message: str, duration_ms: int) -> str:
-    if duration_ms > 100:
+    if (
+        entry.get("c") == "COMMAND"
+        and message in {"command", "Slow query"}
+        and duration_ms > 0
+        and _extract_namespace(entry)
+    ):
         return "slow_query"
     if entry.get("s") in {"E", "F"}:
         return "error"

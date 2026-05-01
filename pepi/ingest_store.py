@@ -242,7 +242,6 @@ def query_timeseries(conn: sqlite3.Connection, file_id: str, include_raw: bool) 
             FROM timeseries_agg
             WHERE file_id = ? AND metric = 'connections_delta'
             ORDER BY bucket_ts
-            LIMIT 10000
             """,
             (file_id,),
         ).fetchall()

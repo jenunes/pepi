@@ -171,6 +171,36 @@ function downsampleArray(arr, maxPoints) {
     return downsampled;
 }
 
+function toLogTimeStr(isoString) {
+    if (!isoString) return isoString;
+    return String(isoString).replace(/Z$/, '').replace(/[+-]\d{2}:\d{2}$/, '');
+}
+
+function toLogTimeMs(isoString) {
+    return new Date(toLogTimeStr(isoString)).getTime();
+}
+
+function extractLogTimezone(isoString) {
+    if (!isoString) return '';
+    const match = String(isoString).match(/([+-]\d{2}:\d{2})$|(Z)$/);
+    if (!match) return '';
+    return match[0] === 'Z' ? 'UTC' : 'UTC' + match[0];
+}
+
+function bucketToLogTimeStr(epochMs) {
+    const d = new Date(epochMs);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function attachRelayoutListener(plotId, handler) {
+    const plot = document.getElementById(plotId);
+    if (!plot) return;
+    if (typeof plot.removeAllListeners === 'function')
+        plot.removeAllListeners('plotly_relayout');
+    plot.on('plotly_relayout', handler);
+}
+
 // Debounce function for chart updates
 function debounce(func, wait) {
     let timeout;
@@ -545,7 +575,7 @@ function formatFileSize(bytes) {
 function formatDateTime(isoString) {
     if (!isoString) return 'N/A';
     try {
-        const date = new Date(isoString);
+        const date = new Date(toLogTimeStr(isoString));
         const day = String(date.getDate()).padStart(2, '0');
         const month = String(date.getMonth() + 1).padStart(2, '0');
         const year = date.getFullYear();
@@ -773,7 +803,6 @@ function displayBasicInfo(data) {
 
 async function analyzeConnections() {
     if (!currentFileId) return;
-    await refreshIngestStatus(currentFileId);
 
     showLoading('Analyzing connections...');
 
@@ -782,7 +811,7 @@ async function analyzeConnections() {
 
     try {
         const result = await fetchJson(
-            `/api/analyze/${currentFileId}/connections?sample=${samplePercentage}&include_details=false&source=${currentAnalysisSource}`,
+            `/api/analyze/${currentFileId}/connections?sample=${samplePercentage}&include_details=false&source=raw`,
             { method: 'POST' },
             'tab-analysis'
         );
@@ -974,20 +1003,24 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
         const timeBuckets = {};
         const bucketSize = 5 * 60 * 1000; // 5 minutes in milliseconds
 
+        const tz = extractLogTimezone(connectionsData[0]?.timestamp);
+        const tsTitle = tz ? `Timestamp (${tz})` : 'Timestamp';
+
         connectionsData.forEach(conn => {
-            const timestamp = new Date(conn.timestamp).getTime();
+            const timestamp = toLogTimeMs(conn.timestamp);
             const bucket = Math.floor(timestamp / bucketSize) * bucketSize;
 
             if (!timeBuckets[bucket]) {
                 timeBuckets[bucket] = {
-                    timestamp: new Date(bucket),
+                    timestamp: bucketToLogTimeStr(bucket),
+                    bucketMs: bucket,
                     connection_count: 0
                 };
             }
             timeBuckets[bucket].connection_count = Math.max(timeBuckets[bucket].connection_count, conn.connection_count);
         });
 
-        const sortedBuckets = Object.values(timeBuckets).sort((a, b) => a.timestamp - b.timestamp);
+        const sortedBuckets = Object.values(timeBuckets).sort((a, b) => a.bucketMs - b.bucketMs);
 
         // Apply downsampling for performance
         const downsampledBuckets = downsampleTimeSeriesData(sortedBuckets.map(b => ({
@@ -1012,7 +1045,7 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
         const layout = {
             title: '',
             xaxis: {
-                title: 'Timestamp',
+                title: tsTitle,
                 type: 'date',
                 rangeslider: { visible: false }
             },
@@ -1033,18 +1066,18 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
 
         renderChartProgressively('connectionsTimeSeriesPlot', [trace], layout, config);
 
-        // Add zoom sync event after chart is rendered
         setTimeout(() => {
-            const plot = document.getElementById('connectionsTimeSeriesPlot');
-            plot.on('plotly_relayout', function (eventData) {
-                syncConnectionsZoom('connectionsTimeSeriesPlot', eventData);
-            });
+            attachRelayoutListener('connectionsTimeSeriesPlot', eventData =>
+                syncConnectionsZoom('connectionsTimeSeriesPlot', eventData));
         }, 100);
         return;
     }
 
     // Create traces for each IP
     const traces = [];
+    const firstIpSeries = Object.values(connectionsByIPData).find(s => s && s.length > 0);
+    const tz = extractLogTimezone(firstIpSeries?.[0]?.timestamp);
+    const tsTitle = tz ? `Timestamp (${tz})` : 'Timestamp';
     const colorPalette = [
         '#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a',
         '#ffecd2', '#a8edea', '#d299c2', '#ff9a9e', '#fecfef',
@@ -1055,11 +1088,11 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
     Object.entries(connectionsByIPData).forEach(([ip, timeSeries]) => {
         if (timeSeries && timeSeries.length > 0) {
             // Sort by timestamp
-            const sortedData = timeSeries.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            const sortedData = timeSeries.sort((a, b) => toLogTimeMs(a.timestamp) - toLogTimeMs(b.timestamp));
 
             // Apply downsampling for performance
             const downsampledData = downsampleTimeSeriesData(sortedData.map(d => ({
-                timestamp: new Date(d.timestamp),
+                timestamp: new Date(toLogTimeStr(d.timestamp)),
                 value: d.connection_count
             })), 1000);
 
@@ -1092,7 +1125,7 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
     const layout = {
         title: '',
         xaxis: {
-            title: 'Timestamp',
+            title: tsTitle,
             type: 'date',
             rangeslider: { visible: false }
         },
@@ -1117,13 +1150,9 @@ function createConnectionsTimeSeriesPlot(connectionsData, connectionsByIPData) {
 
     renderChartProgressively('connectionsTimeSeriesPlot', traces, layout, config);
 
-    // Add zoom sync event after chart is rendered
     setTimeout(() => {
-        const plot = document.getElementById('connectionsTimeSeriesPlot');
-        plot.on('plotly_relayout', function (eventData) {
+        attachRelayoutListener('connectionsTimeSeriesPlot', eventData => {
             syncConnectionsZoom('connectionsTimeSeriesPlot', eventData);
-
-            // Update table based on zoom/range selection
             updateConnectionsTableForRange(eventData, connectionsByIPData);
         });
     }, 100);
@@ -1159,6 +1188,8 @@ function createConnectionEventsTimeline(connectionEvents) {
 
     // Create traces for each IP and event type
     const traces = [];
+    const tz = extractLogTimezone(connectionEvents[0]?.timestamp);
+    const tsTitle = tz ? `Timestamp (${tz})` : 'Timestamp';
     const colorPalette = [
         '#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a',
         '#ffecd2', '#a8edea', '#d299c2', '#ff9a9e', '#fecfef',
@@ -1172,7 +1203,7 @@ function createConnectionEventsTimeline(connectionEvents) {
             // Apply downsampling for performance
             const downsampledOpened = downsampleArray(events.opened, 1000);
             const openedTrace = {
-                x: downsampledOpened.map(e => new Date(e.timestamp)),
+                x: downsampledOpened.map(e => new Date(toLogTimeStr(e.timestamp))),
                 y: downsampledOpened.map((e, i) => i + 1), // Sequential numbering
                 mode: 'markers',
                 type: 'scatter',
@@ -1194,7 +1225,7 @@ function createConnectionEventsTimeline(connectionEvents) {
             // Apply downsampling for performance
             const downsampledClosed = downsampleArray(events.closed, 1000);
             const closedTrace = {
-                x: downsampledClosed.map(e => new Date(e.timestamp)),
+                x: downsampledClosed.map(e => new Date(toLogTimeStr(e.timestamp))),
                 y: downsampledClosed.map((e, i) => i + 1), // Sequential numbering
                 mode: 'markers',
                 type: 'scatter',
@@ -1222,7 +1253,7 @@ function createConnectionEventsTimeline(connectionEvents) {
     const layout = {
         title: '',
         xaxis: {
-            title: 'Timestamp',
+            title: tsTitle,
             type: 'date',
             rangeslider: { visible: false }
         },
@@ -1248,13 +1279,11 @@ function createConnectionEventsTimeline(connectionEvents) {
 
     renderChartProgressively('connectionEventsPlot', traces, layout, config);
 
-    // Add events after chart is rendered
     setTimeout(() => {
-        const plot = document.getElementById('connectionEventsPlot');
-        plot.on('plotly_relayout', function (eventData) {
-            syncConnectionsZoom('connectionEventsPlot', eventData);
-        });
+        attachRelayoutListener('connectionEventsPlot', eventData =>
+            syncConnectionsZoom('connectionEventsPlot', eventData));
 
+        const plot = document.getElementById('connectionEventsPlot');
         plot.on('plotly_click', function (eventData) {
             if (eventData.points && eventData.points.length > 0) {
                 const point = eventData.points[0];
@@ -1297,24 +1326,28 @@ function createTotalConnectionsPlot(connectionsData) {
         return;
     }
 
+    const tz = extractLogTimezone(connectionsData[0]?.timestamp);
+    const tsTitle = tz ? `Timestamp (${tz})` : 'Timestamp';
+
     // Group data by time buckets (e.g., every 5 minutes)
     const timeBuckets = {};
     const bucketSize = 5 * 60 * 1000; // 5 minutes in milliseconds
 
     connectionsData.forEach(conn => {
-        const timestamp = new Date(conn.timestamp).getTime();
+        const timestamp = toLogTimeMs(conn.timestamp);
         const bucket = Math.floor(timestamp / bucketSize) * bucketSize;
 
         if (!timeBuckets[bucket]) {
             timeBuckets[bucket] = {
-                timestamp: new Date(bucket),
+                timestamp: bucketToLogTimeStr(bucket),
+                bucketMs: bucket,
                 connection_count: 0
             };
         }
         timeBuckets[bucket].connection_count = Math.max(timeBuckets[bucket].connection_count, conn.connection_count);
     });
 
-    const sortedBuckets = Object.values(timeBuckets).sort((a, b) => a.timestamp - b.timestamp);
+    const sortedBuckets = Object.values(timeBuckets).sort((a, b) => a.bucketMs - b.bucketMs);
 
     // Apply downsampling for performance
     const downsampledBuckets = downsampleTimeSeriesData(sortedBuckets.map(b => ({
@@ -1339,7 +1372,7 @@ function createTotalConnectionsPlot(connectionsData) {
     const layout = {
         title: '',
         xaxis: {
-            title: 'Timestamp',
+            title: tsTitle,
             type: 'date',
             rangeslider: { visible: false }
         },
@@ -1360,14 +1393,11 @@ function createTotalConnectionsPlot(connectionsData) {
 
     renderChartProgressively('connectionsPlot', [trace], layout, config);
 
-    // Add zoom sync event after chart is rendered
     setTimeout(() => {
-        const plot = document.getElementById('connectionsPlot');
-        plot.on('plotly_relayout', function (eventData) {
+        attachRelayoutListener('connectionsPlot', eventData => {
             syncConnectionsZoom('connectionsPlot', eventData);
-            if (data.connections_by_ip_timeseries) {
-                debouncedConnectionsRangeUpdate(eventData, data.connections_by_ip_timeseries);
-            }
+            if (originalConnectionsData?.connections_by_ip_timeseries)
+                debouncedConnectionsRangeUpdate(eventData, originalConnectionsData.connections_by_ip_timeseries);
         });
     }, 100);
 }
@@ -1536,7 +1566,7 @@ function updateConnectionsTable(data) {
         rangeInfo.className = 'time-range-info';
         rangeInfo.innerHTML = `
             <small style="color: #666; font-style: italic;">
-                Showing data for: ${new Date(data.time_range.start).toLocaleString()} - ${new Date(data.time_range.end).toLocaleString()}
+                Showing data for: ${formatDateTime(data.time_range.start)} - ${formatDateTime(data.time_range.end)}
             </small>
         `;
         tableContainer.appendChild(rangeInfo);
@@ -1646,19 +1676,18 @@ let selectedQueryIndex = null;
 
 function displayQueriesData(data) {
     const perf = startPerf('displayQueriesData');
-    // Store queries data globally
     currentQueriesData = data;
 
     const statsGrid = document.getElementById('queryStats');
     const tableContainer = document.getElementById('queriesTable');
+    const summary = data.summary || {};
+    const dist = summary.health_distribution || {};
 
-    // Calculate stats
     const totalQueries = data.queries.reduce((sum, q) => sum + q.count, 0);
-    const avgExecutionTime = data.queries.reduce((sum, q) => sum + q.mean_ms, 0) / data.queries.length;
-    const slowestQuery = Math.max(...data.queries.map(q => q.max_ms));
+    const avgExecutionTime = data.queries.length ? data.queries.reduce((sum, q) => sum + q.mean_ms, 0) / data.queries.length : 0;
+    const slowestQuery = data.queries.length ? Math.max(...data.queries.map(q => q.max_ms)) : 0;
     const collscans = data.queries.filter(q => q.indexes && q.indexes.includes('COLLSCAN')).length;
 
-    // Display stats
     statsGrid.innerHTML = `
         <div class="stat-card data-quality-card">
             <h3>${data.total_patterns}</h3>
@@ -1702,16 +1731,16 @@ function displayQueriesData(data) {
         </div>
     `;
 
-    // Create queries chart
+    renderAWRSummaryPanel(data);
+
     createQueriesChart(data.queries);
 
-    // Create queries table
     const table = document.createElement('table');
     table.className = 'data-table';
     table.innerHTML = `
         <thead><tr>
-            <th>Namespace</th><th>Operation</th><th>Pattern</th><th>Count</th>
-            <th>Min (ms)</th><th>Max (ms)</th><th>Mean (ms)</th><th>95% (ms)</th><th>Index</th>
+            <th>Health</th><th>Namespace</th><th>Operation</th><th>Pattern</th><th>Count</th>
+            <th>Mean (ms)</th><th>95% (ms)</th><th>Scan Ratio</th><th>Index</th><th>Findings</th>
         </tr></thead><tbody></tbody>
     `;
     const tbody = table.querySelector('tbody');
@@ -1719,26 +1748,35 @@ function displayQueriesData(data) {
     data.queries.forEach((query, index) => {
         const tr = document.createElement('tr');
         tr.setAttribute('data-query-index', index);
+        const sev = query.health_severity || 'HEALTHY';
+        const score = query.health_score || 0;
+        const sevClass = sev === 'CRITICAL' ? 'health-critical' : sev === 'WARNING' ? 'health-warning' : 'health-healthy';
+        const scanDisplay = query.scan_ratio > 0 ? query.scan_ratio.toFixed(1) + ':1' : '—';
+        const scanClass = query.scan_ratio > 100 ? 'scan-ratio-bad' : query.scan_ratio > 10 ? 'scan-ratio-warn' : '';
+        const fc = query.findings_count || 0;
         tr.innerHTML = `
+            <td data-testid="query-health-badge"><span class="health-badge ${sevClass}" title="${sev}: ${score}/100">${score}</span></td>
             <td>${query.namespace}</td>
             <td>${query.operation}</td>
             <td>
                 <span class="pattern-text pattern-clickable"
-                      title="Click to view query examples"
+                      title="Click to view diagnostics"
                       data-namespace="${query.namespace}"
                       data-operation="${query.operation}"
                       data-pattern="${encodeURIComponent(query.pattern)}"
                       data-row-index="${index}"
-                      onclick="showQueryExamplesFromElement(this)">
+                      onclick="openQueryDiagnostics(${index})">
                     ${truncateText(query.pattern, 50)}
                 </span>
             </td>
             <td>${query.count}</td>
-            <td>${query.min_ms.toFixed(1)}</td>
-            <td>${query.max_ms.toFixed(1)}</td>
             <td>${query.mean_ms.toFixed(1)}</td>
             <td>${query.percentile_95_ms.toFixed(1)}</td>
+            <td data-testid="query-scan-ratio"><span class="${scanClass}">${scanDisplay}</span></td>
             <td>${formatIndexes(query.indexes)}</td>
+            <td data-testid="query-findings-count">
+                <span class="findings-badge ${fc > 0 ? 'has-findings' : ''}" onclick="openQueryDiagnostics(${index})" title="${fc} findings">${fc}</span>
+            </td>
         `;
         fragment.appendChild(tr);
     });
@@ -1747,9 +1785,332 @@ function displayQueriesData(data) {
     tableContainer.innerHTML = '';
     tableContainer.appendChild(table);
 
-    // Make table sortable
     makeSortable(table, 'queries');
     endPerf(perf, { rows: data.queries.length });
+}
+
+function renderAWRSummaryPanel(data) {
+    const panel = document.getElementById('awrSummaryPanel');
+    if (!panel) return;
+    const summary = data.summary;
+    if (!summary) { panel.style.display = 'none'; return; }
+
+    const dist = summary.health_distribution || {};
+    const overall = summary.overall_health_score || 0;
+    const sevClass = overall >= 80 ? 'health-healthy' : overall >= 50 ? 'health-warning' : 'health-critical';
+    const topTime = (summary.top_by_total_time || []).slice(0, 3);
+
+    panel.style.display = 'block';
+    panel.innerHTML = `
+        <div class="awr-summary" data-testid="awr-summary">
+            <div class="awr-summary-header">
+                <h3><i class="fas fa-heartbeat"></i> Query Health Overview</h3>
+                <button class="btn btn-secondary btn-sm" data-testid="export-report-btn" onclick="exportAWRReport()">
+                    <i class="fas fa-download"></i> Export Report
+                </button>
+            </div>
+            <div class="awr-summary-grid">
+                <div class="awr-health-gauge" data-testid="query-health-gauge">
+                    <svg viewBox="0 0 120 80" class="gauge-svg">
+                        <path d="M 10 70 A 50 50 0 0 1 110 70" fill="none" stroke="#e9ecef" stroke-width="10" stroke-linecap="round"/>
+                        <path d="M 10 70 A 50 50 0 0 1 110 70" fill="none" stroke-width="10" stroke-linecap="round"
+                              class="gauge-fill ${sevClass}"
+                              stroke-dasharray="${(overall / 100) * 157} 157"/>
+                    </svg>
+                    <div class="gauge-value ${sevClass}">${overall}</div>
+                    <div class="gauge-label">Overall Health</div>
+                </div>
+                <div class="awr-distribution" data-testid="health-distribution">
+                    <div class="dist-card dist-healthy"><span class="dist-count">${dist.healthy || 0}</span><span class="dist-label">Healthy</span></div>
+                    <div class="dist-card dist-warning"><span class="dist-count">${dist.warning || 0}</span><span class="dist-label">Warning</span></div>
+                    <div class="dist-card dist-critical"><span class="dist-count">${dist.critical || 0}</span><span class="dist-label">Critical</span></div>
+                </div>
+                <div class="awr-top-offenders" data-testid="top-offenders">
+                    <h4>Top Offenders (by DB time)</h4>
+                    ${topTime.length > 0 ? '<ol>' + topTime.map(p => {
+                        const pSev = p.health_score >= 80 ? 'health-healthy' : p.health_score >= 50 ? 'health-warning' : 'health-critical';
+                        return `<li><span class="health-badge ${pSev}" style="font-size:11px;">${p.health_score}</span> ${p.namespace}.${p.operation} <small>(${p.value.toLocaleString()} ms·count)</small></li>`;
+                    }).join('') + '</ol>' : '<p class="muted">No data</p>'}
+                </div>
+                <div class="awr-key-alerts">
+                    <h4>Key Alerts</h4>
+                    <div class="alert-chips">
+                        ${summary.collection_scan_patterns > 0 ? `<span class="alert-chip alert-critical"><i class="fas fa-exclamation-triangle"></i> ${summary.collection_scan_patterns} COLLSCAN</span>` : ''}
+                        ${summary.in_memory_sort_patterns > 0 ? `<span class="alert-chip alert-warning"><i class="fas fa-sort"></i> ${summary.in_memory_sort_patterns} in-memory sorts</span>` : ''}
+                        ${summary.disk_spill_patterns > 0 ? `<span class="alert-chip alert-critical"><i class="fas fa-hdd"></i> ${summary.disk_spill_patterns} disk spills</span>` : ''}
+                        ${summary.collection_scan_patterns === 0 && summary.in_memory_sort_patterns === 0 && summary.disk_spill_patterns === 0 ? '<span class="alert-chip alert-ok"><i class="fas fa-check"></i> No critical alerts</span>' : ''}
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+async function openQueryDiagnostics(rowIndex) {
+    if (!currentQueriesData || !currentFileId) return;
+    const query = currentQueriesData.queries[rowIndex];
+    if (!query) return;
+
+    showLoading('Loading diagnostics...');
+    try {
+        const result = await fetchJson(`/api/analyze/${currentFileId}/query-diagnostics`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ namespace: query.namespace, operation: query.operation, pattern: query.pattern })
+        }, 'query-diagnostics');
+
+        if (result.status === 'success') {
+            renderDiagnosticsPanel(query, result.data, rowIndex);
+        } else {
+            showToast('error', 'Failed to load diagnostics');
+        }
+    } catch (error) {
+        if (error.name === 'AbortError') return;
+        showToast('error', `Diagnostics failed: ${error.message}`);
+    } finally {
+        hideLoading();
+    }
+}
+
+function renderDiagnosticsPanel(query, diag, rowIndex) {
+    const panel = document.getElementById('queryDiagnosticsPanel');
+    if (!panel) return;
+
+    const h = diag.health || {};
+    const findings = diag.findings || [];
+    const exec = diag.exec_stats || {};
+    const score = h.total || 0;
+    const sev = h.severity || 'HEALTHY';
+    const sevClass = sev === 'CRITICAL' ? 'health-critical' : sev === 'WARNING' ? 'health-warning' : 'health-healthy';
+
+    const factors = [
+        { label: 'Plan Type', value: h.plan_type_score, weight: 25 },
+        { label: 'Scan Ratio', value: h.scan_ratio_score, weight: 25 },
+        { label: 'Key Efficiency', value: h.key_efficiency_score, weight: 15 },
+        { label: 'Sort', value: h.sort_score, weight: 10 },
+        { label: 'Latency P95', value: h.latency_score, weight: 15 },
+        { label: 'Disk Usage', value: h.disk_score, weight: 10 },
+    ];
+
+    const isOptimized = score >= 80 && findings.length === 0;
+
+    panel.style.display = 'block';
+    panel.innerHTML = `
+        <div class="diag-panel">
+            <div class="diag-header">
+                <h3><i class="fas fa-stethoscope"></i> ${query.namespace} — ${query.operation}</h3>
+                <div class="diag-header-actions">
+                    ${isOptimized ? '<span class="status-badge status-good"><i class="fas fa-check"></i> Optimized</span>' : ''}
+                    <button class="btn btn-secondary btn-sm" onclick="getIndexRecommendationForQuery(${rowIndex})"><i class="fas fa-magic"></i> Index Rec</button>
+                    <button class="close-examples" onclick="closeDiagnosticsPanel()"><i class="fas fa-times"></i> Close</button>
+                </div>
+            </div>
+            <div class="diag-tabs">
+                <button class="diag-tab active" data-testid="diagnostics-tab-overview" onclick="switchDiagTab(this,'diag-overview')">Overview</button>
+                <button class="diag-tab" data-testid="diagnostics-tab-findings" onclick="switchDiagTab(this,'diag-findings')">Findings (${findings.length})</button>
+                <button class="diag-tab" data-testid="diagnostics-tab-exec-stats" onclick="switchDiagTab(this,'diag-exec')">Exec Stats</button>
+                <button class="diag-tab" data-testid="diagnostics-tab-examples" onclick="switchDiagTab(this,'diag-examples')">Examples</button>
+                <button class="diag-tab" data-testid="diagnostics-tab-index-rec" onclick="switchDiagTab(this,'diag-index')">Index Rec</button>
+            </div>
+            <div class="diag-body">
+                <div class="diag-pane active" id="diag-overview">
+                    <div class="diag-overview-grid">
+                        <div class="diag-score-card">
+                            <div class="health-badge-lg ${sevClass}">${score}</div>
+                            <div class="diag-score-label">${sev}</div>
+                        </div>
+                        <div class="diag-factors">
+                            ${factors.map(f => {
+                                const barClass = f.value >= 80 ? 'bar-good' : f.value >= 50 ? 'bar-warn' : 'bar-bad';
+                                return `<div class="factor-row">
+                                    <span class="factor-label">${f.label} (${f.weight}%)</span>
+                                    <div class="factor-bar"><div class="factor-fill ${barClass}" style="width:${f.value}%"></div></div>
+                                    <span class="factor-val">${f.value}</span>
+                                </div>`;
+                            }).join('')}
+                        </div>
+                        <div class="diag-quick-stats">
+                            <p><strong>Count:</strong> ${query.count}</p>
+                            <p><strong>Mean:</strong> ${query.mean_ms.toFixed(1)} ms</p>
+                            <p><strong>P95:</strong> ${query.percentile_95_ms.toFixed(1)} ms</p>
+                            <p><strong>Scan Ratio:</strong> ${(query.scan_ratio || 0).toFixed(1)}:1</p>
+                            <p><strong>In-Memory Sort:</strong> ${(query.in_memory_sort_pct || 0).toFixed(0)}%</p>
+                            <p><strong>Disk Usage:</strong> ${(query.disk_usage_pct || 0).toFixed(0)}%</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="diag-pane" id="diag-findings">
+                    ${findings.length === 0 ? '<p class="muted">No findings — this query follows best practices.</p>'
+                        : findings.map(f => `
+                            <div class="finding-card finding-${f.severity}">
+                                <div class="finding-header">
+                                    <span class="finding-severity ${f.severity}">${f.severity.toUpperCase()}</span>
+                                    <span class="finding-category">${f.category}</span>
+                                    <strong>${f.title}</strong>
+                                </div>
+                                <p>${f.detail}</p>
+                                <p class="finding-rec"><i class="fas fa-lightbulb"></i> ${f.recommendation}</p>
+                            </div>
+                        `).join('')}
+                </div>
+                <div class="diag-pane" id="diag-exec">
+                    ${renderExecStatsPane(exec)}
+                </div>
+                <div class="diag-pane" id="diag-examples">
+                    <p class="muted">Click to load examples for this pattern.</p>
+                    <button class="btn btn-primary btn-sm" onclick="loadDiagExamples(${rowIndex})"><i class="fas fa-code"></i> Load Examples</button>
+                    <div id="diag-examples-content"></div>
+                </div>
+                <div class="diag-pane" id="diag-index">
+                    <p class="muted">Click to get index recommendation for this pattern.</p>
+                    <button class="btn btn-primary btn-sm" onclick="getIndexRecommendationForQuery(${rowIndex})"><i class="fas fa-magic"></i> Get Recommendation</button>
+                </div>
+            </div>
+        </div>
+    `;
+    panel.scrollIntoView({ behavior: 'smooth' });
+}
+
+function renderExecStatsPane(exec) {
+    if (!exec) return '<p class="muted">No execution statistics available.</p>';
+    const metrics = [
+        { key: 'keysExamined', label: 'Keys Examined' },
+        { key: 'docsExamined', label: 'Docs Examined' },
+        { key: 'nreturned', label: 'Docs Returned' },
+        { key: 'numYields', label: 'Yields' },
+        { key: 'reslen', label: 'Response Size (bytes)' },
+    ];
+    let html = '<div class="exec-stats-grid">';
+    for (const m of metrics) {
+        const arr = exec[m.key] || [];
+        if (!arr.length) continue;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const min = sorted[0];
+        const max = sorted[sorted.length - 1];
+        const mean = sorted.reduce((a, b) => a + b, 0) / sorted.length;
+        const p95idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95));
+        html += `<div class="exec-stat-card">
+            <h5>${m.label}</h5>
+            <div class="exec-stat-row"><span>Min</span><span>${min.toLocaleString()}</span></div>
+            <div class="exec-stat-row"><span>Mean</span><span>${Math.round(mean).toLocaleString()}</span></div>
+            <div class="exec-stat-row"><span>P95</span><span>${sorted[p95idx].toLocaleString()}</span></div>
+            <div class="exec-stat-row"><span>Max</span><span>${max.toLocaleString()}</span></div>
+        </div>`;
+    }
+    const boolMetrics = [
+        { key: 'hasSortStage', label: 'In-Memory Sort', pctKey: 'in_memory_sort_pct' },
+        { key: 'usedDisk', label: 'Used Disk', pctKey: 'disk_usage_pct' },
+    ];
+    for (const m of boolMetrics) {
+        const pct = exec[m.pctKey] || 0;
+        html += `<div class="exec-stat-card">
+            <h5>${m.label}</h5>
+            <div class="exec-stat-pct">${pct.toFixed(1)}%</div>
+            <div class="exec-stat-row"><span>of executions</span></div>
+        </div>`;
+    }
+    html += '</div>';
+    return html;
+}
+
+function switchDiagTab(btn, paneId) {
+    const panel = btn.closest('.diag-panel');
+    panel.querySelectorAll('.diag-tab').forEach(t => t.classList.remove('active'));
+    panel.querySelectorAll('.diag-pane').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    const pane = panel.querySelector('#' + paneId);
+    if (pane) pane.classList.add('active');
+}
+
+async function loadDiagExamples(rowIndex) {
+    if (!currentQueriesData || !currentFileId) return;
+    const query = currentQueriesData.queries[rowIndex];
+    if (!query) return;
+    const container = document.getElementById('diag-examples-content');
+    if (!container) return;
+    container.innerHTML = '<p class="muted">Loading...</p>';
+    try {
+        const result = await fetchJson(`/api/analyze/${currentFileId}/query-examples`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ namespace: query.namespace, operation: query.operation, pattern: query.pattern })
+        }, 'query-examples');
+        if (result.status === 'success' && result.data.examples.length > 0) {
+            container.innerHTML = result.data.examples.map((ex, i) => {
+                let logEntry = {};
+                try { logEntry = JSON.parse(ex.raw_log_line); } catch (e) { logEntry = { raw: ex.raw_log_line }; }
+                return `<div class="query-example">
+                    <div class="query-example-header">
+                        <strong>Example ${i + 1}</strong>
+                        <span><i class="fas fa-stopwatch"></i> ${ex.duration_ms}ms</span>
+                        <span><i class="fas fa-search"></i> ${ex.plan_summary}</span>
+                    </div>
+                    <pre class="json-viewer-compact">${syntaxHighlightJson(logEntry)}</pre>
+                </div>`;
+            }).join('');
+        } else {
+            container.innerHTML = '<p class="muted">No examples found for this pattern.</p>';
+        }
+    } catch (err) {
+        container.innerHTML = `<p class="muted">Failed: ${err.message}</p>`;
+    }
+}
+
+function closeDiagnosticsPanel() {
+    const panel = document.getElementById('queryDiagnosticsPanel');
+    if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+}
+
+function exportAWRReport() {
+    if (!currentQueriesData) { showToast('warning', 'Analyze queries first.'); return; }
+    const data = currentQueriesData;
+    const summary = data.summary || {};
+    const dist = summary.health_distribution || {};
+    const lines = [
+        '# Query Diagnostics Report',
+        '',
+        '## Summary',
+        `- **Overall Health:** ${summary.overall_health_score || 0}/100`,
+        `- **Patterns:** ${data.total_patterns}`,
+        `- **Healthy / Warning / Critical:** ${dist.healthy || 0} / ${dist.warning || 0} / ${dist.critical || 0}`,
+        `- **COLLSCAN patterns:** ${summary.collection_scan_patterns || 0}`,
+        `- **In-memory sort patterns:** ${summary.in_memory_sort_patterns || 0}`,
+        `- **Disk spill patterns:** ${summary.disk_spill_patterns || 0}`,
+        '',
+        '## Top Queries by Total Time',
+        '| Namespace | Operation | Health | DB Time (ms·count) |',
+        '|-----------|-----------|--------|--------------------|',
+    ];
+    (summary.top_by_total_time || []).forEach(p => {
+        lines.push(`| ${p.namespace} | ${p.operation} | ${p.health_score} | ${p.value.toLocaleString()} |`);
+    });
+    lines.push('', '## Top Queries by Scan Ratio', '| Namespace | Operation | Health | Scan Ratio |', '|-----------|-----------|--------|------------|');
+    (summary.top_by_scan_ratio || []).forEach(p => {
+        lines.push(`| ${p.namespace} | ${p.operation} | ${p.health_score} | ${p.value.toFixed(1)} |`);
+    });
+    if (data.findings && data.findings.length > 0) {
+        lines.push('', '## Findings');
+        data.findings.forEach(f => {
+            lines.push(`- **[${f.severity.toUpperCase()}]** ${f.title}: ${f.detail}`);
+            lines.push(`  - _Recommendation:_ ${f.recommendation}`);
+        });
+    }
+    lines.push('', '## Per-Pattern Details', '| Health | Namespace | Operation | Count | Mean ms | P95 ms | Scan Ratio | Findings |',
+        '|--------|-----------|-----------|-------|---------|--------|------------|----------|');
+    data.queries.forEach(q => {
+        lines.push(`| ${q.health_score} ${q.health_severity} | ${q.namespace} | ${q.operation} | ${q.count} | ${q.mean_ms.toFixed(1)} | ${q.percentile_95_ms.toFixed(1)} | ${(q.scan_ratio || 0).toFixed(1)} | ${q.findings_count} |`);
+    });
+    const md = lines.join('\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(md).then(() => showToast('success', 'Report copied to clipboard'));
+    } else {
+        const blob = new Blob([md], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'query-diagnostics-report.md'; a.click();
+        URL.revokeObjectURL(url);
+        showToast('success', 'Report downloaded');
+    }
 }
 
 function createQueriesChart(queries) {
@@ -2319,7 +2680,7 @@ function displayQueryExamples(data, rowIndex) {
     } else {
         examplesHtml += '<div id="queryExamplesContent">';
         data.examples.forEach((example, index) => {
-            const timestamp = new Date(example.timestamp).toLocaleString();
+            const timestamp = formatDateTime(example.timestamp);
             // Parse the full log entry from raw log line
             let fullLogEntry = {};
             try {
@@ -2380,7 +2741,7 @@ function applyQueryExampleFormat() {
 
     let examplesHtml = '';
     currentQueryExamples.examples.forEach((example, index) => {
-        const timestamp = new Date(example.timestamp).toLocaleString();
+        const timestamp = formatDateTime(example.timestamp);
         let fullLogEntry = {};
         try {
             fullLogEntry = JSON.parse(example.raw_log_line);
@@ -2435,7 +2796,7 @@ function expandQueryExample(exampleIndex) {
     }
 
     const example = currentQueryExamples.examples[exampleIndex];
-    const timestamp = new Date(example.timestamp).toLocaleString();
+    const timestamp = formatDateTime(example.timestamp);
 
     // Parse the full log entry
     let fullLogEntry = {};
@@ -2545,8 +2906,8 @@ function downloadQueryExample(exampleIndex) {
     }
 
     const example = currentQueryExamples.examples[exampleIndex];
-    const timestamp = new Date(example.timestamp).toLocaleString();
-    const filename = `query-example-${exampleIndex + 1}-${timestamp.replace(/[:.]/g, '-')}.json`;
+    const timestamp = formatDateTime(example.timestamp);
+    const filename = `query-example-${exampleIndex + 1}-${timestamp.replace(/[:.\/]/g, '-')}.json`;
 
     const blob = new Blob([example.raw_log_line], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -2586,7 +2947,6 @@ function copyQueryExample(exampleIndex) {
 // Time Series Analysis Functions
 async function analyzeTimeSeries() {
     if (!currentFileId) return;
-    await refreshIngestStatus(currentFileId);
 
     const namespace = document.getElementById('timeseriesNamespaceFilter').value;
 
@@ -2596,7 +2956,7 @@ async function analyzeTimeSeries() {
         const params = new URLSearchParams();
         if (namespace) params.append('namespace', namespace);
         params.append('include_raw', String(!isLargeDatasetMode));
-        params.append('source', currentAnalysisSource);
+        params.append('source', 'raw');
         const url = `/api/analyze/${currentFileId}/timeseries?${params.toString()}`;
 
         const result = await fetchJson(url, { method: 'POST' }, 'tab-analysis');
@@ -2617,6 +2977,7 @@ async function analyzeTimeSeries() {
 function displayTimeSeriesData(data) {
     // Update namespace filter
     const namespaceFilter = document.getElementById('timeseriesNamespaceFilter');
+    const previousSelection = namespaceFilter.value;
     namespaceFilter.innerHTML = '<option value="">All namespaces</option>';
     data.unique_namespaces.forEach(ns => {
         const option = document.createElement('option');
@@ -2624,6 +2985,9 @@ function displayTimeSeriesData(data) {
         option.textContent = ns;
         namespaceFilter.appendChild(option);
     });
+    if (previousSelection && data.unique_namespaces.includes(previousSelection)) {
+        namespaceFilter.value = previousSelection;
+    }
 
     // Create slow queries plot
     createSlowQueriesPlot(data.slow_queries);
@@ -2640,7 +3004,8 @@ function displayTimeSeriesData(data) {
 
     // Show info if data was sampled
     if (data.sampled) {
-        showToast('info', `Displaying 10,000 sampled queries out of ${data.total_slow_queries.toLocaleString()} total`);
+        const shown = Array.isArray(data.slow_queries) ? data.slow_queries.length : 0;
+        showToast('info', `Displaying sampled queries (${shown.toLocaleString()} of ${data.total_slow_queries.toLocaleString()})`);
     }
 }
 
@@ -2652,6 +3017,8 @@ function createSlowQueriesPlot(slowQueries) {
 
     const maxPlotPoints = isLargeDatasetMode ? 2000 : 6000;
     const sampledQueries = downsampleArray(slowQueries, maxPlotPoints);
+    const tz = extractLogTimezone(slowQueries[0]?.timestamp);
+    const tsTitle = tz ? `Timestamp (${tz})` : 'Timestamp';
     // Group by namespace for different traces
     const tracesByNamespace = {};
     sampledQueries.forEach(q => {
@@ -2666,7 +3033,7 @@ function createSlowQueriesPlot(slowQueries) {
                 marker: { size: 8 }
             };
         }
-        tracesByNamespace[q.namespace].x.push(q.timestamp);
+        tracesByNamespace[q.namespace].x.push(toLogTimeStr(q.timestamp));
         tracesByNamespace[q.namespace].y.push(q.duration_ms);
         tracesByNamespace[q.namespace].customdata.push({
             command: q.command,
@@ -2680,7 +3047,7 @@ function createSlowQueriesPlot(slowQueries) {
     const layout = {
         title: '',
         xaxis: {
-            title: 'Timestamp',
+            title: tsTitle,
             type: 'date',
             rangeslider: { visible: false }
         },
@@ -2705,10 +3072,8 @@ function createSlowQueriesPlot(slowQueries) {
 
     renderChartProgressively('slowQueriesPlot', traces, layout, config);
 
-    // Add events after chart is rendered
     setTimeout(() => {
         const plot = document.getElementById('slowQueriesPlot');
-        // Add click event to show query details
         plot.on('plotly_click', function (eventData) {
             const point = eventData.points[0];
             const customdata = point.customdata;
@@ -2721,21 +3086,22 @@ function createSlowQueriesPlot(slowQueries) {
             );
         });
 
-        // Add zoom sync event
-        plot.on('plotly_relayout', function (eventData) {
-            syncTimeSeriesZoom('slowQueriesPlot', eventData);
-        });
+        attachRelayoutListener('slowQueriesPlot', eventData =>
+            syncTimeSeriesZoom('slowQueriesPlot', eventData));
     }, 100);
 }
 
 function createConnectionsPlot(connections) {
     if (!connections || connections.length === 0) {
-        document.getElementById('connectionsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection data found in the log file.</p>';
+        document.getElementById('timeseriesConnectionsPlot').innerHTML = '<p style="text-align: center; padding: 20px;">No connection data found in the log file.</p>';
         return;
     }
 
+    const tz = extractLogTimezone(connections[0]?.timestamp);
+    const tsTitle = tz ? `Timestamp (${tz})` : 'Timestamp';
+
     const trace = {
-        x: connections.map(c => c.timestamp),
+        x: connections.map(c => toLogTimeStr(c.timestamp)),
         y: connections.map(c => c.connection_count),
         mode: 'lines',
         type: 'scatter',
@@ -2751,7 +3117,7 @@ function createConnectionsPlot(connections) {
     const layout = {
         title: '',
         xaxis: {
-            title: 'Timestamp',
+            title: tsTitle,
             type: 'date',
             rangeslider: { visible: false }
         },
@@ -2770,14 +3136,11 @@ function createConnectionsPlot(connections) {
         displaylogo: false
     };
 
-    renderChartProgressively('connectionsPlot', [trace], layout, config);
+    renderChartProgressively('timeseriesConnectionsPlot', [trace], layout, config);
 
-    // Add zoom sync event after chart is rendered
     setTimeout(() => {
-        const plot = document.getElementById('connectionsPlot');
-        plot.on('plotly_relayout', function (eventData) {
-            syncTimeSeriesZoom('connectionsPlot', eventData);
-        });
+        attachRelayoutListener('timeseriesConnectionsPlot', eventData =>
+            syncTimeSeriesZoom('timeseriesConnectionsPlot', eventData));
     }, 100);
 }
 
@@ -2789,6 +3152,8 @@ function createErrorsPlot(errors) {
 
     const maxPlotPoints = isLargeDatasetMode ? 2000 : 6000;
     const sampledErrors = downsampleArray(errors, maxPlotPoints);
+    const tz = extractLogTimezone(errors[0]?.timestamp);
+    const tsTitle = tz ? `Timestamp (${tz})` : 'Timestamp';
     // Group by message
     const tracesByMessage = {};
     sampledErrors.forEach(e => {
@@ -2806,7 +3171,7 @@ function createErrorsPlot(errors) {
                 }
             };
         }
-        tracesByMessage[msgKey].x.push(e.timestamp);
+        tracesByMessage[msgKey].x.push(toLogTimeStr(e.timestamp));
         tracesByMessage[msgKey].y.push(msgKey);
     });
 
@@ -2815,7 +3180,7 @@ function createErrorsPlot(errors) {
     const layout = {
         title: '',
         xaxis: {
-            title: 'Timestamp',
+            title: tsTitle,
             type: 'date',
             rangeslider: { visible: false }
         },
@@ -2840,12 +3205,9 @@ function createErrorsPlot(errors) {
 
     renderChartProgressively('errorsPlot', traces, layout, config);
 
-    // Add zoom sync event after chart is rendered
     setTimeout(() => {
-        const plot = document.getElementById('errorsPlot');
-        plot.on('plotly_relayout', function (eventData) {
-            syncTimeSeriesZoom('errorsPlot', eventData);
-        });
+        attachRelayoutListener('errorsPlot', eventData =>
+            syncTimeSeriesZoom('errorsPlot', eventData));
     }, 100);
 }
 
@@ -2889,7 +3251,7 @@ function syncTimeSeriesZoom(sourceId, eventData) {
     }
 
     // Update all plots except the source
-    const plotIds = ['slowQueriesPlot', 'connectionsPlot', 'errorsPlot'];
+    const plotIds = ['slowQueriesPlot', 'timeseriesConnectionsPlot', 'errorsPlot'];
     let syncPromises = [];
 
     plotIds.forEach(plotId => {
@@ -2919,7 +3281,7 @@ function displayQueryDetails(timestamp, duration, namespace, command, planSummar
 
     detailsContent.innerHTML = `
         <div class="info-details">
-            <p><strong>Timestamp:</strong> ${new Date(timestamp).toLocaleString()}</p>
+            <p><strong>Timestamp:</strong> ${formatDateTime(timestamp)}</p>
             <p><strong>Duration:</strong> ${duration} ms</p>
             <p><strong>Namespace:</strong> ${namespace}</p>
             <p><strong>Plan Summary:</strong> ${planSummary}</p>
@@ -3205,6 +3567,9 @@ function formatExplanation(text) {
 
 function displayOptimizedQuery(rec, query) {
     const stats = rec.stats || {};
+    const coverage_analysis = rec.coverage_analysis || {};
+    const coverage_score = coverage_analysis.coverage_score || 0;
+    const current_index_structure = coverage_analysis.current_index_structure || [];
 
     const modal = document.createElement('div');
     modal.className = 'recommendations-modal';
@@ -3237,7 +3602,8 @@ function displayOptimizedQuery(rec, query) {
             </div>
             
             <div class="current-index-display">
-                <strong>Current Index:</strong> <code>${rec.current_index}</code>
+                <strong>Current Index:</strong> <code>${rec.current_index || (current_index_structure.length > 0 ? '{' + current_index_structure.map(([f,d]) => f+': '+d).join(', ') + '}' : 'N/A')}</code>
+                ${coverage_score > 0 ? `<span class="coverage-score" style="margin-left:10px;">Coverage: ${coverage_score}%</span>` : ''}
             </div>
             
             <div class="optimization-status">
@@ -3245,6 +3611,19 @@ function displayOptimizedQuery(rec, query) {
                     <i class="fas fa-thumbs-up"></i> No Action Needed
                 </div>
                 <p>This query is already well-optimized and follows MongoDB best practices.</p>
+            </div>
+
+            <div class="performance-analysis">
+                <h5><i class="fas fa-chart-bar"></i> Performance Guidance</h5>
+                <div class="analysis-content">
+                    <p><strong>Index structure is optimal.</strong> If latency (${stats.mean_ms || 0}ms avg, ${stats.count || 0}× executions) is still high, consider:</p>
+                    <ul>
+                        <li><strong>Data volume:</strong> Query may be returning too many documents</li>
+                        <li><strong>Poor selectivity:</strong> Filter conditions may match many records</li>
+                        <li><strong>Result set size:</strong> Add limit or pagination</li>
+                        <li><strong>Hardware/network:</strong> Check system resources and network latency</li>
+                    </ul>
+                </div>
             </div>
             
             <div class="recommendation-explanation">
@@ -3264,9 +3643,16 @@ function displayOptimizedQuery(rec, query) {
 }
 
 function displaySingleRecommendation(rec, query) {
-    // Check if query is already optimized
-    if (rec.is_optimized) {
-        displayOptimizedQuery(rec, query);
+    const isHealthOptimized = query && (query.health_score >= 80) && (query.findings_count === 0);
+    if (rec.is_optimized || isHealthOptimized) {
+        const coverageAnalysis = rec.coverage_analysis || {};
+        const hasCoverageData = (coverageAnalysis.coverage_score > 0) ||
+            ((coverageAnalysis.current_index_structure || []).length > 0);
+        if (hasCoverageData) {
+            displayPerformanceGuidance(rec.namespace, rec.operation, rec.stats || {}, coverageAnalysis);
+        } else {
+            displayOptimizedQuery(rec, query);
+        }
         return;
     }
 

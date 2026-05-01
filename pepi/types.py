@@ -80,6 +80,12 @@ class QueryStats(BaseModel):
     pattern: str = ""
     durations: list[float] = Field(default_factory=list)
     indexes: Union[list[str], Set[str]] = Field(default_factory=set)
+    scan_ratio: float = 0.0
+    key_efficiency: float = 0.0
+    in_memory_sort_pct: float = 0.0
+    disk_usage_pct: float = 0.0
+    yield_rate: float = 0.0
+    avg_response_size: float = 0.0
 
     model_config = {"populate_by_name": True}
 
@@ -132,6 +138,95 @@ class SingleQueryRequest(BaseModel):
     pattern: str
     raw_log_line: Optional[str] = None
     stats: dict[str, Any]
+
+
+class QueryDiagnosticsRequest(BaseModel):
+    namespace: str
+    operation: str
+    pattern: str
+
+
+class QueryFinding(BaseModel):
+    severity: str
+    category: str
+    title: str
+    detail: str
+    recommendation: str
+
+
+class QueryHealthBreakdown(BaseModel):
+    plan_type_score: int
+    scan_ratio_score: int
+    key_efficiency_score: int
+    sort_score: int
+    latency_score: int
+    disk_score: int
+    total: int
+    severity: str
+
+
+class HealthDistribution(BaseModel):
+    healthy: int = 0
+    warning: int = 0
+    critical: int = 0
+
+
+class AWRTopPattern(BaseModel):
+    namespace: str
+    operation: str
+    pattern: str
+    value: float
+    health_score: int
+
+
+class AWRSummary(BaseModel):
+    top_by_total_time: list[AWRTopPattern] = Field(default_factory=list)
+    top_by_avg_latency: list[AWRTopPattern] = Field(default_factory=list)
+    top_by_scan_ratio: list[AWRTopPattern] = Field(default_factory=list)
+    top_by_execution_count: list[AWRTopPattern] = Field(default_factory=list)
+    collection_scan_patterns: int = 0
+    in_memory_sort_patterns: int = 0
+    disk_spill_patterns: int = 0
+    overall_health_score: int = 0
+    health_distribution: HealthDistribution = Field(default_factory=HealthDistribution)
+
+
+class EnrichedQuery(BaseModel):
+    namespace: str
+    operation: str
+    pattern: str
+    count: int
+    min_ms: float
+    max_ms: float
+    mean_ms: float
+    percentile_95_ms: float
+    sum_ms: float
+    allow_disk_use: bool = False
+    indexes: list[str] = Field(default_factory=list)
+    health_score: int = 0
+    health_severity: str = "HEALTHY"
+    scan_ratio: float = 0.0
+    key_efficiency: float = 0.0
+    findings_count: int = 0
+    in_memory_sort_pct: float = 0.0
+    disk_usage_pct: float = 0.0
+    yield_rate: float = 0.0
+    avg_response_size: float = 0.0
+
+    model_config = {"populate_by_name": True}
+
+
+class QueriesAnalysisData(BaseModel):
+    queries: list[EnrichedQuery] = Field(default_factory=list)
+    total_patterns: int = 0
+    summary: AWRSummary = Field(default_factory=AWRSummary)
+    findings: list[QueryFinding] = Field(default_factory=list)
+
+
+class QueryDiagnosticsData(BaseModel):
+    health: QueryHealthBreakdown
+    findings: list[QueryFinding] = Field(default_factory=list)
+    exec_stats: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

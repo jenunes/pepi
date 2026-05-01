@@ -39,6 +39,7 @@ from . import (
 from .errors import get_validated_file_path, validate_sample_param
 from .index_advisor import analyze_queries as ia_analyze_queries
 from .index_advisor import analyze_single_query
+from .queries_awr import build_queries_analysis_data, build_query_diagnostics_data
 from .ingest_store import (
     bootstrap_schema,
     delete_file_ingest_data,
@@ -61,6 +62,7 @@ from .types import (
     PreflightData,
     PreflightResponse,
     PreflightThresholds,
+    QueryDiagnosticsRequest,
     QueryExamplesRequest,
     SingleQueryRequest,
     StatusMessage,
@@ -110,7 +112,9 @@ async def lifespan(app: FastAPI):
     app.state.ingest_conn.close()
 
 
-app = FastAPI(title="Pepi MongoDB Log Analyzer", version="2.2.2", lifespan=lifespan)
+from pepi.version import __version__ as _pepi_version
+
+app = FastAPI(title="Pepi MongoDB Log Analyzer", version=_pepi_version, lifespan=lifespan)
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -689,31 +693,45 @@ def analyze_queries_route(
         if operation:
             query_stats = {k: v for k, v in query_stats.items() if k[1] == operation}
 
-        results = []
-        for (ns, op, pattern), stats in query_stats.items():
-            results.append({
-                "namespace": ns,
-                "operation": op,
-                "pattern": pattern,
-                "count": stats['count'],
-                "min_ms": stats['min'],
-                "max_ms": stats['max'],
-                "mean_ms": stats['mean'],
-                "percentile_95_ms": stats['percentile_95'],
-                "sum_ms": stats['sum'],
-                "allow_disk_use": stats['allowDiskUse'],
-                "indexes": list(stats['indexes']) if isinstance(stats['indexes'], set) else stats['indexes'],
-            })
-
-        return AnalysisResult(
-            status="success",
-            data={
-                "queries": results,
-                "total_patterns": len(results),
-            },
-        )
+        awr = build_queries_analysis_data(query_stats)
+        return AnalysisResult(status="success", data=awr.model_dump())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query analysis failed: {str(e)}")
+
+
+@app.post("/api/analyze/{file_id}/query-diagnostics", response_model=AnalysisResult)
+def query_diagnostics_route(
+    file_id: str,
+    request: QueryDiagnosticsRequest,
+    sample: Optional[int] = 100,
+    upload_store: dict = Depends(get_upload_store),
+):
+    """Health breakdown, findings, and execution stats for one query pattern."""
+    file_path = get_validated_file_path(file_id, upload_store)
+    validate_sample_param(sample)
+
+    try:
+        queries_data = parse_queries(file_path, sample_percentage=sample)
+        query_stats = calculate_query_stats(queries_data)
+        key = (request.namespace, request.operation, request.pattern)
+        if key not in query_stats:
+            raise HTTPException(
+                status_code=404,
+                detail="Query pattern not found for this file. Run Analyze Queries with matching filters.",
+            )
+        stats = query_stats[key]
+        data = build_query_diagnostics_data(
+            request.namespace,
+            request.operation,
+            request.pattern,
+            stats,
+        )
+        return AnalysisResult(status="success", data=data.model_dump())
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Query diagnostics failed: {str(e)}")
+
 
 @app.post("/api/analyze/{file_id}/query-examples", response_model=AnalysisResult)
 def get_query_examples(
@@ -888,11 +906,10 @@ def analyze_timeseries(
         if namespace:
             slow_queries = [q for q in slow_queries if q['namespace'] == namespace]
         
-        # Sample data if too large (> 10,000 points) to prevent browser overload
-        max_points = 10000
-        if len(slow_queries) > max_points:
-            import random
-            slow_queries = random.sample(slow_queries, max_points)
+        # Keep deterministic ordering for stable chart rendering.
+        slow_queries.sort(key=lambda q: q.get('timestamp', ''))
+        connections.sort(key=lambda c: c.get('timestamp', ''))
+        errors.sort(key=lambda e: e.get('timestamp', ''))
         
         # Get unique namespaces for filtering
         unique_namespaces = sorted(set(q['namespace'] for q in slow_queries))
@@ -932,7 +949,7 @@ def analyze_timeseries(
         
         # Get MongoDB info from slow queries
         total_slow_queries = len(slow_queries)
-        sampled = len(slow_queries) == max_points
+        sampled = False
         
         return AnalysisResult(
             status="success",

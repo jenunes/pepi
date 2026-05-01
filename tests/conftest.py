@@ -59,6 +59,33 @@ def sample_log_file(tmp_path: Path) -> Path:
                     "durationMillis": 240,
                     "planSummary": "COLLSCAN",
                     "command": {"find": "users", "filter": {"status": "A"}},
+                    "keysExamined": 0,
+                    "docsExamined": 15000,
+                    "nreturned": 3,
+                    "hasSortStage": False,
+                    "usedDisk": False,
+                    "numYields": 12,
+                    "reslen": 450,
+                },
+            }
+        ),
+        _log_line(
+            {
+                "t": {"$date": "2026-03-06T21:30:04.500Z"},
+                "c": "COMMAND",
+                "msg": "Slow query",
+                "attr": {
+                    "ns": "test.orders",
+                    "durationMillis": 15,
+                    "planSummary": "IXSCAN { customer_id: 1 }",
+                    "command": {"find": "orders", "filter": {"customer_id": 42}},
+                    "keysExamined": 5,
+                    "docsExamined": 5,
+                    "nreturned": 5,
+                    "hasSortStage": False,
+                    "usedDisk": False,
+                    "numYields": 0,
+                    "reslen": 200,
                 },
             }
         ),

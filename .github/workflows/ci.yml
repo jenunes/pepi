@@ -102,7 +102,7 @@ jobs:
 
       - name: Run core smoke tests
         run: |
-          pytest -q tests/test_parser.py tests/test_sampling.py tests/test_stats.py tests/test_cache.py tests/test_index_advisor.py
+          pytest -q tests/test_parser.py tests/test_sampling.py tests/test_stats.py tests/test_cache.py tests/test_index_advisor.py tests/test_query_health.py tests/test_query_findings.py
 
   package-smoke:
     name: Package Build and CLI Smoke

@@ -163,7 +163,24 @@ def analyze_single_query(namespace: str, operation: str, pattern: str, stats: Di
             "Query is already optimally indexed (coverage=%s), skipping analysis",
             coverage_analysis['coverage_score'],
         )
-        return None
+        return {
+            'is_optimized': True,
+            'namespace': namespace,
+            'operation': operation,
+            'pattern': pattern[:200],
+            'current_index': current_index_info['type'],
+            'current_index_structure': current_index_info.get('structure', []),
+            'stats': {
+                'count': stats.get('count', 0),
+                'mean_ms': round(stats.get('mean', 0), 1),
+                'p95_ms': round(stats.get('percentile_95', 0), 1),
+            },
+            'coverage_analysis': coverage_analysis,
+            'explanation': (
+                'Index coverage is strong for this query shape. '
+                'If latency remains high, review data volume, selectivity, and result set size.'
+            ),
+        }
 
     logger.info("Analyzing user-requested query recommendation")
 

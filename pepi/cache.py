@@ -3,6 +3,7 @@ from __future__ import annotations
 """Cache management for Pepi log analysis results."""
 
 import hashlib
+import json
 import os
 import pickle
 import time
@@ -28,9 +29,17 @@ def get_file_hash(filepath: Path) -> str:
     return hash_sha256.hexdigest()
 
 
-def get_cache_key(filepath: Path, analysis_type: str) -> str:
+def build_cache_variant(params: dict[str, Any]) -> str:
+    """Build a stable short variant hash from parameter payload."""
+    canonical = json.dumps(params, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
+def get_cache_key(filepath: Path, analysis_type: str, variant: str = "") -> str:
     """Generate cache key for specific analysis type."""
     file_hash = get_file_hash(filepath)
+    if variant:
+        return f"{file_hash}_{analysis_type}_{variant}"
     return f"{file_hash}_{analysis_type}"
 
 

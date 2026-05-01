@@ -20,6 +20,55 @@ def test_calculate_query_stats_basic() -> None:
     assert result["mean"] == 200
 
 
+def test_calculate_query_stats_includes_scan_ratio() -> None:
+    data = {
+        ("test.col", "find", '{"x":1}'): {
+            "durations": [50, 60],
+            "allowDiskUse": False,
+            "pattern": '{"x":1}',
+            "indexes": {"IXSCAN"},
+            "keysExamined": [10, 20],
+            "docsExamined": [10, 20],
+            "nreturned": [5, 10],
+            "hasSortStage": [False, False],
+            "usedDisk": [False, False],
+            "numYields": [1, 2],
+            "reslen": [100, 200],
+            "locksPresent": [False, False],
+        }
+    }
+    stats = calculate_query_stats(data)
+    result = stats[("test.col", "find", '{"x":1}')]
+    assert result["scan_ratio"] == 2.0
+    assert result["key_efficiency"] == 1.0
+    assert result["in_memory_sort_pct"] == 0.0
+    assert result["disk_usage_pct"] == 0.0
+    assert result["yield_rate"] == 1.5
+    assert result["avg_response_size"] == 150.0
+
+
+def test_calculate_query_stats_handles_zero_nreturned() -> None:
+    data = {
+        ("test.col", "find", '{"y":1}'): {
+            "durations": [100],
+            "allowDiskUse": False,
+            "pattern": '{"y":1}',
+            "indexes": {"IXSCAN"},
+            "keysExamined": [500],
+            "docsExamined": [500],
+            "nreturned": [0],
+            "hasSortStage": [False],
+            "usedDisk": [False],
+            "numYields": [0],
+            "reslen": [0],
+            "locksPresent": [False],
+        }
+    }
+    stats = calculate_query_stats(data)
+    result = stats[("test.col", "find", '{"y":1}')]
+    assert result["scan_ratio"] == 0.0
+
+
 def test_calculate_connection_stats_basic() -> None:
     data = {"127.0.0.1": {"durations": [1.0, 3.0]}, "10.0.0.1": {"durations": [2.0]}}
 

@@ -10,14 +10,34 @@ from typing import Any, Optional
 import click
 from tqdm import tqdm
 
-from pepi.cache import get_cache_key, load_from_cache, save_to_cache
+from pepi.cache import build_cache_variant, get_cache_key, load_from_cache, save_to_cache
 from pepi.sampling import get_sample_rate, get_sample_rate_from_percentage, get_sampling_metadata
 from pepi.utils import count_lines
 
 
+def _build_sampling_cache_variant(total_lines: int, sample_percentage: Optional[int]) -> str:
+    """Build cache variant using effective sampling behavior."""
+    if sample_percentage is not None:
+        sample_rate = get_sample_rate_from_percentage(sample_percentage, total_lines)
+    else:
+        sample_rate = get_sample_rate(total_lines)
+    return build_cache_variant(
+        {
+            "total_lines": total_lines,
+            "sample_percentage": sample_percentage,
+            "sample_rate": sample_rate,
+        }
+    )
+
+
 def parse_connections(logfile: str, sample_percentage: Optional[int] = None) -> tuple[dict, int, int]:
     """Parse connection information from MongoDB log file."""
-    cache_key = get_cache_key(logfile, 'connections')
+    total_lines = count_lines(logfile)
+    cache_key = get_cache_key(
+        logfile,
+        'connections',
+        variant=_build_sampling_cache_variant(total_lines, sample_percentage),
+    )
     cached_result = load_from_cache(cache_key)
     if cached_result:
         click.echo("Using cached connection data...")
@@ -30,8 +50,6 @@ def parse_connections(logfile: str, sample_percentage: Optional[int] = None) -> 
     total_opened = 0
     total_closed = 0
     connection_starts = {}
-    
-    total_lines = count_lines(logfile)
     
     if sample_percentage is not None:
         sample_rate = get_sample_rate_from_percentage(sample_percentage, total_lines)
@@ -374,12 +392,21 @@ def parse_timeseries_data(logfile: str) -> tuple[list[dict], list[dict], list[di
                     plan_summary = attr.get('planSummary', 'N/A')
                     
                     if namespace and duration_ms > 0:
+                        locks = attr.get('locks')
                         slow_queries.append({
                             'timestamp': timestamp,
                             'duration_ms': duration_ms,
                             'namespace': namespace,
                             'command': command,
-                            'plan_summary': plan_summary
+                            'plan_summary': plan_summary,
+                            'keysExamined': int(attr.get('keysExamined') or 0),
+                            'docsExamined': int(attr.get('docsExamined') or 0),
+                            'nreturned': int(attr.get('nreturned') or 0),
+                            'hasSortStage': bool(attr.get('hasSortStage', False)),
+                            'usedDisk': bool(attr.get('usedDisk', False)),
+                            'numYields': int(attr.get('numYields') or 0),
+                            'reslen': int(attr.get('reslen') or 0),
+                            'locksPresent': bool(locks) if locks is not None else False,
                         })
                 
                 elif entry.get('c') == 'NETWORK' and entry.get('msg') == 'Connection accepted':
@@ -669,7 +696,12 @@ def parse_connection_events(logfile: str) -> list[dict[str, Any]]:
 
 def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict:
     """Parse query patterns and statistics from MongoDB log file, grouped by pattern."""
-    cache_key = get_cache_key(logfile, 'queries')
+    total_lines = count_lines(logfile)
+    cache_key = get_cache_key(
+        logfile,
+        'queries',
+        variant=_build_sampling_cache_variant(total_lines, sample_percentage),
+    )
     cached_result = load_from_cache(cache_key)
     if cached_result:
         click.echo("Using cached query data...")
@@ -681,6 +713,18 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
                 value['indexes'] = set(value['indexes'])
             if 'indexes' not in value:
                 value['indexes'] = set()
+            for metric_key in (
+                'keysExamined',
+                'docsExamined',
+                'nreturned',
+                'hasSortStage',
+                'usedDisk',
+                'numYields',
+                'reslen',
+                'locksPresent',
+            ):
+                if metric_key not in value:
+                    value[metric_key] = []
         return queries
     
     def default_query_data():
@@ -690,12 +734,18 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
             'allowDiskUse': False,
             'operations': set(),
             'pattern': None,
-            'indexes': set()
+            'indexes': set(),
+            'keysExamined': [],
+            'docsExamined': [],
+            'nreturned': [],
+            'hasSortStage': [],
+            'usedDisk': [],
+            'numYields': [],
+            'reslen': [],
+            'locksPresent': [],
         }
     
     queries = defaultdict(default_query_data)
-    
-    total_lines = count_lines(logfile)
     
     if sample_percentage is not None:
         sample_rate = get_sample_rate_from_percentage(sample_percentage, total_lines)
@@ -742,6 +792,16 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
                     queries[group_key]['allowDiskUse'] = queries[group_key]['allowDiskUse'] or allow_disk_use
                     queries[group_key]['pattern'] = pattern
                     queries[group_key]['indexes'].add(index_used)
+                    locks = attr.get('locks')
+                    locks_present = bool(locks) if locks is not None else False
+                    queries[group_key]['keysExamined'].append(int(attr.get('keysExamined') or 0))
+                    queries[group_key]['docsExamined'].append(int(attr.get('docsExamined') or 0))
+                    queries[group_key]['nreturned'].append(int(attr.get('nreturned') or 0))
+                    queries[group_key]['hasSortStage'].append(bool(attr.get('hasSortStage', False)))
+                    queries[group_key]['usedDisk'].append(bool(attr.get('usedDisk', False)))
+                    queries[group_key]['numYields'].append(int(attr.get('numYields') or 0))
+                    queries[group_key]['reslen'].append(int(attr.get('reslen') or 0))
+                    queries[group_key]['locksPresent'].append(locks_present)
             except Exception:
                 pass
 
@@ -753,7 +813,15 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
             'allowDiskUse': value['allowDiskUse'],
             'operations': list(value['operations']),
             'pattern': value['pattern'],
-            'indexes': list(value['indexes'])
+            'indexes': list(value['indexes']),
+            'keysExamined': value['keysExamined'],
+            'docsExamined': value['docsExamined'],
+            'nreturned': value['nreturned'],
+            'hasSortStage': value['hasSortStage'],
+            'usedDisk': value['usedDisk'],
+            'numYields': value['numYields'],
+            'reslen': value['reslen'],
+            'locksPresent': value['locksPresent'],
         }
     cache_data = {
         'queries': queries_dict,
