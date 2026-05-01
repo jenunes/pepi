@@ -1,7 +1,7 @@
 {
   "name": "pepi-ui-e2e",
   "private": true,
-  "version": "2.2.4",
+  "version": "2.2.5",
   "description": "Playwright UI smoke tests for Pepi tabs",
   "scripts": {
     "test:e2e:ui-tabs": "playwright test tests/e2e/ui-tabs.spec.js --reporter=line,html"

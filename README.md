@@ -1,622 +1,346 @@
 # Pepi
 
-Pepi is a local-first MongoDB log analyzer with CLI and FastAPI web UI.
+**Current version: 2.2.5**
 
-## Highlights
+Pepi is a **local-first** MongoDB log analyzer. It reads JSON-line MongoDB log files, extracts connection activity, command/query patterns, replica set signals, client/driver metadata, and time-series style signals. It targets engineers triaging production and staging deployments **without** shipping logs to a third-party service.
 
-- Parse large MongoDB logs for connections, queries, replica set state, clients, and time-series signals.
-- Use the web dashboard for upload, filtering, trimming, and index recommendations.
-- Keep data local; no telemetry.
+**Who uses it:** DBAs, SREs, and application engineers reviewing `mongod` diagnostic logs.
+
+**What problem it solves:** Large logs are hard to search by hand. Pepi aggregates patterns, surfaces slow queries and plan summaries where present, and offers a small FastAPI + browser UI for the same analyses the CLI performs.
+
+---
+
+## Key features
+
+- **CLI:** Summary (dates, line count, OS/DB versions, startup options), replica set config/state, connections (counts, optional duration stats, sort, IP compare), clients/drivers, queries (pattern stats, filters, histogram, full-pattern export), log trim by time range, optional line sampling, pickle cache with TTL, version and upgrade helpers.
+- **Web UI:** Upload (or preload via CLI), preflight by file size, optional **ingest** job into a local SQLite DB, analysis tabs (basic, raw extractor, connections, clients, queries, time series, replica set), trim, download, delete.
+- **API:** FastAPI routes under `/api/...` (see [API overview](#api-overview)); OpenAPI at `/docs` when the server is running.
+- **Index recommendations:** Rule-based analysis in-tree (`pepi/index_advisor.py`); API responses set `has_llm: false` in current code.
+
+---
 
 ## Installation
+
+### Editable install (recommended for development)
 
 ```bash
 git clone https://github.com/jenunes/pepi.git
 cd pepi
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-For development tools (pytest, ruff):
+With dev tools (pytest, ruff, httpx):
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-## Quick usage
+**Python:** `>=3.8` (see `pyproject.toml`).
 
-```bash
-# CLI summary
-pepi --fetch /path/to/mongod.log
+### Install script (home directory layout)
 
-# Web UI only
-pepi --web-ui
-
-# Web UI with preloaded file
-pepi --fetch /path/to/mongod.log --web-ui
-
-# Query analysis
-pepi --fetch /path/to/mongod.log --queries
-```
-
-## Development
-
-### Run checks
-
-```bash
-ruff check pepi tests
-pytest -q
-```
-
-### Project structure
-
-```text
-pepi/
-  __init__.py
-  cache.py
-  cli.py
-  errors.py
-  formatters.py
-  index_advisor.py
-  parser.py
-  sampling.py
-  stats.py
-  types.py
-  upgrade.py
-  utils.py
-  web_api.py
-tests/
-  ...
-```
-
-## Notes
-
-- Upload supports `.log`, `.txt`, `.json`, and rotated MongoDB names like `mongod.log.2026-03-06T21-30-43`.
-- Large uploads are streamed in chunks to reduce memory usage.
-- Temporary uploaded files are cleaned up on API shutdown.
-
-## Temporary Storage And Port Markers
-
-- Upload temporary directory resolution order:
-  1. `PEPI_UPLOAD_TMPDIR`
-  2. `TMPDIR`
-  3. system temporary directory
-- Disk guardrail controls:
-  - `PEPI_UPLOAD_MIN_FREE_MB` (default: `0`, optional fixed floor)
-  - `PEPI_UPLOAD_HEADROOM_FACTOR` (default: `1.5`)
-- If upload fails with no space left on device:
-  - free disk space, or
-  - set `PEPI_UPLOAD_TMPDIR` to a partition with enough capacity, or
-  - trim the log around the target time range and upload a smaller file.
-- Port marker files (`/tmp/pepi_port_<pid>.txt`) are cleaned automatically on startup/shutdown, and stale markers are removed when PID is no longer alive.
-# pepi
-
-A fast, user-friendly MongoDB log analysis tool for extracting insights from MongoDB log files.
-
-## Features
-
-### Core Analysis
-- **MongoDB Log Summary**: Start/end date, number of lines, OS and DB version, host information
-- **Command Line Reconstruction**: Reconstructs the original mongod startup command
-- **Replica Set Analysis**: Configuration and state transitions
-- **Connection Analysis**: Connection statistics with duration tracking
-- **Client/Driver Information**: Detailed client and driver analysis
-- **Query Pattern Analysis**: Query statistics and performance analysis with pattern recognition
-
-### Web Interface
-- **Interactive Dashboard**: Modern web UI with charts, tables, and visualizations
-- **Time Series Visualization**: Interactive plots showing slow queries, connections, and errors over time
-- **Drag & Drop Upload**: Easy file upload with progress tracking
-- **Real-time Analysis**: Live progress updates during log processing
-- **Interactive Charts**: Visual representations of connections and query performance
-- **Click-to-View Details**: Click on any data point in time series plots to see full query details
-- **Advanced Filtering**: Filter queries by namespace, operation type, and more
-- **Log Trimming**: Extract specific time ranges with intuitive date selection
-- **File Management**: Download, delete, and manage multiple log files
-
-### Advanced Features
-- **Progress Bars**: Visual feedback during large file processing for all analysis modes
-- **Connection Duration Statistics**: Average, minimum, and maximum connection durations
-- **Sorting Options**: Sort connections by opened/closed counts
-- **Query Performance Statistics**: Min, max, 95th percentile, sum, and mean execution times
-- **Query Pattern Recognition**: Groups similar queries by structure with normalized patterns
-- **Comparison Tools**: Compare specific hostnames/IPs side-by-side
-- **Clean Output Formatting**: Well-organized, aligned output for easy reading
-
-## Installation
-
-### Quick Install (Recommended)
-
-Install Pepi to your home directory:
+If you use the project’s `install.sh`, it installs under `~/.pepi` and wires `pepi` into your PATH (see script for details).
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/jenunes/pepi/main/install.sh | bash
 ```
 
-This installs Pepi to `~/.pepi/` and adds it to your PATH.
+### Playwright (optional UI e2e)
 
-### Manual Installation
-
-```bash
-git clone https://github.com/jenunes/pepi.git ~/.pepi
-cd ~/.pepi
-pip install -r requirements.txt
-ln -s ~/.pepi/pepi.sh ~/.local/bin/pepi
-```
-
-## Upgrading
-
-Check for updates and upgrade:
+From repo root, with Node/npm:
 
 ```bash
-pepi --upgrade
+npm install
+npx playwright install
 ```
 
-Pepi will automatically check for new versions and prompt you to upgrade.
+Config: `playwright.config.js` — `baseURL` defaults to `http://127.0.0.1:8000`, overridable with `PEPI_UI_BASE_URL`. Tests live under `tests/e2e/*.spec.js`.
 
-## Uninstallation
+---
+
+## Upgrade and uninstall
+
+### `pepi --upgrade` (GitHub install layout only)
+
+`pepi/upgrade.py` runs `git pull` and `pip install -r requirements.txt` inside **`~/.pepi`**. If that directory does not exist, upgrade prints instructions to reinstall via the install script.
+
+**Editable / venv installs:** upgrade with `git pull` and `pip install -e .` (or your packaging workflow); do not rely on `pepi --upgrade` unless you use the `~/.pepi` layout.
+
+### Version check (CLI, background)
+
+On normal CLI runs (not `--web-ui`), a daemon thread calls GitHub’s API for repository tags (`check_version_async` → `check_for_updates`). This is a **version check**, not log telemetry.
+
+### Uninstall (`~/.pepi` layout)
 
 ```bash
 rm -rf ~/.pepi
-rm ~/.local/bin/pepi
+rm -f ~/.local/bin/pepi   # if symlinked there
 ```
 
-## Performance
+Remove `~/.pepi_cache` if you want to drop CLI cache and default ingest DB (see [Cache behavior](#cache-behavior--troubleshooting)).
 
-pepi is designed to handle large log files efficiently:
-- **Progress bars** provide visual feedback during processing
-- **Streaming processing** minimizes memory usage
-- **Optimized parsing** for large files (tested up to 2GB+)
-- **Early termination** support for long-running operations
+---
 
-## Cache System
+## CLI quickstart
 
-pepi uses an automatic cache system to speed up repeated analysis of large log files:
-- **Automatic 7-day TTL**: Cache files are kept for 7 days since their last use. Every time a cache file is used, its timer resets (sliding expiration).
-- **No manual cleanup needed**: If a cache file is not used for 7 days, it is automatically deleted and rebuilt on next use.
-- **Location**: Cache files are stored in `~/.pepi_cache/`.
-- **Safe and efficient**: This ensures your cache stays fresh and never grows indefinitely.
-
-You can always force a re-parse and clear the cache with the `--clear-cache` flag.
-
-2. **Option A: Install globally (recommended)**
-   ```bash
-   pip install -e .
-   ```
-   After installation, you can run `pepi` from anywhere on your system:
-   ```bash
-   pepi --fetch /path/to/mongod.log
-   pepi --fetch /path/to/mongod.log --connections
-   ```
-
-3. **Option B: Use with virtual environment**
-   ```bash
-   # Create and activate a Python virtual environment
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   
-   # Install dependencies
-   pip install -r requirements.txt
-   
-   # Run the tool
-   pepi --fetch /path/to/mongod.log
-   ```
-
-## Usage
-
-### Basic Usage
 ```bash
-# Show MongoDB log summary and command line startup
-pepi --fetch /path/to/mongod.log
+# Summary + reconstructed mongod startup command line (from log)
+pepi --fetch /var/log/mongodb/mongod.log
 
-# Launch interactive web interface (no file)
+# Connection counts (warns on stderr if >50k lines and sample is 100%)
+pepi --fetch /var/log/mongodb/mongod.log --connections
+
+# Query pattern table (truncated patterns in terminal; use report file for full text)
+pepi --fetch /var/log/mongodb/mongod.log --queries --sort-by count
+
+# Launch web UI (browser: first free port among 8000–8002; see server log / tmp port file)
 pepi --web-ui
-
-# Launch web interface with pre-loaded file
-pepi --fetch /path/to/mongod.log --web-ui
-
-# Show replica set configuration
-pepi --fetch /path/to/mongod.log --rs-conf
-
-# Show replica set node status and transitions
-pepi --fetch /path/to/mongod.log --rs-state
-
-# Show client/driver information
-pepi --fetch /path/to/mongod.log --clients
-
-# Show query pattern statistics and performance analysis
-pepi --fetch /path/to/mongod.log --queries
-
+pepi --fetch /var/log/mongodb/mongod.log --web-ui --sample 50
 ```
 
-### Connection Analysis
+---
+
+## CLI reference
+
+General form:
+
+```text
+pepi --fetch PATH [options]
+pepi --web-ui [--fetch PATH] [--sample N]
+```
+
+**Required for most commands:** `--fetch` / `-f` must point to an **existing** file (Click validates the path), **except** when you only run `--web-ui` (no file) or `--version` / `--upgrade`.
+
+If neither `--fetch` nor `--web-ui` is given, Pepi prints: `Pepi didn't find anything to fetch` and exits.
+
+### Default (no analysis flag)
+
+Reads the log once for basic metadata (unless cached), prints **Node Command Line Startup** (reconstructed `mongod` arguments when found) and **MongoDB Log Summary** (file, dates, line count, host from startup options if present, OS/kernel/DB version, replica set name and node count when derivable).
+
+### `--rs-conf`
+
+Prints the **latest** replica set configuration document found in the log (JSON). Uses parser cache when available.
+
+### `--rs-state`
+
+Prints current node status lines and per-host **state transitions** from the log.
+
+### `--connections`
+
+Per-IP opened/closed counts. Optional:
+
+- **`--stats`:** duration min/max/avg per IP and overall (from paired accept/end events).
+- **`--sort-by opened|closed`:** descending sort by count (other `sort-by` values accepted by Click but **do not** change connection sort order in code).
+- **`--compare HOST ...`:** two or three hosts; fewer than two is an error; more than three uses the first three with a warning.
+
+Uses `parse_connections(..., sample_percentage=--sample)`; see [Sampling](#sampling-behavior--trade-offs).
+
+### `--clients`
+
+Lists driver name/version, app name (if any), connection count, IPs, and users per driver grouping.
+
+### `--queries`
+
+Query pattern statistics (namespace, operation, truncated pattern, counts, timing stats, index/plan summary strings from logs). Optional:
+
+- **`--sort-by count|min|max|95%|sum|mean`**
+- **`--namespace NS`** and **`--operation OP`**
+- **`--report-full-patterns FILE`:** writes full table to **file** and exits (does not print the table to stdout).
+- **`--report-histogram`:** duration histogram across **filtered** query stats.
+
+### `--trim` with `--from` / `--until`
+
+Requires **at least one** of `--from` or `--until`. Datetimes use flexible parsing (`DD/MM/YYYY` and optional time parts; see `--trim --help`).
+
+Reads matching lines, reports counts, then interactively asks whether to save and the output filename (default `*_trimmed*`).
+
+### `--web-ui`
+
+Starts `python -m pepi.web_api` as a subprocess. Optional env: `PEPI_PRELOAD_FILE` (absolute path from `--fetch`), `PEPI_SAMPLE_PERCENTAGE` (from `--sample`). Prints `http://localhost:<port>` (port discovered via tmp file or psutil).
+
+### `--sample N`
+
+Integer **0–100**, default **100**. Passed into connection/query parsers. Behavior is defined in `pepi/sampling.py` and `pepi/parser.py` (see [Sampling](#sampling-behavior--trade-offs)).
+
+### `--clear-cache`
+
+Deletes **all** `*.pkl` under `~/.pepi_cache` and exits. Due to CLI ordering, you must still pass a valid **`--fetch`** path even though cache clearing is global:
+
 ```bash
-# Basic connection information
-pepi --fetch /path/to/mongod.log --connections
-
-# Connection information with duration statistics
-pepi --fetch /path/to/mongod.log --connections --stats
-
-# Sort connections by opened count (descending)
-pepi --fetch /path/to/mongod.log --connections --sort-by opened
-
-# Sort connections by closed count (descending)
-pepi --fetch /path/to/mongod.log --connections --sort-by closed
-
-# Compare specific hostnames/IPs (2-3 required)
-pepi --fetch /path/to/mongod.log --connections --compare 127.0.0.1 --compare 192.168.1.100
-
-# Combine multiple options
-pepi --fetch /path/to/mongod.log --connections --stats --sort-by opened --compare 127.0.0.1 --compare 192.168.1.100
+pepi --fetch /path/to/any.log --clear-cache
 ```
 
-### Sampling Control
+### `--version`
 
-Pepi includes intelligent sampling to handle large log files efficiently:
+Prints `pepi version`, version string, and repo URL; exits.
 
-#### Automatic Sampling
-When no `--sample` flag is specified, Pepi automatically applies sampling to large files:
-- **< 50,000 lines**: No sampling (process all lines)
-- **50,000 - 200,000 lines**: Every 5th line (20% sampling)
-- **200,000 - 500,000 lines**: Every 10th line (10% sampling)  
-- **> 500,000 lines**: Every 20th line (5% sampling)
+### `--upgrade`
 
-#### Manual Sampling Control
+Runs the `~/.pepi`-only upgrade path (see [Upgrade and uninstall](#upgrade-and-uninstall)).
+
+### Contextual help
+
 ```bash
-# Analyze with 50% sampling for faster processing of large files
-pepi --fetch /path/to/mongod.log --connections --sample 50
-
-# Web UI with 25% sampling
-pepi --fetch /path/to/mongod.log --web-ui --sample 25
-
-# Default (100%, with auto-sampling for very large files)
-pepi --fetch /path/to/mongod.log --web-ui
-
-# Process only 10% of lines (every 10th line)
-pepi --fetch /path/to/mongod.log --queries --sample 10
-
-# Skip all lines (0% - useful for testing)
-pepi --fetch /path/to/mongod.log --sample 0
-```
-
-#### Sampling Behavior
-- **Systematic Sampling**: Uses every Nth line approach (industry standard for log analysis)
-- **Temporal Distribution**: Maintains chronological order of events
-- **Performance Warnings**: Alerts when processing 100% of very large files
-- **Representative Results**: Sampled data provides statistically valid insights
-
-### Query Analysis
-
-The `--queries` flag analyzes query patterns and provides performance statistics:
-
-- **Index Information**: Shows which indexes are used by each query pattern (extracted from `planSummary`)
-  - `COLLSCAN` indicates a collection scan (no index used)
-  - Index names like `age_1`, `status_1` show specific indexes used
-  - `N/A` for operations that don't use indexes (like inserts)
-- **Pattern Truncation**: By default, query patterns longer than 150 characters are truncated with "..." to keep terminal output readable
-- **Full Patterns**: Use `--report-full-patterns <file>` to write complete patterns to a file instead of printing to terminal
-- **Namespace Filtering**: Use `--namespace` to filter queries by specific database.collection
-- **Operation Filtering**: Use `--operation` to filter queries by operation type (find, insert, update, delete, aggregate)
-- **Histogram**: Use `--report-histogram` to show overall execution time distribution for the filtered data
-  - Time ranges use mathematical notation: `[a,b)` means "a to less than b"
-  - Example: `[10,100)ms` = 10ms to less than 100ms
-- **Sorting**: Use `--sort-by` with values like `count`, `mean`, `max`, `min`, `95%`, or `sum`
-
-Example:
-```bash
-# Show truncated patterns in terminal
-pepi --fetch mongodb.log --queries
-
-# Write complete patterns to file
-pepi --fetch mongodb.log --queries --report-full-patterns query_report.txt
-
-# Sort by execution count
-pepi --fetch mongodb.log --queries --sort-by count
-
-# Filter by specific namespace
-pepi --fetch mongodb.log --queries --namespace test.users
-
-# Filter by namespace and sort by count
-pepi --fetch mongodb.log --queries --namespace test.users --sort-by count
-
-# Filter by namespace and generate full report
-pepi --fetch mongodb.log --queries --namespace test.users --report-full-patterns report.txt
-
-# Filter by namespace, sort by mean, and generate full report
-pepi --fetch mongodb.log --queries --namespace test.users --sort-by mean --report-full-patterns slow_queries.txt
-
-# Filter by operation type
-pepi --fetch mongodb.log --queries --operation find
-
-# Filter by operation and namespace
-pepi --fetch mongodb.log --queries --operation find --namespace test.users
-
-# Filter by operation, sort by count, and generate report
-pepi --fetch mongodb.log --queries --operation aggregate --sort-by count --report-full-patterns aggregate_report.txt
-
-# Show execution time distribution histogram
-pepi --fetch mongodb.log --queries --report-histogram
-
-# Show execution time distribution histogram
-pepi --fetch mongodb.log --queries --report-histogram
-
-# Filter by namespace and show histogram for that namespace
-pepi --fetch mongodb.log --queries --namespace test.users --report-histogram
-
-# Filter by namespace and operation, show histogram for that specific slice
-pepi --fetch mongodb.log --queries --namespace test.users --operation find --report-histogram
-```
-
-### Query Analysis Examples
-```bash
-# Basic query pattern statistics (includes index information)
-pepi --fetch /path/to/mongod.log --queries
-
-# Sort queries by count (most frequent first)
-pepi --fetch /path/to/mongod.log --queries --sort-by count
-
-# Sort queries by mean execution time (slowest first)
-pepi --fetch /path/to/mongod.log --queries --sort-by mean
-
-# Sort queries by 95th percentile execution time
-pepi --fetch /path/to/mongod.log --queries --sort-by 95%
-
-# Sort queries by total execution time
-pepi --fetch /path/to/mongod.log --queries --sort-by sum
-
-# Sort queries by minimum execution time
-pepi --fetch /path/to/mongod.log --queries --sort-by min
-
-# Sort queries by maximum execution time
-pepi --fetch /path/to/mongod.log --queries --sort-by max
-```
-
-## Output Examples
-
-### Default Summary
-```
-===== Node Command Line Startup =====
-mongod --port 27017 --replSet myReplicaSet --dbpath /data/db
-
-===== MongoDB Log Summary =====
-Log file        : /path/to/mongod.log
-Start date      : 2025-01-01T10:00:00.000Z
-End date        : 2025-01-01T10:00:30.000Z
-Number of lines : 1000
-Host            : localhost:27017
-OS version      : Ubuntu 20.04.3 LTS
-Kernel version  : 5.4.0-74-generic
-MongoDB version : 6.0.24-19
-ReplicaSet Name : myReplicaSet
-Nodes           : 3
-```
-
-### Connection Analysis with Statistics
-```
-===== Connection Details =====
-Total Connections Opened: 150
-Total Connections Closed: 145
-Overall Average Connection Duration: 45.23s
-Overall Minimum Connection Duration: 0.01s
-Overall Maximum Connection Duration: 300.45s
---------Sorted by opened--------
-192.168.1.100 | opened:75  | closed:72  | dur-avg:45.23s | dur-min:0.01s | dur-max:300.45s
-127.0.0.1     | opened:50  | closed:48  | dur-avg:42.15s | dur-min:0.05s | dur-max:250.30s
-10.0.0.50     | opened:25  | closed:25  | dur-avg:48.67s | dur-min:0.10s | dur-max:180.20s
-```
-
-### Client/Driver Information
-```
-===== Client/Driver Information =====
-
-PyMongo v4.8.0 (myapp v1.2.3)
-├─ Connections: 45
-├─ IP Addresses: 192.168.1.100, 127.0.0.1
-└─ Users: admin@admin, user1@mydb
-
-NetworkInterfaceTL v4.2.23-23
-├─ Connections: 30
-├─ IP Addresses: 10.0.0.50
-└─ Users: __system@local
-```
-
-### Replica Set Configuration
-```
-===== Replica Set Configuration =====
-Timestamp: 2025-01-01T10:00:15.000Z
---------------------------------------------------
-{
-  "_id": "myReplicaSet",
-  "version": 1,
-  "members": [
-    {
-      "_id": 0,
-      "host": "localhost:27017",
-      "priority": 1
-    },
-    {
-      "_id": 1,
-      "host": "localhost:27018",
-      "priority": 1
-    }
-  ]
-}
-```
-
-### Query Pattern Statistics
-```
-===== Query Pattern Statistics =====
-Namespace  | Operation | Pattern                                                | Count | Min(ms) | Max(ms) | 95%(ms) | Sum(ms) | Mean(ms) | Index
-test.users | find      | {"age": {"$gt": "?"}}                                  | 7     | 41.0    | 52.0    | 48.0    | 320.0   | 45.7     | age_1
-test.users | find      | {"status": "?"}                                        | 7     | 28.0    | 35.0    | 33.0    | 218.0   | 31.1     | status_1
-test.users | aggregate | [$match,$group]                                        | 3     | 120.0   | 135.0   | 125.0   | 380.0   | 126.7    | COLLSCAN
-test.users | update    | [{"q": {"name": "?"}, "u": {"$set": {"status": "?"}}}] | 2     | 18.0    | 19.0    | 18.0    | 37.0    | 18.5     | name_1
-test.users | insert    | insert_keys:age,name                                   | 1     | 15.0    | 15.0    | 15.0    | 15.0    | 15.0     | N/A
-test.users | delete    | [{"limit": "?", "q": {"status": "?"}}]                 | 1     | 22.0    | 22.0    | 22.0    | 22.0    | 22.0     | status_1
-```
-
-## Command Line Options
-
-### Required Options
-- `--fetch, -f PATH`: MongoDB log file to analyze
-
-### Main Analysis Modes
-- `--rs-conf`: Print replica set configuration(s)
-- `--rs-state`: Print replica set node status and transitions
-- `--clients`: Print client/driver information
-- `--queries`: Print query pattern statistics and performance analysis
-- `--report-full-patterns <file>`: Write complete query patterns to file (requires output file path)
-- `--clear-cache`: Clear all cached data and re-parse files
-
-### Connection Analysis
-- `--connections`: Print connection information and statistics
-
-#### Connection Sub-options (use with `--connections`)
-- `--stats`: Include connection duration statistics
-- `--sort-by`: Sort by `opened` or `closed` count
-- `--compare`: Compare 2-3 specific hostnames/IPs
-
-#### Query Sub-options (use with `--queries`)
-- `--sort-by`: Sort by `count`, `min`, `max`, `95%`, `sum`, or `mean`
-
-## Features in Detail
-
-### Connection Duration Tracking
-- Tracks connection start and end times using `connectionId`
-- Calculates duration statistics per IP and overall
-- Handles MongoDB's ISO timestamp format with timezone support
-
-### Sorting and Comparison
-- Sort connections by opened or closed count (descending order)
-- Compare specific hostnames/IPs side-by-side
-- Aligned output for easy comparison
-
-### Client Analysis
-- Extracts driver information from connection events
-- Tracks authentication events per driver
-- Shows connections, IPs, and authenticated users per driver
-
-### Replica Set Analysis
-- Parses replica set configuration changes
-- Tracks state transitions per node
-- Shows current node status with timestamps
-
-### Query Pattern Analysis
-- Extracts query patterns from MongoDB command logs
-- Groups similar queries by structure (normalized patterns)
-- Calculates comprehensive performance statistics
-- Tracks disk usage flags for aggregation queries
-- Supports sorting by any performance metric
-
-## Development
-
-### Project Structure
-```
-pepi/
-├── pepi/                # Python package
-├── requirements.txt     # Python dependencies
-├── README.md           # This file
-├── tests/              # Test files
-│   ├── README.md       # Test documentation
-│   ├── test_sort.log   # Test sorting functionality
-│   ├── test_sort2.log  # Test comparison functionality
-│   └── test_queries.log # Test query pattern functionality
-└── venv/               # Virtual environment
-```
-
-### Running Tests
-```bash
-# Test sorting functionality
-pepi --fetch tests/test_sort.log --connections --sort-by opened
-
-# Test comparison functionality
-pepi --fetch tests/test_sort2.log --connections --compare 127.0.0.1 --compare 192.168.1.100
-
-# Test with statistics
-pepi --fetch tests/test_sort2.log --connections --stats --compare 127.0.0.1 --compare 192.168.1.100
-```
-
-## Requirements
-
-- Python 3.7+
-- click (for CLI interface)
-- Standard library modules (json, datetime, collections)
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-### Web Interface Usage
-```bash
-# Launch web interface without a file
-pepi --web-ui
-
-# Launch web interface with a specific file pre-loaded
-pepi --fetch /path/to/mongod.log --web-ui
-
-# Get detailed help for web interface
+pepi --connections --help
+pepi --queries --help
+pepi --trim --help
 pepi --web-ui --help
 ```
 
-**Features:**
-- **Modern Dashboard**: Professional web interface at http://localhost:8000
-- **Auto Browser Launch**: Automatically opens in your default browser
-- **File Pre-loading**: Files specified with `--fetch` are automatically loaded and ready for analysis
-- **Full Feature Set**: All CLI functionality available through intuitive web interface
-- **Interactive Charts**: Visual charts for connection patterns and query performance
-- **Real-time Processing**: Live progress updates during analysis
+---
 
-#### Time Series Tab
+## Web UI quickstart
 
-The Time Series tab provides interactive visualizations over time:
+```bash
+pepi --web-ui
+# Open the printed URL (typically http://localhost:8000–8002)
+```
 
-- **Slow Queries Plot**: Scatter plot showing query execution times over time
-  - Color-coded by namespace for easy identification
-  - Click any point to see full query details including command and plan summary
-  - Automatically samples large datasets (>10,000 queries) for performance
-  
-- **Connections Plot**: Line chart showing connection count trends over time
-  - Filled area chart for better visibility
-  - Zoom and pan to focus on specific time ranges
-  
-- **Errors & Warnings Plot**: Scatter plot showing errors and warnings over time
-  - Diamond markers for easy distinction
-  - Grouped by error message type
-  
-- **Aggregated Tables**: Summary statistics showing:
-  - Slow queries grouped by namespace with count and average duration
-  - Error messages with occurrence counts
-  
-- **Namespace Filtering**: Filter time series data by specific namespace to focus analysis
+- **Upload:** drag/drop or browse; accepted extensions are enforced server-side (`.log`, `.txt`, `.json`, and names containing `.log.` for rotation).
+- **Sampling field:** 0–100; sent as `sample` query parameter on relevant analyze calls.
+- **Preflight:** large files show tiered warnings; ingest may require confirmation or block unless overridden (API `force` / env `PEPI_ALLOW_OVERSIZE`).
+- **FAQ (in UI):** `/static/faq.html` (footer link on the main page).
 
-## FAQ & Privacy
+---
 
-**🔒 Is my data safe?** Yes! Pepi runs **100% locally** on your machine. Your MongoDB logs never leave your computer.
+## Web UI tabs guide
 
-**🤖 Does the index advisor send data externally?** No! The index advisor uses rule-based analysis that runs entirely on your CPU. No data is sent to any external services.
+| Tab | Purpose |
+|-----|---------|
+| **Basic Info** | File metadata, sampling metadata text, MongoDB fields from log, **Trim log** (calls `POST /api/trim/{file_id}`), ingest status when used. |
+| **Raw Extractor** | Filtered log lines via `POST /api/analyze/{file_id}/extract` with `source=raw` or `ingest` depending on whether ingest completed. |
+| **Connections** | Charts/tables from `POST /api/analyze/{file_id}/connections` (`source`, `sample`, `include_details`). |
+| **Clients** | Driver/client breakdown from `POST /api/analyze/{file_id}/clients`. |
+| **Queries** | Pattern list and drill-down; uses queries + diagnostics + examples + index recommendation endpoints. |
+| **Time Series** | Slow queries, connections, errors; raw arrays may be omitted when line count ≥ 200k (`include_raw=false`); plot points capped client-side (see [Performance](#performance--large-log-guidance)). |
+| **Replica Set** | Config + state from `POST /api/analyze/{file_id}/replica-set`. |
 
-**📊 What data is collected?** None. Pepi has no telemetry, no analytics, no external communication. Only local caching for performance.
+Tabs stay hidden until a file is selected.
 
-For more details, see the **[FAQ page](/pepi/web_static/faq.html)** in the web UI (accessible via footer link).
+---
 
-## Version History
+## Query diagnostics and index recommendations
 
-- **v1.0.0**: 🎉 Major release with intelligent index recommendations! Includes rule-based ESR analysis, index coverage scoring, synchronized time series interactions, and comprehensive FAQ page
-- **v0.0.2.3**: Re-added Index column and synchronized zoom for Time Series
-- **v0.0.2.2**: Added Time Series visualization tab with interactive Plotly charts for slow queries, connections, and errors over time
-- **v0.0.2.1**: Internal improvements and dependency updates
-- **v0.0.1.8**: Added integrated web interface with --web-ui flag for modern dashboard experience
-- **v0.0.1.7**: Added index information column to query analysis showing which indexes are used
-- **v0.0.1.5**: Added `--queries` flag with query pattern analysis and performance statistics
-- **v0.0.1.4**: Major improvements: sorting, comparison, and comprehensive documentation
-- **v0.0.1.3**: Added `--clients` flag with clean tree-like display format
-- **v0.0.1.2**: Added `--stats` flag for connection duration statistics
-- **v0.0.1.1**: Enhanced default summary with host information and node count
-- **v0.0.1**: Initial release with basic MongoDB log analysis features
+### How patterns are built
+
+`parse_queries` (raw file scan) groups COMMAND entries (`msg` in `command`, `Slow query`) by `(namespace, operation, pattern)` where `pattern` comes from `extract_query_pattern` in `pepi/parser.py`. Stats (`calculate_query_stats`) feed AWR-style bundles via `build_queries_analysis_data` / `build_query_diagnostics_data` (`pepi/queries_awr.py`).
+
+### Web workflow
+
+1. Run **Analyze queries** (`POST /api/analyze/{file_id}/queries`) with optional namespace/operation filters and `sample`.
+2. Select a pattern; the UI loads **query diagnostics** (`POST /api/analyze/{file_id}/query-diagnostics` with body `namespace`, `operation`, `pattern`) and **query examples** (`POST .../query-examples`) by scanning the log for matching COMMAND lines (up to five examples with `raw_log_line`).
+3. **Index recommendations** (`POST /api/analyze/{file_id}/index-recommendations`):
+   - With an example’s **`raw_log_line`** in the JSON body: `analyze_single_query` runs; response `recommendation_source` = **`selected_example`**.
+   - Without `raw_log_line` but with namespace/operation/pattern/stats: filters aggregated stats; `recommendation_source` = **`selected_pattern_fallback`** (empty list if no match).
+   - Without a body (or broad bulk): **`bulk_all_patterns`** (capped by `top_n`, default 10).
+
+Rule-based engine: `pepi/index_advisor.py`. API always returns **`has_llm: false`** today.
+
+---
+
+## Performance and large-log guidance
+
+- **Parser sampling:** At `sample=100` and `total_lines > 50000`, connections/queries use automatic line stride (5/10/20 by size band). Lower `--sample` to force coarser stride (`100/N` → every `N`th line).
+- **CLI warning:** For `--connections` / `--queries` with `sample=100` and `>50000` lines, a stderr warning suggests e.g. `--sample 50`.
+- **Web preflight:** Uses **file size** tiers (`PEPI_FILE_WARN_GB`, `PEPI_FILE_CONFIRM_GB`, `PEPI_FILE_BLOCK_GB`). Prefer trimming to the incident window (`/api/trim/{file_id}` or CLI `--trim`).
+- **Web time series:** For `totalLines >= 200000`, the UI sets large-dataset mode: `include_raw=false` on timeseries request, plot caps **2000** points per series (otherwise **6000**), extract page size **5000** (otherwise **10000**).
+
+---
+
+## Sampling behavior and trade-offs
+
+- **Mechanism:** deterministic **line stride** (`line_count % sample_rate != 0` skipped), not random sampling.
+- **`sample=100`:** if `total_lines > 50000`, effective `sample_rate` is 5 (&lt;200k lines), 10 (&lt;500k), or 20 (≥500k). Metadata is exposed as `sampling_metadata` in API responses.
+- **`sample<100`:** `sample_rate = int(100/sample)` when sample&gt;0; no extra auto stride.
+- **`sample=0`:** skip all lines in parsers (not usually useful except edge/testing).
+
+Implication: rare events can be missed; counts are **approximate** when sampled.
+
+---
+
+## Cache behavior and troubleshooting
+
+- **Location:** `~/.pepi_cache/` (`CACHE_DIR` in `pepi/cache.py`).
+- **TTL:** 7 days since last **successful read** (mtime refreshed on load).
+- **Corrupt pickle:** removed on read error.
+- **Keys:** file SHA256 + analysis type + sampling variant (for connections/queries).
+- **Clear:** CLI `--clear-cache` (all `*.pkl`) or delete files manually.
+- **Ingest DB:** default `~/.pepi_cache/pepi_ingest.db` (override `PEPI_INGEST_DB_PATH`). Deleting a file via API runs `delete_file_ingest_data` for that `file_id`.
+
+---
+
+## API overview
+
+Base URL: your server origin (e.g. `http://127.0.0.1:8000`). CORS allows localhost on ports **8000–8002** only.
+
+| Method | Path | Purpose / notes |
+|--------|------|-------------------|
+| `POST` | `/api/upload` | Multipart file upload; streamed to temp dir; returns `file_id`. |
+| `GET` | `/api/files` | Lists in-memory uploads + preflight tier fields. |
+| `GET` | `/api/files/{file_id}/preflight` | Size-based preflight payload. |
+| `DELETE` | `/api/files/{file_id}` | Removes temp file (not preloaded original), clears ingest rows for id. |
+| `POST` | `/api/ingest/{file_id}/start` | Query `force` bool. Starts background ingest unless job already running. |
+| `GET` | `/api/ingest/{file_id}/status` | Latest job row or synthetic `not_started`. |
+| `POST` | `/api/ingest/{file_id}/cancel` | Sets cancel event on runtime worker. |
+| `POST` | `/api/analyze/{file_id}/basic` | Query `sample` (optional, default 100). |
+| `POST` | `/api/analyze/{file_id}/connections` | Query: `sample`, `include_details`, `source` (`raw` \| `ingest`). |
+| `POST` | `/api/analyze/{file_id}/queries` | Query: `namespace`, `operation`, `sample`. |
+| `POST` | `/api/analyze/{file_id}/query-diagnostics` | JSON body `QueryDiagnosticsRequest`; query `sample`. |
+| `POST` | `/api/analyze/{file_id}/query-examples` | JSON body `QueryExamplesRequest`. |
+| `POST` | `/api/analyze/{file_id}/timeseries` | Query: `namespace`, `include_raw`, `source` (`raw` \| `ingest`). |
+| `POST` | `/api/analyze/{file_id}/index-recommendations` | Optional JSON `SingleQueryRequest`; query `top_n`, `single_query`. |
+| `POST` | `/api/analyze/{file_id}/replica-set` | No body. |
+| `POST` | `/api/analyze/{file_id}/clients` | No body. |
+| `POST` | `/api/analyze/{file_id}/extract` | JSON `LogFilterRequest`; query `offset`, `source`. |
+| `GET` | `/api/analyze/{file_id}/filter-options` | Scans file once for filter vocabularies (namespace list capped at 20). |
+| `POST` | `/api/trim/{file_id}` | JSON `TrimRequest` (`from_date`, `until_date`). |
+| `GET` | `/api/download/{file_id}` | Attachment of stored path. |
+| `GET` | `/api/system/tmp-health` | Free space vs configured thresholds for upload tmp dir. |
+
+---
+
+## Data processing paths
+
+- **Raw:** Each request reads the uploaded JSON log from disk (`source=raw` or default). Heavy passes re-parse as needed; mitigated by UI sampling and extract limits.
+- **Ingest:** `POST .../ingest/.../start` runs `run_ingest_job`: full-file scan, inserts into SQLite (`log_events`, `connection_events`, `timeseries_agg`, …). `source=ingest` on connections/timeseries/extract reads that DB. Ingest is **rebuilt** from scratch when a new job starts (`delete_file_ingest_data` first). UI switches `currentAnalysisSource` to `ingest` when latest job status is **`completed`**.
+
+---
+
+## Privacy and security model
+
+- **Processing:** analysis runs on the machine hosting the Pepi process (CLI or local uvicorn). Logs are not sent to a Pepi-operated cloud by this codebase.
+- **Network:** Optional GitHub tag fetch on CLI; `pip` / `git` during upgrade; browser may load CDN assets referenced by `index.html` (Chart.js, Plotly, Flatpickr, Font Awesome).
+- **Disk:** uploads under configurable temp dir; trimmed copies under system temp; cache and ingest DB under `~/.pepi_cache` by default.
+- **Retention:** upload files removed on API shutdown for non-preloaded entries; tmp cleanup glob `pepi_upload_*.log` respects `PEPI_TMP_CLEANUP_MAX_AGE_SECONDS` (default 86400s). Preloaded files are not deleted on shutdown.
+
+---
+
+## FAQ
+
+See the in-app **[FAQ](/static/faq.html)** (served as `http://<host>:<port>/static/faq.html`).
+
+---
+
+## Contributing and development
+
+```bash
+pip install -e ".[dev]"
+ruff check pepi tests
+pytest -q
+# optional UI e2e (server must be running unless you automate it):
+npm install && npx playwright test tests/e2e/ui-tabs.spec.js
+```
+
+Package layout: Python package under `pepi/`, tests under `tests/`.
+
+---
+
+## Documentation changelog (2.2.5)
+
+**Corrected:** Removed duplicate README merge; fixed Python floor (3.8+); fixed time-series plot cap claims (2000/6000 vs old “10000”); CLI `--clear-cache` requires existing `--fetch` path; `pepi --upgrade` only for `~/.pepi`; analyze routes are **POST**; FAQ URL is `/static/faq.html`; sampling described as line-stride with auto tiers at `sample=100`.
+
+**Clarified:** `sort-by` for connections; ingest vs raw; `recommendation_source`; tmp/env knobs; port range 8000–8002 and max three servers.
+
+**VERIFY:** Optional LLM deps in `requirements.txt` comments are not reflected as `has_llm: true` in API responses; confirm product direction before documenting local LLM.
