@@ -79,6 +79,64 @@ gh release edit v2.2.5 --title "Pepi v2.2.5"
 gh release create v2.2.6 --title "Pepi v2.2.6" --generate-notes --latest
 ```
 
+### GitHub Release **body** (Summary + Details)
+
+The release **description** (markdown on GitHub) should follow one template so every version is skimmable the same way. Use these **top-level headings** in order; skip a section only when it does not apply, and write **“None.”** when there are no breaking changes or migrations.
+
+| Section | Purpose |
+|--------|---------|
+| **Summary** | One short paragraph: who this release is for and the single main outcome (e.g. “Documentation and versioning policy; no API changes.”). |
+| **Highlights** | Bullet list (about **3–8** items) of the most user-visible changes. Past tense, concrete nouns (CLI flag, tab name, endpoint path). |
+| **Details** | Optional sub-headings under **Details** as needed—only include subsections that changed: **CLI**, **Web UI**, **HTTP API**, **Packaging / install**, **Docs**, **Performance / large logs**, **Security / privacy**. Short bullets or short paragraphs per subsection. |
+| **Upgrade** | Exact steps: `pip install -U …`, `pepi --upgrade` (if applicable), or “pull `main` and reinstall editable”. Mention any required env or config changes. |
+| **Breaking changes** | Bulleted list, or **None.** If something breaks old workflows or file formats, say how to detect and fix. |
+| **Compatibility** | e.g. “Python ≥3.8”, “MongoDB JSON log line format unchanged”, “Browser UI still loads CDN assets”. |
+| **Links** | Link to **compare** view on GitHub: prior release tag → this tag (e.g. `…/compare/v2.2.4…v2.2.5`). Optionally link to milestone or PR roll-up. |
+
+**Pre-releases** (`-rc`, `-beta`, …): mark the GitHub release as **pre-release**; add a **Known issues** bullet list under **Details** (or **None.**).
+
+**Example** (release notes body):
+
+```markdown
+## Summary
+
+Documentation-only release: README and FAQ aligned with current CLI and API behavior; versioning policy added.
+
+## Highlights
+
+- Rewrote README sections for CLI, Web UI, sampling, cache, and API table.
+- Expanded web FAQ for raw vs ingest and troubleshooting.
+- Added `VERSIONING.md` and GitHub Release title convention.
+
+## Details
+
+### Docs
+
+- New `VERSIONING.md` for tags and releases.
+
+### CLI
+
+- No behavior changes in this release.
+
+## Upgrade
+
+- Editable install: `git pull` and `pip install -e .` from your clone.
+
+## Breaking changes
+
+None.
+
+## Compatibility
+
+- Python ≥3.8 unchanged.
+
+## Links
+
+- Full diff: https://github.com/jenunes/pepi/compare/v2.2.4...v2.2.5
+```
+
+**Automation:** `gh release create vX.Y.Z --notes-file RELEASE_NOTES.md` keeps the body in a file for review in PR. You may run `--generate-notes` first, save the output, then wrap it in the sections above before publishing.
+
 ### Which versions get a GitHub Release
 
 Not every git tag needs a Release; tags remain the full audit trail. **Releases** are for milestones users should notice (e.g. current line, major versions, last patch before a bump). Adjust the curated set over time; avoid publishing a Release for every historical patch unless you intend to maintain them all.
