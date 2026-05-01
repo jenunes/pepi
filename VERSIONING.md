@@ -55,6 +55,34 @@ Ship as the next **PATCH** tag (`v2.2.7`) from the hotfix branch merged to `main
 - A **git tag** marks a commit; pushing it is not enough for the Releases page “Latest” badge.
 - A **GitHub Release** is created separately and should accompany user-facing versions.
 
+### GitHub Release **title** (display name)
+
+Use a **single pattern** so the Releases page matches tags and docs:
+
+| Rule | Example |
+|------|---------|
+| Format | **`Pepi v` + the exact version string from the tag** (same characters as `refs/tags/...`). |
+| Stable release | Tag `v2.2.5` → title **`Pepi v2.2.5`**. |
+| Pre-release | Tag `v2.3.0-rc.1` → title **`Pepi v2.3.0-rc.1`**. |
+
+**Do not** use mixed styles (`Pepi 2.2.5` without `v`, `Pepi v2.2.5` elsewhere, or raw `v2.2.5` alone)—that confuses readers comparing the tag, the release title, and `pepi/version.py`.
+
+**CLI example** (edit an existing release):
+
+```bash
+gh release edit v2.2.5 --title "Pepi v2.2.5"
+```
+
+**New release** (tag must already exist):
+
+```bash
+gh release create v2.2.6 --title "Pepi v2.2.6" --generate-notes --latest
+```
+
+### Which versions get a GitHub Release
+
+Not every git tag needs a Release; tags remain the full audit trail. **Releases** are for milestones users should notice (e.g. current line, major versions, last patch before a bump). Adjust the curated set over time; avoid publishing a Release for every historical patch unless you intend to maintain them all.
+
 ## CI and automation
 
 - Workflows may trigger on `push` of tags matching `v*.*.*` (tighten patterns if you need to ignore prereleases).
