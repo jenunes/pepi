@@ -137,6 +137,8 @@ None.
 
 **Automation:** `gh release create vX.Y.Z --notes-file RELEASE_NOTES.md` keeps the body in a file for review in PR. You may run `--generate-notes` first, save the output, then wrap it in the sections above before publishing.
 
+**Archival copy in git:** Curated milestone release bodies (same markdown as on GitHub) live in [docs/milestone-releases.md](docs/milestone-releases.md). Update that file when you materially change a milestone release’s notes so the repo stays the reviewable source.
+
 ### Which versions get a GitHub Release
 
 Not every git tag needs a Release; tags remain the full audit trail. **Releases** are for milestones users should notice (e.g. current line, major versions, last patch before a bump). Adjust the curated set over time; avoid publishing a Release for every historical patch unless you intend to maintain them all.
