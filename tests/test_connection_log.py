@@ -35,12 +35,7 @@ def test_classify_modern_ingress_messages() -> None:
 def test_derive_connection_log_profile() -> None:
     assert derive_connection_log_profile({"classic_accepted": 1}) == "classic"
     assert derive_connection_log_profile({"ingress_handshake": 3}) == "ingress_health_metrics"
-    assert (
-        derive_connection_log_profile(
-            {"classic_accepted": 1, "ingress_handshake": 2}
-        )
-        == "mixed"
-    )
+    assert derive_connection_log_profile({"classic_accepted": 1, "ingress_handshake": 2}) == "mixed"
     assert derive_connection_log_profile({}) == "none"
 
 
