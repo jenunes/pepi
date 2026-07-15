@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from pepi.query_findings import aggregate_top_findings, generate_findings
 from pepi.query_health import calculate_health_score, get_health_severity
@@ -12,7 +12,10 @@ from pepi.types import (
     EnrichedQuery,
     HealthDistribution,
     QueriesAnalysisData,
+    QueryClientBreakdown,
+    QueryClientBreakdownMeta,
     QueryDiagnosticsData,
+    QueryFinding,
     QueryHealthBreakdown,
 )
 
@@ -147,10 +150,11 @@ def build_query_diagnostics_data(
     operation: str,
     pattern: str,
     stats: dict[str, Any],
+    client_breakdown_payload: Optional[dict[str, Any]] = None,
 ) -> QueryDiagnosticsData:
     hs = _stats_for_health(namespace, operation, pattern, stats)
     health = calculate_health_score(hs)
-    findings = generate_findings(hs)
+    findings = list(generate_findings(hs))
     exec_stats = {
         "keysExamined": hs.get("keysExamined") or [],
         "docsExamined": hs.get("docsExamined") or [],
@@ -164,8 +168,79 @@ def build_query_diagnostics_data(
         "in_memory_sort_pct": float(hs.get("in_memory_sort_pct", 0.0)),
         "disk_usage_pct": float(hs.get("disk_usage_pct", 0.0)),
     }
+
+    client_breakdown: list[QueryClientBreakdown] = []
+    client_breakdown_meta = QueryClientBreakdownMeta()
+    if client_breakdown_payload:
+        client_breakdown = [
+            QueryClientBreakdown.model_validate(row)
+            for row in client_breakdown_payload.get("clients", [])
+        ]
+        client_breakdown_meta = QueryClientBreakdownMeta(
+            total_matched=int(client_breakdown_payload.get("total_matched", 0)),
+            unknown_count=int(client_breakdown_payload.get("unknown_count", 0)),
+            has_remote_pct=float(client_breakdown_payload.get("has_remote_pct", 0.0)),
+            sampling_metadata=client_breakdown_payload.get("sampling_metadata") or {},
+        )
+        findings.extend(
+            _client_breakdown_findings(
+                operation=operation,
+                stats=stats,
+                client_breakdown=client_breakdown,
+            )
+        )
+
     return QueryDiagnosticsData(
         health=QueryHealthBreakdown.model_validate(health.model_dump()),
         findings=findings,
         exec_stats=exec_stats,
+        client_breakdown=client_breakdown,
+        client_breakdown_meta=client_breakdown_meta,
     )
+
+
+def _client_breakdown_findings(
+    *,
+    operation: str,
+    stats: dict[str, Any],
+    client_breakdown: list[QueryClientBreakdown],
+) -> list[QueryFinding]:
+    extra: list[QueryFinding] = []
+    if not client_breakdown:
+        return extra
+
+    top = client_breakdown[0]
+    if top.pct >= 70.0 and top.ip != "unknown":
+        extra.append(
+            QueryFinding(
+                severity="warning",
+                category="client",
+                title="Dominated by single client IP",
+                detail=(
+                    f"Client {top.ip} accounts for {top.pct:.1f}% of sampled events "
+                    f"({top.count:,} of pattern count {int(stats.get('count', 0)):,})."
+                ),
+                recommendation=(
+                    "Inspect this host's application pool, connection churn, and driver "
+                    "settings (maxPoolSize, heartbeatFrequencyMS)."
+                ),
+            )
+        )
+
+    if operation == "hello" and int(stats.get("count", 0)) >= 100:
+        extra.append(
+            QueryFinding(
+                severity="warning",
+                category="client",
+                title="Possible hello storm",
+                detail=(
+                    f"High volume of hello commands ({int(stats.get('count', 0)):,} sampled events). "
+                    "Often caused by excessive topology polling or misconfigured clients."
+                ),
+                recommendation=(
+                    "Review client heartbeat/topology settings and load balancer health checks. "
+                    "Use the Clients tab to identify the busiest source IPs."
+                ),
+            )
+        )
+    return extra

@@ -136,6 +136,20 @@ class QueryDiagnosticsRequest(BaseModel):
     pattern: str
 
 
+class QueryClientBreakdown(BaseModel):
+    ip: str
+    count: int
+    pct: float
+    app_name: Optional[str] = None
+
+
+class QueryClientBreakdownMeta(BaseModel):
+    total_matched: int = 0
+    unknown_count: int = 0
+    has_remote_pct: float = 0.0
+    sampling_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class QueryFinding(BaseModel):
     severity: str
     category: str
@@ -217,6 +231,10 @@ class QueryDiagnosticsData(BaseModel):
     health: QueryHealthBreakdown
     findings: list[QueryFinding] = Field(default_factory=list)
     exec_stats: dict[str, Any] = Field(default_factory=dict)
+    client_breakdown: list[QueryClientBreakdown] = Field(default_factory=list)
+    client_breakdown_meta: QueryClientBreakdownMeta = Field(
+        default_factory=QueryClientBreakdownMeta
+    )
 
 
 class LogFilterRequest(BaseModel):

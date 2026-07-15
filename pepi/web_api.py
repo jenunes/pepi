@@ -32,6 +32,8 @@ from . import (
     parse_connection_events,
     parse_connections,
     parse_connections_timeseries_by_ip,
+    aggregate_query_clients,
+    get_connection_parse_stats,
     parse_errors_detail,
     parse_lock_contention,
     parse_queries,
@@ -636,35 +638,68 @@ def analyze_connections(
     try:
         if source == "ingest":
             ingest_data = query_connections_summary(ingest_conn, file_id)
-            total_lines = _get_or_compute_line_count(upload_store, file_id)
-            sampling_metadata = get_sampling_metadata(total_lines, sample)
-            ingest_data["sampling_metadata"] = sampling_metadata
-            if not include_details:
-                ingest_data["connection_events"] = []
-            return AnalysisResult(status="success", data=ingest_data)
+            has_connection_data = (
+                ingest_data.get("total_opened", 0) > 0
+                or ingest_data.get("total_closed", 0) > 0
+                or bool(ingest_data.get("connections"))
+            )
+            if has_connection_data:
+                total_lines = _get_or_compute_line_count(upload_store, file_id)
+                sampling_metadata = get_sampling_metadata(total_lines, sample)
+                ingest_data["sampling_metadata"] = sampling_metadata
+                if not include_details:
+                    ingest_data["connection_events"] = []
+                parse_connections(file_path, sample_percentage=sample)
+                ingest_data.update(get_connection_parse_stats(file_path))
+                return AnalysisResult(status="success", data=ingest_data)
+            logger.info(
+                "Ingest has no connection data for %s; falling back to raw parse",
+                file_id,
+            )
 
         connections_data, total_opened, total_closed = parse_connections(
             file_path, sample_percentage=sample
         )
         overall_stats, ip_stats = calculate_connection_stats(connections_data)
 
-        slow_queries, connections_timeseries, errors = parse_timeseries_data(file_path)
-
-        try:
-            connections_by_ip_timeseries = parse_connections_timeseries_by_ip(file_path)
-        except Exception as e:
-            logger.warning("Failed to parse IP-specific connections: %s", e)
-            connections_by_ip_timeseries = {}
-
-        validation_results = validate_connection_data_consistency(
-            connections_by_ip_timeseries, connections_timeseries
+        total_lines = _get_or_compute_line_count(upload_store, file_id)
+        sampling_metadata = get_sampling_metadata(total_lines, sample)
+        skip_heavy_connection_parsers = (
+            sampling_metadata.get("is_sampled", False) and total_lines >= 200_000
         )
 
-        try:
-            connection_events = parse_connection_events(file_path)
-        except Exception as e:
-            logger.warning("Failed to parse connection events: %s", e)
+        if skip_heavy_connection_parsers:
+            connections_timeseries = []
+            connections_by_ip_timeseries = {}
             connection_events = []
+            validation_results = {
+                "is_consistent": True,
+                "discrepancies": [],
+                "data_quality_score": 1.0,
+                "warnings": [
+                    "Per-IP time series skipped for sampled large file; "
+                    "summary stats use sampled parse_connections."
+                ],
+                "recommendations": [],
+            }
+        else:
+            slow_queries, connections_timeseries, errors = parse_timeseries_data(file_path)
+
+            try:
+                connections_by_ip_timeseries = parse_connections_timeseries_by_ip(file_path)
+            except Exception as e:
+                logger.warning("Failed to parse IP-specific connections: %s", e)
+                connections_by_ip_timeseries = {}
+
+            validation_results = validate_connection_data_consistency(
+                connections_by_ip_timeseries, connections_timeseries
+            )
+
+            try:
+                connection_events = parse_connection_events(file_path)
+            except Exception as e:
+                logger.warning("Failed to parse connection events: %s", e)
+                connection_events = []
 
         connections_dict = {}
         for ip, data in connections_data.items():
@@ -674,10 +709,8 @@ def analyze_connections(
                 "durations": data["durations"] if include_details else [],
             }
 
-        total_lines = _get_or_compute_line_count(upload_store, file_id)
-        sampling_metadata = get_sampling_metadata(total_lines, sample)
-
         lock_contention = parse_lock_contention(file_path)
+        connection_aux = get_connection_parse_stats(file_path)
 
         return AnalysisResult(
             status="success",
@@ -685,6 +718,8 @@ def analyze_connections(
                 "connections": connections_dict,
                 "total_opened": total_opened,
                 "total_closed": total_closed,
+                "total_rejected": connection_aux.get("total_rejected", 0),
+                "connection_log_profile": connection_aux.get("connection_log_profile", {}),
                 "overall_stats": overall_stats,
                 "ip_stats": ip_stats,
                 "connections_timeseries": connections_timeseries,
@@ -778,6 +813,23 @@ def analyze_queries_route(
                         "avg_response_size": enriched.avg_response_size,
                     }
                 )
+            raw_entry = queries_data.get((ns, op, pattern), {})
+            ip_counts = raw_entry.get("client_ip_counts") or {}
+            if ip_counts:
+                top_ip, top_count = max(ip_counts.items(), key=lambda item: item[1])
+                total = int(raw_entry.get("count", 0) or stats["count"] or 1)
+                app_map = (raw_entry.get("client_app_names") or {}).get(top_ip) or {}
+                top_app = (
+                    max(app_map.items(), key=lambda item: item[1])[0] if app_map else None
+                )
+                row.update(
+                    {
+                        "top_client_ip": top_ip,
+                        "top_client_count": int(top_count),
+                        "top_client_pct": round(100 * int(top_count) / total, 1),
+                        "top_client_app": top_app,
+                    }
+                )
             results.append(row)
 
         collscan_trends = parse_collscan_trends(file_path)
@@ -818,11 +870,19 @@ def query_diagnostics_route(
                 detail="Query pattern not found for this file. Run Analyze Queries with matching filters.",
             )
         stats = query_stats[key]
+        client_payload = aggregate_query_clients(
+            file_path,
+            request.namespace,
+            request.operation,
+            request.pattern,
+            sample_percentage=sample,
+        )
         data = build_query_diagnostics_data(
             request.namespace,
             request.operation,
             request.pattern,
             stats,
+            client_breakdown_payload=client_payload,
         )
         return AnalysisResult(status="success", data=data.model_dump())
     except HTTPException:
@@ -1007,6 +1067,22 @@ def analyze_timeseries(
                 )
             return AnalysisResult(status="success", data=data)
 
+        # Prefer ingest when ready — avoids multi-pass full-file scans on large logs.
+        ingest_job = get_latest_job_for_file(ingest_conn, file_id)
+        if ingest_job and ingest_job.get("status") == "completed":
+            data = query_timeseries(ingest_conn, file_id, include_raw=include_raw)
+            if namespace:
+                data["slow_queries"] = [
+                    q for q in data["slow_queries"] if q["namespace"] == namespace
+                ]
+                data["aggregated_queries"] = [
+                    q for q in data["aggregated_queries"] if q["namespace"] == namespace
+                ]
+                data["unique_namespaces"] = sorted(
+                    {q["namespace"] for q in data["aggregated_queries"]}
+                )
+            return AnalysisResult(status="success", data=data)
+
         slow_queries, connections, errors = parse_timeseries_data(file_path)
 
         # Filter slow queries by namespace if specified
@@ -1052,7 +1128,15 @@ def analyze_timeseries(
         # Get MongoDB info from slow queries
         total_slow_queries = len(slow_queries)
         sampled = False
-        errors_detail = parse_errors_detail(file_path)
+        errors_detail = parse_errors_detail(file_path) if include_raw else {
+            "errors_timeline": [],
+            "top_errors": [],
+            "errors_by_component": {},
+            "error_spikes": [],
+            "total_errors": 0,
+            "total_warnings": 0,
+            "total_fatal": 0,
+        }
 
         return AnalysisResult(
             status="success",

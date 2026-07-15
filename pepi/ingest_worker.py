@@ -7,6 +7,17 @@ import time
 from datetime import datetime
 from typing import Any
 
+from .connection_log import (
+    extract_connection_id,
+    extract_connection_ip,
+    is_classic_connection_accepted,
+    is_classic_connection_ended,
+    is_connection_not_authenticating,
+    is_connection_refused,
+    is_connection_remote_terminated,
+    is_ingress_handshake,
+    is_legacy_end_connection_message,
+)
 from .ingest_store import delete_file_ingest_data, upsert_job
 
 
@@ -53,10 +64,15 @@ def _event_type(entry: dict[str, Any], message: str, duration_ms: int) -> str:
         return "slow_query"
     if entry.get("s") in {"E", "F"}:
         return "error"
-    lowered = message.lower()
-    if "connection accepted" in lowered:
+    if is_classic_connection_accepted(entry) or is_ingress_handshake(entry):
         return "connection_open"
-    if "end connection" in lowered:
+    if is_connection_not_authenticating(entry):
+        return "connection_auth"
+    if is_connection_refused(entry):
+        return "connection_rejected"
+    if is_classic_connection_ended(entry) or is_connection_remote_terminated(entry):
+        return "connection_close"
+    if is_legacy_end_connection_message(message):
         return "connection_close"
     return "generic"
 
@@ -166,26 +182,44 @@ def run_ingest_job(
                         """,
                         (file_id, bucket_ts, namespace),
                     )
-                if evt in {"connection_open", "connection_close"} and bucket_ts:
-                    delta = 1 if evt == "connection_open" else -1
-                    conn_deltas[bucket_ts] = conn_deltas.get(bucket_ts, 0) + delta
-                    ip = entry.get("attr", {}).get("remote")
-                    conn.execute(
-                        """
-                        INSERT INTO connection_events (
-                            file_id, ts, ip, event, connection_id, duration_s
+                if evt in {"connection_open", "connection_auth", "connection_close"} and bucket_ts:
+                    if evt == "connection_open":
+                        conn_deltas[bucket_ts] = conn_deltas.get(bucket_ts, 0) + 1
+                    elif evt == "connection_close":
+                        conn_deltas[bucket_ts] = conn_deltas.get(bucket_ts, 0) - 1
+
+                    ip = extract_connection_ip(entry)
+                    conn_id = extract_connection_id(entry)
+                    if evt == "connection_auth" and ip:
+                        conn.execute(
+                            """
+                            INSERT INTO connection_events (
+                                file_id, ts, ip, event, connection_id, duration_s
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (file_id, ts, ip, "open", conn_id, None),
                         )
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            file_id,
-                            ts,
-                            ip,
-                            "open" if evt == "connection_open" else "close",
-                            entry.get("attr", {}).get("connectionId"),
-                            None,
-                        ),
-                    )
+                    elif evt == "connection_close":
+                        conn.execute(
+                            """
+                            INSERT INTO connection_events (
+                                file_id, ts, ip, event, connection_id, duration_s
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (file_id, ts, ip, "close", conn_id, None),
+                        )
+                    elif evt == "connection_open" and ip:
+                        conn.execute(
+                            """
+                            INSERT INTO connection_events (
+                                file_id, ts, ip, event, connection_id, duration_s
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (file_id, ts, ip, "open", conn_id, None),
+                        )
                 if evt == "slow_query" and namespace and operation:
                     command = entry.get("attr", {}).get("command", {})
                     pattern_json = json.dumps(command, sort_keys=True, default=str)

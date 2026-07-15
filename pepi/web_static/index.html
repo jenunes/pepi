@@ -10,7 +10,7 @@
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=1.2.4">
 </head>
 
 <body>
@@ -181,6 +181,8 @@
                             </button>
                         </div>
                     </div>
+
+                    <div id="timeseriesSummary" class="timeseries-summary" style="display: none;" aria-live="polite"></div>
 
                     <!-- Plotly Charts Container -->
                     <div class="timeseries-charts">
@@ -524,8 +526,8 @@
                     <div class="analysis-header">
                         <h2><i class="fas fa-search"></i> Query Analysis</h2>
                         <div class="query-controls">
-                            <input type="text" id="namespaceFilter" placeholder="Filter by namespace...">
-                            <select id="operationFilter">
+                            <input type="text" id="namespaceFilter" placeholder="Filter by namespace (server)…" title="Applied when you click Analyze Queries">
+                            <select id="operationFilter" title="Applied when you click Analyze Queries">
                                 <option value="">All operations</option>
                                 <option value="find">find</option>
                                 <option value="insert">insert</option>
@@ -539,6 +541,7 @@
                         </div>
                     </div>
                     <div class="stats-grid" id="queryStats"></div>
+                    <div id="awrSummaryPanel" data-testid="awr-summary-panel" style="display: none;" aria-live="polite"></div>
                     <div class="chart-container">
                         <canvas id="queriesChart"></canvas>
                     </div>
@@ -598,7 +601,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=1.1.1"></script>
+    <script src="/static/app.js?v=1.2.4"></script>
     <div id="preflightModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:9999; align-items:center; justify-content:center;">
         <div style="background:#fff; width:min(680px,92vw); border-radius:12px; padding:20px;">
             <h3 style="margin-top:0;">Large File Preflight</h3>

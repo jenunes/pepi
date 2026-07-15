@@ -79,4 +79,55 @@ def test_query_diagnostics_endpoint(client, sample_log_file) -> None:
     assert "health" in diag
     assert "findings" in diag
     assert "exec_stats" in diag
+    assert "client_breakdown" in diag
+    assert "client_breakdown_meta" in diag
     assert 0 <= diag["health"]["total"] <= 100
+
+
+def test_queries_endpoint_includes_top_client_fields(client, tmp_path) -> None:
+    file_path = tmp_path / "hello-top-client.log"
+    import json
+
+    cmd = {"hello": 1, "helloOk": True, "$db": "sampledb"}
+    lines = [
+        json.dumps(
+            {
+                "c": "COMMAND",
+                "msg": "Slow query",
+                "attr": {
+                    "ns": "sampledb.$cmd",
+                    "appName": "app1",
+                    "command": cmd,
+                    "durationMillis": 100,
+                    "remote": "10.0.0.1:34374",
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "c": "COMMAND",
+                "msg": "Slow query",
+                "attr": {
+                    "ns": "sampledb.$cmd",
+                    "appName": "app1",
+                    "command": cmd,
+                    "durationMillis": 120,
+                    "remote": "10.0.0.2:34375",
+                },
+            }
+        ),
+    ]
+    file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with file_path.open("rb") as handle:
+        upload = client.post(
+            "/api/upload",
+            files={"file": ("hello-top-client.log", handle, "text/plain")},
+        )
+    file_id = upload.json()["file_id"]
+    resp = client.post(f"/api/analyze/{file_id}/queries?sample=100")
+    hello = next(q for q in resp.json()["data"]["queries"] if q["operation"] == "hello")
+    assert hello["top_client_ip"] == "10.0.0.1"
+    assert hello["top_client_count"] == 1
+    assert hello["top_client_pct"] == 50.0
+    client.delete(f"/api/files/{file_id}")

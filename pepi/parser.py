@@ -12,6 +12,21 @@ import click
 from tqdm import tqdm
 
 from pepi.cache import get_cache_key, load_from_cache, save_to_cache
+from pepi.connection_log import (
+    build_connection_log_profile,
+    classify_connection_message,
+    extract_connection_id,
+    extract_connection_ip,
+    extract_slow_query_app_name,
+    extract_slow_query_client_ip,
+    is_classic_connection_accepted,
+    is_classic_connection_ended,
+    is_connection_not_authenticating,
+    is_connection_refused,
+    is_connection_remote_terminated,
+    is_ingress_handshake,
+    is_legacy_end_connection_message,
+)
 from pepi.sampling import get_sample_rate, get_sample_rate_from_percentage, get_sampling_metadata
 from pepi.utils import count_lines
 
@@ -20,7 +35,7 @@ def parse_connections(
     logfile: str, sample_percentage: Optional[int] = None
 ) -> tuple[dict, int, int]:
     """Parse connection information from MongoDB log file."""
-    cache_key = get_cache_key(logfile, "connections")
+    cache_key = get_cache_key(logfile, "connections_v3")
     cached_result = load_from_cache(cache_key)
     if cached_result:
         click.echo("Using cached connection data...")
@@ -36,6 +51,8 @@ def parse_connections(
     connections = defaultdict(default_connection_data)
     total_opened = 0
     total_closed = 0
+    total_rejected = 0
+    profile_counts: dict[str, int] = {}
     connection_starts = {}
 
     total_lines = count_lines(logfile)
@@ -66,12 +83,13 @@ def parse_connections(
                 continue
             try:
                 entry = json.loads(line)
+                msg = entry.get("msg") or ""
 
-                if (
-                    entry.get("msg") == "Connection accepted"
-                    and entry.get("c") == "NETWORK"
-                    and entry.get("attr")
-                ):
+                lifecycle = classify_connection_message(entry)
+                if lifecycle:
+                    profile_counts[lifecycle] = profile_counts.get(lifecycle, 0) + 1
+
+                if is_classic_connection_accepted(entry):
                     attr = entry["attr"]
                     if "remote" in attr:
                         ip = attr["remote"].split(":")[0]
@@ -84,11 +102,22 @@ def parse_connections(
                             if start_time:
                                 connection_starts[conn_id] = {"start_time": start_time, "ip": ip}
 
-                elif (
-                    entry.get("msg") == "Connection ended"
-                    and entry.get("c") == "NETWORK"
-                    and entry.get("attr")
-                ):
+                elif is_ingress_handshake(entry):
+                    total_opened += 1
+
+                elif is_connection_not_authenticating(entry):
+                    ip = extract_connection_ip(entry)
+                    if ip:
+                        connections[ip]["opened"] += 1
+                        conn_id = extract_connection_id(entry)
+                        start_time = entry.get("t", {}).get("$date")
+                        if conn_id is not None and start_time:
+                            connection_starts[conn_id] = {"start_time": start_time, "ip": ip}
+
+                elif is_connection_refused(entry):
+                    total_rejected += 1
+
+                elif is_classic_connection_ended(entry):
                     attr = entry["attr"]
                     if "remote" in attr:
                         ip = attr["remote"].split(":")[0]
@@ -118,6 +147,32 @@ def parse_connections(
 
                                 del connection_starts[conn_id]
 
+                elif is_connection_remote_terminated(entry) or (
+                    is_legacy_end_connection_message(msg) and entry.get("attr")
+                ):
+                    ip = extract_connection_ip(entry)
+                    total_closed += 1
+                    if ip:
+                        connections[ip]["closed"] += 1
+                    conn_id = extract_connection_id(entry)
+                    if conn_id is not None and conn_id in connection_starts:
+                        start_data = connection_starts[conn_id]
+                        if not ip or start_data["ip"] == ip:
+                            start_time = start_data["start_time"]
+                            end_time = entry.get("t", {}).get("$date")
+                            target_ip = ip or start_data["ip"]
+                            if start_time and end_time and target_ip:
+                                try:
+                                    start_dt = datetime.fromisoformat(
+                                        start_time.replace("Z", "+00:00")
+                                    )
+                                    end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+                                    duration = (end_dt - start_dt).total_seconds()
+                                    connections[target_ip]["durations"].append(duration)
+                                except (ValueError, TypeError, OverflowError):
+                                    pass
+                        del connection_starts[conn_id]
+
             except Exception:
                 pass
 
@@ -125,11 +180,34 @@ def parse_connections(
         "connections": dict(connections),
         "total_opened": total_opened,
         "total_closed": total_closed,
+        "total_rejected": total_rejected,
+        "connection_log_profile": build_connection_log_profile(profile_counts),
         "sampling_metadata": get_sampling_metadata(total_lines, sample_percentage),
     }
     save_to_cache(cache_key, cache_data)
 
     return connections, total_opened, total_closed
+
+
+def get_connection_log_profile(logfile: str) -> dict[str, Any]:
+    """Return connection log profile metadata from the connections_v3 parse cache."""
+    cache_key = get_cache_key(logfile, "connections_v3")
+    cached_result = load_from_cache(cache_key)
+    if not cached_result:
+        return {}
+    return cached_result.get("connection_log_profile") or {}
+
+
+def get_connection_parse_stats(logfile: str) -> dict[str, Any]:
+    """Return auxiliary stats stored alongside the connections_v3 cache entry."""
+    cache_key = get_cache_key(logfile, "connections_v3")
+    cached_result = load_from_cache(cache_key)
+    if not cached_result:
+        return {"total_rejected": 0, "connection_log_profile": {}}
+    return {
+        "total_rejected": int(cached_result.get("total_rejected", 0) or 0),
+        "connection_log_profile": cached_result.get("connection_log_profile") or {},
+    }
 
 
 def parse_replica_set_config(logfile: str) -> list[dict[str, Any]]:
@@ -427,6 +505,7 @@ def parse_timeseries_data(logfile: str) -> tuple[list[dict], list[dict], list[di
     slow_queries = []
     connections = []
     errors = []
+    ingress_connection_count = 0
 
     total_lines = count_lines(logfile)
 
@@ -457,12 +536,20 @@ def parse_timeseries_data(logfile: str) -> tuple[list[dict], list[dict], list[di
                             }
                         )
 
-                elif entry.get("c") == "NETWORK" and entry.get("msg") == "Connection accepted":
+                elif is_classic_connection_accepted(entry):
                     attr = entry.get("attr", {})
                     connection_count = attr.get("connectionCount", 0)
-
                     connections.append(
                         {"timestamp": timestamp, "connection_count": connection_count}
+                    )
+
+                elif is_ingress_handshake(entry):
+                    ingress_connection_count += 1
+                    connections.append(
+                        {
+                            "timestamp": timestamp,
+                            "connection_count": ingress_connection_count,
+                        }
                     )
 
                 severity = entry.get("s", "")
@@ -488,7 +575,7 @@ def parse_timeseries_data(logfile: str) -> tuple[list[dict], list[dict], list[di
 
 def parse_connections_timeseries_by_ip(logfile: str) -> dict[str, list[dict]]:
     """Parse connection time series data grouped by IP address with improved edge case handling."""
-    cache_key = get_cache_key(logfile, "connections_timeseries_by_ip")
+    cache_key = get_cache_key(logfile, "connections_timeseries_by_ip_v2")
     cached_result = load_from_cache(cache_key)
     if cached_result:
         click.echo("Using cached IP-specific connection data...")
@@ -498,6 +585,7 @@ def parse_connections_timeseries_by_ip(logfile: str) -> dict[str, list[dict]]:
     connection_starts = {}
     connection_ends = {}
     total_connection_counts = []
+    ingress_connection_count = 0
 
     total_lines = count_lines(logfile)
 
@@ -512,11 +600,7 @@ def parse_connections_timeseries_by_ip(logfile: str) -> dict[str, list[dict]]:
                 if not timestamp:
                     continue
 
-                if (
-                    entry.get("msg") == "Connection accepted"
-                    and entry.get("c") == "NETWORK"
-                    and entry.get("attr")
-                ):
+                if is_classic_connection_accepted(entry):
                     attr = entry["attr"]
                     if "remote" in attr:
                         ip = attr["remote"].split(":")[0]
@@ -534,11 +618,26 @@ def parse_connections_timeseries_by_ip(logfile: str) -> dict[str, list[dict]]:
                         if conn_id:
                             connection_starts[conn_id] = {"start_time": timestamp, "ip": ip}
 
-                elif (
-                    entry.get("msg") == "Connection ended"
-                    and entry.get("c") == "NETWORK"
-                    and entry.get("attr")
-                ):
+                elif is_connection_not_authenticating(entry):
+                    ip = extract_connection_ip(entry)
+                    if ip:
+                        conn_id = extract_connection_id(entry)
+                        ip_events[ip].append(
+                            {"timestamp": timestamp, "event": "open", "connection_id": conn_id}
+                        )
+                        if conn_id is not None:
+                            connection_starts[conn_id] = {"start_time": timestamp, "ip": ip}
+
+                elif is_ingress_handshake(entry):
+                    ingress_connection_count += 1
+                    total_connection_counts.append(
+                        {
+                            "timestamp": timestamp,
+                            "connection_count": ingress_connection_count,
+                        }
+                    )
+
+                elif is_classic_connection_ended(entry):
                     attr = entry["attr"]
                     conn_id = attr.get("connectionId")
 
@@ -549,6 +648,24 @@ def parse_connections_timeseries_by_ip(logfile: str) -> dict[str, list[dict]]:
                         )
                         connection_ends[conn_id] = timestamp
                         del connection_starts[conn_id]
+
+                elif is_connection_remote_terminated(entry) or (
+                    is_legacy_end_connection_message(entry.get("msg") or "")
+                    and entry.get("attr")
+                ):
+                    conn_id = extract_connection_id(entry)
+                    ip = extract_connection_ip(entry)
+                    if conn_id is not None and conn_id in connection_starts:
+                        ip = connection_starts[conn_id]["ip"]
+                        ip_events[ip].append(
+                            {"timestamp": timestamp, "event": "close", "connection_id": conn_id}
+                        )
+                        connection_ends[conn_id] = timestamp
+                        del connection_starts[conn_id]
+                    elif ip:
+                        ip_events[ip].append(
+                            {"timestamp": timestamp, "event": "close", "connection_id": conn_id}
+                        )
 
             except Exception:
                 pass
@@ -684,13 +801,14 @@ def validate_connection_data_consistency(
 
 def parse_connection_events(logfile: str) -> list[dict[str, Any]]:
     """Parse individual connection open/close events from MongoDB log file."""
-    cache_key = get_cache_key(logfile, "connection_events")
+    cache_key = get_cache_key(logfile, "connection_events_v2")
     cached_result = load_from_cache(cache_key)
     if cached_result:
         click.echo("Using cached connection events data...")
         return cached_result["connection_events"]
 
     connection_events = []
+    ingress_connection_count = 0
 
     total_lines = count_lines(logfile)
 
@@ -703,11 +821,7 @@ def parse_connection_events(logfile: str) -> list[dict[str, Any]]:
                 if not timestamp:
                     continue
 
-                if (
-                    entry.get("msg") == "Connection accepted"
-                    and entry.get("c") == "NETWORK"
-                    and entry.get("attr")
-                ):
+                if is_classic_connection_accepted(entry):
                     attr = entry["attr"]
                     if "remote" in attr:
                         ip = attr["remote"].split(":")[0]
@@ -725,11 +839,35 @@ def parse_connection_events(logfile: str) -> list[dict[str, Any]]:
                             }
                         )
 
-                elif (
-                    entry.get("msg") == "Connection ended"
-                    and entry.get("c") == "NETWORK"
-                    and entry.get("attr")
-                ):
+                elif is_connection_not_authenticating(entry):
+                    ip = extract_connection_ip(entry)
+                    if ip:
+                        conn_id = extract_connection_id(entry)
+                        connection_events.append(
+                            {
+                                "timestamp": timestamp,
+                                "event_type": "opened",
+                                "ip": ip,
+                                "connection_id": conn_id,
+                                "total_connections": 0,
+                                "log_message": line.strip(),
+                            }
+                        )
+
+                elif is_ingress_handshake(entry):
+                    ingress_connection_count += 1
+                    connection_events.append(
+                        {
+                            "timestamp": timestamp,
+                            "event_type": "opened",
+                            "ip": "unknown",
+                            "connection_id": extract_connection_id(entry),
+                            "total_connections": ingress_connection_count,
+                            "log_message": line.strip(),
+                        }
+                    )
+
+                elif is_classic_connection_ended(entry):
                     attr = entry["attr"]
                     conn_id = attr.get("connectionId")
 
@@ -738,6 +876,23 @@ def parse_connection_events(logfile: str) -> list[dict[str, Any]]:
                             "timestamp": timestamp,
                             "event_type": "closed",
                             "ip": "unknown",
+                            "connection_id": conn_id,
+                            "total_connections": 0,
+                            "log_message": line.strip(),
+                        }
+                    )
+
+                elif is_connection_remote_terminated(entry) or (
+                    is_legacy_end_connection_message(entry.get("msg") or "")
+                    and entry.get("attr")
+                ):
+                    ip = extract_connection_ip(entry) or "unknown"
+                    conn_id = extract_connection_id(entry)
+                    connection_events.append(
+                        {
+                            "timestamp": timestamp,
+                            "event_type": "closed",
+                            "ip": ip,
                             "connection_id": conn_id,
                             "total_connections": 0,
                             "log_message": line.strip(),
@@ -765,7 +920,7 @@ def _deep_copy_json_safe(obj: Any) -> Optional[Any]:
 
 def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict:
     """Parse query patterns and statistics from MongoDB log file, grouped by pattern."""
-    cache_key = get_cache_key(logfile, "queries_v2")
+    cache_key = get_cache_key(logfile, "queries_v3")
     cached_result = load_from_cache(cache_key)
     if cached_result:
         click.echo("Using cached query data...")
@@ -782,6 +937,9 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
             value.setdefault("keys_examined", [])
             value.setdefault("n_returned", [])
             value.setdefault("planning_micros", [])
+            value.setdefault("client_ip_counts", {})
+            value.setdefault("client_app_names", {})
+            value.setdefault("client_with_remote", 0)
         return queries
 
     def default_query_data():
@@ -797,6 +955,9 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
             "keys_examined": [],
             "n_returned": [],
             "planning_micros": [],
+            "client_ip_counts": Counter(),
+            "client_app_names": defaultdict(Counter),
+            "client_with_remote": 0,
         }
 
     queries = defaultdict(default_query_data)
@@ -886,6 +1047,14 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
                             queries[group_key]["planning_micros"].append(int(pm))
                         except (TypeError, ValueError):
                             pass
+
+                    client_ip = extract_slow_query_client_ip(entry)
+                    queries[group_key]["client_ip_counts"][client_ip] += 1
+                    app_name = extract_slow_query_app_name(entry)
+                    if app_name:
+                        queries[group_key]["client_app_names"][client_ip][app_name] += 1
+                    if client_ip != "unknown":
+                        queries[group_key]["client_with_remote"] += 1
             except Exception:
                 pass
 
@@ -903,6 +1072,11 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
             "keys_examined": value.get("keys_examined", []),
             "n_returned": value.get("n_returned", []),
             "planning_micros": value.get("planning_micros", []),
+            "client_ip_counts": dict(value.get("client_ip_counts", {})),
+            "client_app_names": {
+                ip: dict(apps) for ip, apps in value.get("client_app_names", {}).items()
+            },
+            "client_with_remote": int(value.get("client_with_remote", 0)),
         }
     cache_data = {
         "queries": queries_dict,
@@ -911,6 +1085,145 @@ def parse_queries(logfile: str, sample_percentage: Optional[int] = None) -> dict
     save_to_cache(cache_key, cache_data)
 
     return queries
+
+
+def _build_client_breakdown_result(
+    *,
+    ip_counts: dict[str, int],
+    app_names_by_ip: dict[str, dict[str, int]],
+    total_matched: int,
+    with_remote: int,
+    sampling_metadata: dict[str, Any],
+    top_n: int,
+) -> dict[str, Any]:
+    unknown_count = int(ip_counts.get("unknown", 0))
+    sorted_ips = sorted(ip_counts.items(), key=lambda item: item[1], reverse=True)[:top_n]
+    clients = []
+    for ip, count in sorted_ips:
+        pct = (count / total_matched * 100.0) if total_matched else 0.0
+        app_name = None
+        ip_apps = app_names_by_ip.get(ip) or {}
+        if ip_apps:
+            app_name = max(ip_apps.items(), key=lambda item: item[1])[0]
+        clients.append(
+            {
+                "ip": ip,
+                "count": int(count),
+                "pct": round(pct, 1),
+                "app_name": app_name,
+            }
+        )
+    has_remote_pct = (with_remote / total_matched * 100.0) if total_matched else 0.0
+    return {
+        "total_matched": int(total_matched),
+        "clients": clients,
+        "unknown_count": unknown_count,
+        "has_remote_pct": round(has_remote_pct, 1),
+        "sampling_metadata": sampling_metadata,
+    }
+
+
+def _scan_query_clients(
+    logfile: str,
+    namespace: str,
+    operation: str,
+    pattern: str,
+    sample_percentage: Optional[int],
+    top_n: int,
+) -> dict[str, Any]:
+    """On-demand scan for one query pattern when cache has no client breakdown."""
+    ip_counts: Counter[str] = Counter()
+    app_names_by_ip: dict[str, Counter[str]] = defaultdict(Counter)
+    total_matched = 0
+    with_remote = 0
+
+    total_lines = count_lines(logfile)
+    if sample_percentage is not None:
+        sample_rate = get_sample_rate_from_percentage(sample_percentage, total_lines)
+        is_sampled = sample_rate > 1
+    else:
+        sample_rate = get_sample_rate(total_lines)
+        is_sampled = sample_rate > 1
+
+    with open(logfile, "r") as f:
+        line_count = 0
+        for line in f:
+            line_count += 1
+            if is_sampled and line_count % sample_rate != 0:
+                continue
+            try:
+                entry = json.loads(line)
+                if (
+                    entry.get("c") != "COMMAND"
+                    or entry.get("msg") not in ("command", "Slow query")
+                    or not entry.get("attr")
+                ):
+                    continue
+                attr = entry["attr"]
+                ns = attr.get("ns", "")
+                if ns != namespace:
+                    continue
+                command = attr.get("command", {})
+                if not command:
+                    continue
+                op = list(command.keys())[0] if command else "unknown"
+                if op != operation:
+                    continue
+                if extract_query_pattern(op, command) != pattern:
+                    continue
+                total_matched += 1
+                client_ip = extract_slow_query_client_ip(entry)
+                ip_counts[client_ip] += 1
+                app_name = extract_slow_query_app_name(entry)
+                if app_name:
+                    app_names_by_ip[client_ip][app_name] += 1
+                if client_ip != "unknown":
+                    with_remote += 1
+            except Exception:
+                pass
+
+    sampling_metadata = get_sampling_metadata(total_lines, sample_percentage)
+    return _build_client_breakdown_result(
+        ip_counts=dict(ip_counts),
+        app_names_by_ip={ip: dict(apps) for ip, apps in app_names_by_ip.items()},
+        total_matched=total_matched,
+        with_remote=with_remote,
+        sampling_metadata=sampling_metadata,
+        top_n=top_n,
+    )
+
+
+def aggregate_query_clients(
+    logfile: str,
+    namespace: str,
+    operation: str,
+    pattern: str,
+    sample_percentage: Optional[int] = None,
+    top_n: int = 25,
+) -> dict[str, Any]:
+    """Aggregate busiest client IPs for a single query pattern."""
+    queries_data = parse_queries(logfile, sample_percentage=sample_percentage)
+    cache_key = get_cache_key(logfile, "queries_v3")
+    cached_result = load_from_cache(cache_key) or {}
+    sampling_metadata = cached_result.get("sampling_metadata") or get_sampling_metadata(
+        count_lines(logfile), sample_percentage
+    )
+
+    group_key = (namespace, operation, pattern)
+    entry = queries_data.get(group_key)
+    if entry and entry.get("client_ip_counts"):
+        return _build_client_breakdown_result(
+            ip_counts=entry.get("client_ip_counts", {}),
+            app_names_by_ip=entry.get("client_app_names", {}),
+            total_matched=int(entry.get("count", 0)),
+            with_remote=int(entry.get("client_with_remote", 0)),
+            sampling_metadata=sampling_metadata,
+            top_n=top_n,
+        )
+
+    return _scan_query_clients(
+        logfile, namespace, operation, pattern, sample_percentage, top_n
+    )
 
 
 def _to_minute_bucket(timestamp: str) -> str:

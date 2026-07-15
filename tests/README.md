@@ -17,6 +17,10 @@ This directory contains test log files for testing various features of the pepi 
   - 127.0.0.1: 2 opened, 2 closed
 - **Use case**: Test `--sort-by opened` and `--sort-by closed` functionality
 
+### `test_query_clients.py` / `test_connection_log.py`
+- **Purpose**: Client IP extraction per query pattern; MongoDB 6.3+/7+ connection log profile detection and modern lifecycle message parsing.
+- **Use case**: Regression tests for `/query-diagnostics` `client_breakdown` and connections API `connection_log_profile`.
+
 ## Usage Examples
 
 ```bash

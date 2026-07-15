@@ -274,6 +274,23 @@
         </div>
 
         <div class="faq-section">
+            <h2 class="section-title"><i class="fas fa-network-wired"></i> Connections &amp; Log Formats</h2>
+            <div class="faq-item">
+                <div class="faq-question"><i class="fas fa-circle-question"></i><span>Why is the Connections tab empty after ingest?</span></div>
+                <div class="faq-answer">
+                    <p>Some MongoDB 7+ logs use <strong>ingress health metrics</strong> instead of classic <code>Connection accepted</code> lines. If ingest has no connection rows, Pepi automatically falls back to <strong>raw</strong> file parsing for the Connections tab.</p>
+                    <p>Check <code>connection_log_profile</code> in the API response: <code>ingress_health_metrics</code>, <code>classic</code>, <code>mixed</code>, or <code>none</code>.</p>
+                </div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-question"><i class="fas fa-circle-question"></i><span>What is ingress_health_metrics?</span></div>
+                <div class="faq-answer">
+                    <p>Modern mongod logs (with <code>enableDetailedConnectionHealthMetricLogLines</code>, default on since 6.3+) emit lines such as <code>Ingress TLS handshake complete</code> and <code>Connection not authenticating</code>. Pepi counts global opens from handshake events and per-IP identity from <code>attr.client</code> on the not-authenticating line. Closes may appear as <code>Error sending/receiving … Ending connection from remote</code> rather than <code>Connection ended</code>.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="faq-section">
             <h2 class="section-title">
                 <i class="fas fa-database"></i> Raw vs Ingest Behavior
             </h2>
@@ -303,6 +320,26 @@
                 <div class="faq-question"><i class="fas fa-circle-question"></i><span>How are patterns identified?</span></div>
                 <div class="faq-answer">
                     <p><code>parse_queries</code> groups COMMAND log lines by namespace, operation, and normalized pattern. <code>POST /api/analyze/{file_id}/query-diagnostics</code> needs an exact key from the last queries run (same filters and sample).</p>
+                    <p>For <code>find</code>/<code>aggregate</code> the pattern is a normalized JSON shape. For admin commands (<code>hello</code>, <code>isMaster</code>, <code>ping</code>, etc.) the grouping key is a sorted list of command keys; the UI shows a readable <code>params: …</code> label while keeping the raw key for matching.</p>
+                </div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-question"><i class="fas fa-circle-question"></i><span>Where does query diagnostics open in the Web UI?</span></div>
+                <div class="faq-answer">
+                    <p>Diagnostics open <strong>inside the expanded query row</strong> (below the quick metrics grid), not above the table. Click the row chevron, <strong>Health</strong> badge, <strong>Findings</strong> count, or <strong>Diagnostics &amp; clients</strong>. Use <strong>Close</strong> or collapse the row to dismiss.</p>
+                </div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-question"><i class="fas fa-circle-question"></i><span>How do I see which client IPs drive a hello storm?</span></div>
+                <div class="faq-answer">
+                    <p>Open diagnostics for the <code>hello</code> (or high-count) pattern and switch to the <strong>Clients</strong> tab. Pepi ranks IPs from <code>attr.remote</code> / <code>attr.client</code> on matching COMMAND lines and shows count, percentage, and <code>attr.appName</code> when present.</p>
+                    <p>The main table also shows <strong>Top client</strong> in the expanded row and <code>top_client_*</code> fields on <code>/queries</code>. Findings may flag <em>Possible hello storm</em> or <em>Dominated by single client IP</em>. Export report includes client breakdown for storm patterns.</p>
+                </div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-question"><i class="fas fa-circle-question"></i><span>Why is client IP data missing or incomplete?</span></div>
+                <div class="faq-answer">
+                    <p>Client IPs come from slow-query COMMAND lines that include <code>attr.remote</code> or <code>attr.client</code>. If the log omits these fields, counts appear as <code>unknown</code>. Sampling reduces coverage; the Clients tab shows a coverage warning when <code>has_remote_pct</code> is below 90%.</p>
                 </div>
             </div>
             <div class="faq-item">
@@ -336,7 +373,13 @@
             <div class="faq-item">
                 <div class="faq-question"><i class="fas fa-circle-question"></i><span>CLI vs Web numbers differ</span></div>
                 <div class="faq-answer">
-                    <p>Compare sampling percentage, raw vs ingest source, and filters. CLI <code>--sort-by</code> for connections only reorders for <code>opened</code> and <code>closed</code>.</p>
+                    <p>Compare sampling percentage, raw vs ingest source, and filters. CLI <code>--sort-by</code> for connections only reorders for <code>opened</code> and <code>closed</code>. Re-run <strong>Analyze Queries</strong> after changing sample so diagnostics keys match aggregated stats.</p>
+                </div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-question"><i class="fas fa-circle-question"></i><span>Connections tab shows profile but low IP counts</span></div>
+                <div class="faq-answer">
+                    <p>For <code>ingress_health_metrics</code> logs, per-IP data depends on <code>Connection not authenticating</code> lines. Global connection charts use handshake events. Try raw source, lower sampling, or trim to the incident window. Clear parser cache with <code>pepi --fetch /path/to/log --clear-cache</code> after upgrading Pepi (cache keys <code>connections_v3</code> / <code>queries_v3</code>).</p>
                 </div>
             </div>
         </div>

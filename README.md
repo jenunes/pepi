@@ -12,8 +12,8 @@ Pepi is a **local-first** MongoDB log analyzer. It reads JSON-line MongoDB log f
 
 ## Key features
 
-- **CLI:** Summary (dates, line count, OS/DB versions, startup options), replica set config/state, connections (counts, optional duration stats, sort, IP compare), clients/drivers, queries (pattern stats, filters, histogram, full-pattern export), log trim by time range, optional line sampling, pickle cache with TTL, version and upgrade helpers.
-- **Web UI:** Upload (or preload via CLI), preflight by file size, optional **ingest** job into a local SQLite DB, analysis tabs (basic, raw extractor, connections, clients, queries, time series, replica set), trim, download, delete.
+- **CLI:** Summary (dates, line count, OS/DB versions, startup options), replica set config/state, connections (counts, optional duration stats, sort, IP compare; classic and MongoDB 6.3+/7+ ingress health log profiles), clients/drivers, queries (pattern stats, filters, histogram, full-pattern export), log trim by time range, optional line sampling, pickle cache with TTL, version and upgrade helpers.
+- **Web UI:** Upload (or preload via CLI), preflight by file size, optional **ingest** job into a local SQLite DB, analysis tabs (basic, raw extractor, connections, clients, queries, time series, replica set), trim, download, delete. Query Analysis includes per-pattern **client IP breakdown**, inline diagnostics drill-down, and readable labels for admin commands (`hello`, `isMaster`, etc.).
 - **API:** FastAPI routes under `/api/...` (see [API overview](#api-overview)); OpenAPI at `/docs` when the server is running.
 - **Index recommendations:** Rule-based analysis in-tree (`pepi/index_advisor.py`); API responses set `has_llm: false` in current code.
 
@@ -211,9 +211,9 @@ pepi --web-ui
 |-----|---------|
 | **Basic Info** | File metadata, sampling metadata text, MongoDB fields from log, **Trim log** (calls `POST /api/trim/{file_id}`), ingest status when used. |
 | **Raw Extractor** | Filtered log lines via `POST /api/analyze/{file_id}/extract` with `source=raw` or `ingest` depending on whether ingest completed. |
-| **Connections** | Charts/tables from `POST /api/analyze/{file_id}/connections` (`source`, `sample`, `include_details`). |
+| **Connections** | Charts/tables from `POST /api/analyze/{file_id}/connections` (`source`, `sample`, `include_details`). Detects **connection log profile** (`classic`, `ingress_health_metrics`, `mixed`, `none`) for MongoDB 6.3+/7+ logs. Falls back to **raw** parsing when ingest has no connection rows. Response includes `connection_log_profile` and `total_rejected`. |
 | **Clients** | Driver/client breakdown from `POST /api/analyze/{file_id}/clients`. |
-| **Queries** | Pattern list with filters/pagination, **COLLSCAN Trend** (Plotly), health scores; uses queries + diagnostics + examples + index recommendation endpoints. |
+| **Queries** | Sortable pattern table (filters, pagination, sticky columns), **COLLSCAN Trend** (Plotly), AWR health scores and findings. Expand a row for quick metrics; open **inline diagnostics** (Overview, Findings, Exec Stats, **Clients**, Examples, Index Rec). Admin/handshake patterns show readable `params: …` labels in the Pattern column. Uses queries + diagnostics + examples + index recommendation endpoints. |
 | **Time Series** | Slow queries, connections, errors; raw arrays may be omitted when line count ≥ 200k (`include_raw=false`); plot points capped client-side (see [Performance](#performance--large-log-guidance)). |
 | **Replica Set** | Config + state from `POST /api/analyze/{file_id}/replica-set`. |
 
@@ -225,19 +225,38 @@ Tabs stay hidden until a file is selected.
 
 ### How patterns are built
 
-`parse_queries` (raw file scan) groups COMMAND entries (`msg` in `command`, `Slow query`) by `(namespace, operation, pattern)` where `pattern` comes from `extract_query_pattern` in `pepi/parser.py`. Stats (`calculate_query_stats`) feed AWR-style bundles via `build_queries_analysis_data` / `build_query_diagnostics_data` (`pepi/queries_awr.py`).
+`parse_queries` (raw file scan) groups COMMAND entries (`msg` in `command`, `Slow query`) by `(namespace, operation, pattern)` where `pattern` comes from `extract_query_pattern` in `pepi/parser.py`. For CRUD operations this is a normalized JSON shape; for admin commands (`hello`, `isMaster`, `ping`, `replSetHeartbeat`, etc.) the grouping key is a sorted list of top-level command keys (the UI renders these as readable `params: …` labels without changing the key). Stats (`calculate_query_stats`) feed AWR-style bundles via `build_queries_analysis_data` / `build_query_diagnostics_data` (`pepi/queries_awr.py`).
+
+During `parse_queries`, Pepi also aggregates **client IP** and **app name** per pattern from `attr.remote` / `attr.client` and `attr.appName` on COMMAND lines (`pepi/connection_log.py`). The `/queries` response exposes `top_client_ip`, `top_client_count`, `top_client_pct`, and `top_client_app` per pattern; full ranking is available from query diagnostics.
 
 ### Web workflow
 
 1. Run **Analyze queries** (`POST /api/analyze/{file_id}/queries`) with optional namespace/operation filters and `sample`.
-2. Select a pattern; review **COLLSCAN Trend** (in the queries response when collection scans are present).
-3. The UI loads **query diagnostics** (`POST /api/analyze/{file_id}/query-diagnostics` with body `namespace`, `operation`, `pattern`) and **query examples** (`POST .../query-examples`) by scanning the log for matching COMMAND lines (up to five examples with `raw_log_line`).
-4. **Index recommendations** (`POST /api/analyze/{file_id}/index-recommendations`):
+2. Sort/filter the table client-side (namespace contains, operation, COLLSCAN-only, page size). Sort by any column including **Findings**.
+3. Expand a row for shape, latency percentiles, and top client snippet; click **Health**, **Findings**, or **Diagnostics & clients** to load **inline diagnostics** inside that row (not above the table).
+4. In diagnostics, use the **Clients** tab for per-IP counts, percentages, app names, and a bar chart. Findings may flag **Possible hello storm** or **Dominated by single client IP** when thresholds match.
+5. Select a pattern; review **COLLSCAN Trend** (in the queries response when collection scans are present).
+6. **Query examples** (`POST .../query-examples`) load from the diagnostics **Examples** tab (up to five COMMAND lines with `raw_log_line`).
+
+**Index recommendations** (`POST /api/analyze/{file_id}/index-recommendations`):
    - With an example’s **`raw_log_line`** in the JSON body: `analyze_single_query` runs; response `recommendation_source` = **`selected_example`**.
    - Without `raw_log_line` but with namespace/operation/pattern/stats: filters aggregated stats; `recommendation_source` = **`selected_pattern_fallback`** (empty list if no match).
    - Without a body (or broad bulk): **`bulk_all_patterns`** (capped by `top_n`, default 10).
 
 Rule-based engine: `pepi/index_advisor.py`. API always returns **`has_llm: false`** today.
+
+### Connection log profiles (MongoDB 6.3+ / 7+)
+
+`pepi/connection_log.py` classifies lifecycle messages into profiles returned as `connection_log_profile` on the connections API:
+
+| Profile | Typical signals |
+|---------|-----------------|
+| `classic` | `Connection accepted` / `Connection ended` (NETWORK) |
+| `ingress_health_metrics` | `Ingress TLS handshake complete`, `Connection not authenticating` (`enableDetailedConnectionHealthMetricLogLines`) |
+| `mixed` | Both classic and ingress lines |
+| `none` | No recognized lifecycle messages in the sampled log |
+
+Per-IP opens use `attr.client` on `Connection not authenticating` in modern logs; closes may appear as `Error sending/receiving … Ending connection from remote` instead of `Connection ended`. Parser cache keys: `connections_v3`, `queries_v3`.
 
 ---
 
@@ -286,9 +305,9 @@ Base URL: your server origin (e.g. `http://127.0.0.1:8000`). CORS allows localho
 | `GET` | `/api/ingest/{file_id}/status` | Latest job row or synthetic `not_started`. |
 | `POST` | `/api/ingest/{file_id}/cancel` | Sets cancel event on runtime worker. |
 | `POST` | `/api/analyze/{file_id}/basic` | Query `sample` (optional, default 100). |
-| `POST` | `/api/analyze/{file_id}/connections` | Query: `sample`, `include_details`, `source` (`raw` \| `ingest`). |
-| `POST` | `/api/analyze/{file_id}/queries` | Query: `namespace`, `operation`, `sample`. |
-| `POST` | `/api/analyze/{file_id}/query-diagnostics` | JSON body `QueryDiagnosticsRequest`; query `sample`. |
+| `POST` | `/api/analyze/{file_id}/connections` | Query: `sample`, `include_details`, `source` (`raw` \| `ingest`). Raw fallback when ingest has no connection data. Returns `connection_log_profile`, `total_rejected`. |
+| `POST` | `/api/analyze/{file_id}/queries` | Query: `namespace`, `operation`, `sample`. Each pattern includes `top_client_*` fields when client IPs were logged. |
+| `POST` | `/api/analyze/{file_id}/query-diagnostics` | JSON body `QueryDiagnosticsRequest`; query `sample`. Returns `health`, `findings`, `exec_stats`, `client_breakdown`, `client_breakdown_meta`. |
 | `POST` | `/api/analyze/{file_id}/query-examples` | JSON body `QueryExamplesRequest`. |
 | `POST` | `/api/analyze/{file_id}/timeseries` | Query: `namespace`, `include_raw`, `source` (`raw` \| `ingest`). |
 | `POST` | `/api/analyze/{file_id}/index-recommendations` | Optional JSON `SingleQueryRequest`; query `top_n`, `single_query`. |
@@ -346,6 +365,12 @@ Package layout: Python package under `pepi/`, tests under `tests/`.
 - CI must pass before merge (`Lint and Unit`, integration scope, Python matrix on push).
 
 ---
+
+## Documentation changelog (unreleased)
+
+**Added:** Per-query-pattern **client IP breakdown** (`aggregate_query_clients`, Clients tab in inline diagnostics, export report section); **MongoDB 6.3+/7+ connection log profiles** (`pepi/connection_log.py`, `connection_log_profile` on connections API, raw fallback when ingest is empty); **inline query diagnostics** panel inside expanded table rows; readable **admin command** pattern labels in the Queries table (`hello`, `isMaster`, etc.); sortable **Findings** column.
+
+**Tests:** `tests/test_query_clients.py`, `tests/test_connection_log.py`; extended `tests/test_api.py`.
 
 ## Documentation changelog (2.3.0)
 
