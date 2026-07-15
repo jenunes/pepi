@@ -1,6 +1,6 @@
 # Pepi
 
-**Current version: 2.2.5**
+**Current version: 2.3.0**
 
 Pepi is a **local-first** MongoDB log analyzer. It reads JSON-line MongoDB log files, extracts connection activity, command/query patterns, replica set signals, client/driver metadata, and time-series style signals. It targets engineers triaging production and staging deployments **without** shipping logs to a third-party service.
 
@@ -213,7 +213,7 @@ pepi --web-ui
 | **Raw Extractor** | Filtered log lines via `POST /api/analyze/{file_id}/extract` with `source=raw` or `ingest` depending on whether ingest completed. |
 | **Connections** | Charts/tables from `POST /api/analyze/{file_id}/connections` (`source`, `sample`, `include_details`). |
 | **Clients** | Driver/client breakdown from `POST /api/analyze/{file_id}/clients`. |
-| **Queries** | Pattern list and drill-down; uses queries + diagnostics + examples + index recommendation endpoints. |
+| **Queries** | Pattern list with filters/pagination, **COLLSCAN Trend** (Plotly), health scores; uses queries + diagnostics + examples + index recommendation endpoints. |
 | **Time Series** | Slow queries, connections, errors; raw arrays may be omitted when line count ≥ 200k (`include_raw=false`); plot points capped client-side (see [Performance](#performance--large-log-guidance)). |
 | **Replica Set** | Config + state from `POST /api/analyze/{file_id}/replica-set`. |
 
@@ -230,8 +230,9 @@ Tabs stay hidden until a file is selected.
 ### Web workflow
 
 1. Run **Analyze queries** (`POST /api/analyze/{file_id}/queries`) with optional namespace/operation filters and `sample`.
-2. Select a pattern; the UI loads **query diagnostics** (`POST /api/analyze/{file_id}/query-diagnostics` with body `namespace`, `operation`, `pattern`) and **query examples** (`POST .../query-examples`) by scanning the log for matching COMMAND lines (up to five examples with `raw_log_line`).
-3. **Index recommendations** (`POST /api/analyze/{file_id}/index-recommendations`):
+2. Select a pattern; review **COLLSCAN Trend** (in the queries response when collection scans are present).
+3. The UI loads **query diagnostics** (`POST /api/analyze/{file_id}/query-diagnostics` with body `namespace`, `operation`, `pattern`) and **query examples** (`POST .../query-examples`) by scanning the log for matching COMMAND lines (up to five examples with `raw_log_line`).
+4. **Index recommendations** (`POST /api/analyze/{file_id}/index-recommendations`):
    - With an example’s **`raw_log_line`** in the JSON body: `analyze_single_query` runs; response `recommendation_source` = **`selected_example`**.
    - Without `raw_log_line` but with namespace/operation/pattern/stats: filters aggregated stats; `recommendation_source` = **`selected_pattern_fallback`** (empty list if no match).
    - Without a body (or broad bulk): **`bulk_all_patterns`** (capped by `top_n`, default 10).
@@ -336,6 +337,12 @@ npm install && npx playwright test tests/e2e/ui-tabs.spec.js
 Package layout: Python package under `pepi/`, tests under `tests/`.
 
 ---
+
+## Documentation changelog (2.3.0)
+
+**Added:** COLLSCAN Trend UI (Plotly chart, severity cards, namespace table); advanced Queries table (filters, pagination, sticky columns); `/api/analyze/{file_id}/log-context`; integrated parser/advisor enhancements from the feature line while preserving v2.2.4/2.2.5 stabilization (deterministic Time Series ordering, sample-aware cache keys, `query-diagnostics` endpoint).
+
+**Updated:** Version strings (`pepi/version.py`, README, FAQ, footer) to **2.3.0**; unified test suite (`test_diagnostics`, `test_query_enhancements`, existing `test_query_*`).
 
 ## Documentation changelog (2.2.5)
 

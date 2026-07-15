@@ -43,6 +43,11 @@ Thumbs.db
 # Logs
 *.log
 
+# Local backups and test artifacts
+backups/
+test-results/
+.venv/
+
 # LLM Models (users download their own)
 pepi/models/
 *.gguf

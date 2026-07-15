@@ -258,3 +258,47 @@ None.
 ## Links
 
 - Full diff: https://github.com/jenunes/pepi/compare/v2.2.4...v2.2.5
+
+---
+
+# Pepi v2.3.0
+
+## Summary
+
+Minor release integrating the **Queries/COLLSCAN UI** feature line with the **v2.2.5** stabilization baseline: advanced query table UX, COLLSCAN Trend visualization, parser/advisor enhancements, and unified API surface (`/query-diagnostics`, `/log-context`, collscan fields on `/queries`).
+
+## Highlights
+
+- **Queries tab:** filters, pagination, sticky columns, COLLSCAN-only filter, workload stats.
+- **COLLSCAN Trend:** Plotly timeline, severity cards, per-namespace table (`total_collscans`, `collscan_timeline`, etc.).
+- **Stability preserved:** deterministic Time Series ordering, sample-aware cache keys, AWR health scores on query patterns.
+- **Tests:** `test_diagnostics`, `test_query_enhancements`, and existing query health/findings suites.
+
+## Details
+
+### Web UI
+
+- `app.js`, `index.html`, `styles.css` — COLLSCAN section and enhanced Queries table.
+- Footer and FAQ aligned to **2.3.0**.
+
+### API
+
+- `POST /api/analyze/{file_id}/queries` — UI rows + `summary`/`findings` + collscan trend fields.
+- `POST /api/analyze/{file_id}/query-diagnostics` — per-pattern health (unchanged).
+- `POST /api/analyze/{file_id}/log-context` — log line context (from feature line).
+
+### Docs
+
+- README, FAQ, `docs/milestone-releases.md`, `VERSIONING.md` policy unchanged.
+
+## Upgrade
+
+- `git pull` and `pip install -e .` from your clone; refresh browser cache for static assets.
+
+## Breaking changes
+
+None intended; query response shape adds optional collscan and health fields.
+
+## Links
+
+- Full diff: https://github.com/jenunes/pepi/compare/v2.2.5...v2.3.0

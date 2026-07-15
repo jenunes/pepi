@@ -16,14 +16,11 @@ from pepi.version import __version__
 def check_for_updates() -> Optional[str]:
     """Check GitHub for newer version."""
     try:
-        response = requests.get(
-            "https://api.github.com/repos/jenunes/pepi/tags",
-            timeout=5
-        )
+        response = requests.get("https://api.github.com/repos/jenunes/pepi/tags", timeout=5)
         if response.status_code == 200:
             tags = response.json()
             if tags:
-                latest_version = tags[0]['name'].lstrip('v')
+                latest_version = tags[0]["name"].lstrip("v")
                 current_version = __version__
 
                 if pkg_version.parse(latest_version) > pkg_version.parse(current_version):
@@ -35,7 +32,7 @@ def check_for_updates() -> Optional[str]:
 
 def perform_upgrade() -> None:
     """Upgrade Pepi to latest version."""
-    install_dir = Path.home() / '.pepi'
+    install_dir = Path.home() / ".pepi"
 
     if not install_dir.exists():
         click.echo("❌ Pepi not installed in ~/.pepi/")
@@ -57,10 +54,7 @@ def perform_upgrade() -> None:
 
         try:
             subprocess.run(
-                ["git", "pull", "origin", "main"],
-                cwd=install_dir,
-                check=True,
-                capture_output=True
+                ["git", "pull", "origin", "main"], cwd=install_dir, check=True, capture_output=True
             )
 
             click.echo("📦 Updating dependencies...")
@@ -68,7 +62,7 @@ def perform_upgrade() -> None:
                 ["pip", "install", "-r", "requirements.txt"],
                 cwd=install_dir,
                 check=True,
-                capture_output=True
+                capture_output=True,
             )
 
             click.echo(f"✅ Successfully upgraded to v{latest_version}")

@@ -17,7 +17,7 @@ def generate_histogram(durations: list[Any], max_bars: int = 50) -> str:
         (10, 100, "[10,100)ms"),
         (100, 1000, "[100,1000)ms"),
         (1000, 10000, "[1,10)s"),
-        (10000, float('inf'), "≥10s")
+        (10000, float("inf"), "≥10s"),
     ]
 
     # Count durations in each bucket
@@ -51,59 +51,59 @@ def reconstruct_command_line(options: Optional[dict[str, Any]]) -> Optional[str]
     if not options:
         return None
 
-    cmd_parts = ['mongod']
+    cmd_parts = ["mongod"]
 
     # Config file
-    if 'config' in options:
-        cmd_parts.append(f'--config {options["config"]}')
+    if "config" in options:
+        cmd_parts.append(f"--config {options['config']}")
 
     # Network options
-    if 'net' in options:
-        net_opts = options['net']
-        if 'port' in net_opts:
-            cmd_parts.append(f'--port {net_opts["port"]}')
-        if 'bindIp' in net_opts:
-            cmd_parts.append(f'--bind_ip {net_opts["bindIp"]}')
+    if "net" in options:
+        net_opts = options["net"]
+        if "port" in net_opts:
+            cmd_parts.append(f"--port {net_opts['port']}")
+        if "bindIp" in net_opts:
+            cmd_parts.append(f"--bind_ip {net_opts['bindIp']}")
 
     # Process management
-    if 'processManagement' in options:
-        pm_opts = options['processManagement']
-        if pm_opts.get('fork'):
-            cmd_parts.append('--fork')
+    if "processManagement" in options:
+        pm_opts = options["processManagement"]
+        if pm_opts.get("fork"):
+            cmd_parts.append("--fork")
 
     # Replication
-    if 'replication' in options:
-        repl_opts = options['replication']
-        if 'replSetName' in repl_opts:
-            cmd_parts.append(f'--replSet {repl_opts["replSetName"]}')
-        elif 'replSet' in repl_opts:
-            cmd_parts.append(f'--replSet {repl_opts["replSet"]}')
+    if "replication" in options:
+        repl_opts = options["replication"]
+        if "replSetName" in repl_opts:
+            cmd_parts.append(f"--replSet {repl_opts['replSetName']}")
+        elif "replSet" in repl_opts:
+            cmd_parts.append(f"--replSet {repl_opts['replSet']}")
 
     # Security
-    if 'security' in options:
-        sec_opts = options['security']
-        if 'keyFile' in sec_opts:
-            cmd_parts.append(f'--keyFile {sec_opts["keyFile"]}')
-        if sec_opts.get('authorization') == 'enabled':
-            cmd_parts.append('--auth')
+    if "security" in options:
+        sec_opts = options["security"]
+        if "keyFile" in sec_opts:
+            cmd_parts.append(f"--keyFile {sec_opts['keyFile']}")
+        if sec_opts.get("authorization") == "enabled":
+            cmd_parts.append("--auth")
 
     # Storage
-    if 'storage' in options:
-        storage_opts = options['storage']
-        if 'dbPath' in storage_opts:
-            cmd_parts.append(f'--dbpath {storage_opts["dbPath"]}')
+    if "storage" in options:
+        storage_opts = options["storage"]
+        if "dbPath" in storage_opts:
+            cmd_parts.append(f"--dbpath {storage_opts['dbPath']}")
 
-        if 'wiredTiger' in storage_opts:
-            wt_opts = storage_opts['wiredTiger']
-            if 'engineConfig' in wt_opts:
-                eng_opts = wt_opts['engineConfig']
-                if 'cacheSizeGB' in eng_opts:
-                    cmd_parts.append(f'--wiredTigerCacheSizeGB {eng_opts["cacheSizeGB"]}')
+        if "wiredTiger" in storage_opts:
+            wt_opts = storage_opts["wiredTiger"]
+            if "engineConfig" in wt_opts:
+                eng_opts = wt_opts["engineConfig"]
+                if "cacheSizeGB" in eng_opts:
+                    cmd_parts.append(f"--wiredTigerCacheSizeGB {eng_opts['cacheSizeGB']}")
 
     # System log
-    if 'systemLog' in options:
-        syslog_opts = options['systemLog']
-        if 'destination' in syslog_opts:
-            cmd_parts.append(f'--logpath {syslog_opts.get("path", "/dev/null")}')
+    if "systemLog" in options:
+        syslog_opts = options["systemLog"]
+        if "destination" in syslog_opts:
+            cmd_parts.append(f"--logpath {syslog_opts.get('path', '/dev/null')}")
 
-    return ' '.join(cmd_parts)
+    return " ".join(cmd_parts)
