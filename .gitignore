@@ -43,11 +43,6 @@ Thumbs.db
 # Logs
 *.log
 
-# Personal / customer log fixtures (never commit)
-CS0*
-*obfuscated*.log
-*mongod_obfuscated*
-
 # Local backups and test artifacts
 backups/
 test-results/
