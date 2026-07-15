@@ -88,14 +88,14 @@ def test_queries_endpoint_includes_top_client_fields(client, tmp_path) -> None:
     file_path = tmp_path / "hello-top-client.log"
     import json
 
-    cmd = {"hello": 1, "helloOk": True, "$db": "data_3"}
+    cmd = {"hello": 1, "helloOk": True, "$db": "sampledb"}
     lines = [
         json.dumps(
             {
                 "c": "COMMAND",
                 "msg": "Slow query",
                 "attr": {
-                    "ns": "data_3.$cmd",
+                    "ns": "sampledb.$cmd",
                     "appName": "app1",
                     "command": cmd,
                     "durationMillis": 100,
@@ -108,7 +108,7 @@ def test_queries_endpoint_includes_top_client_fields(client, tmp_path) -> None:
                 "c": "COMMAND",
                 "msg": "Slow query",
                 "attr": {
-                    "ns": "data_3.$cmd",
+                    "ns": "sampledb.$cmd",
                     "appName": "app1",
                     "command": cmd,
                     "durationMillis": 120,

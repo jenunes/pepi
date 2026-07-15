@@ -8,14 +8,14 @@ from pepi.parser import aggregate_query_clients, extract_query_pattern, parse_qu
 
 
 def _slow_hello_line(ip: str, app_name: str = "app1") -> str:
-    command = {"hello": 1, "helloOk": True, "$db": "data_3"}
+    command = {"hello": 1, "helloOk": True, "$db": "sampledb"}
     return json.dumps(
         {
             "t": {"$date": "2026-07-14T12:00:10.230+00:00"},
             "c": "COMMAND",
             "msg": "Slow query",
             "attr": {
-                "ns": "data_3.$cmd",
+                "ns": "sampledb.$cmd",
                 "appName": app_name,
                 "command": command,
                 "durationMillis": 100,
@@ -41,12 +41,12 @@ def test_aggregate_query_clients_ranks_ips(tmp_path: Path) -> None:
     ]
     file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    command = {"hello": 1, "helloOk": True, "$db": "data_3"}
+    command = {"hello": 1, "helloOk": True, "$db": "sampledb"}
     pattern = extract_query_pattern("hello", command)
 
     result = aggregate_query_clients(
         str(file_path),
-        "data_3.$cmd",
+        "sampledb.$cmd",
         "hello",
         pattern,
         sample_percentage=100,
@@ -65,10 +65,10 @@ def test_parse_queries_stores_client_ip_counts(tmp_path: Path) -> None:
     file_path = tmp_path / "queries-clients.log"
     file_path.write_text(_slow_hello_line("10.0.0.8") + "\n", encoding="utf-8")
 
-    command = {"hello": 1, "helloOk": True, "$db": "data_3"}
+    command = {"hello": 1, "helloOk": True, "$db": "sampledb"}
     pattern = extract_query_pattern("hello", command)
     queries = parse_queries(str(file_path), sample_percentage=100)
-    key = ("data_3.$cmd", "hello", pattern)
+    key = ("sampledb.$cmd", "hello", pattern)
 
     assert key in queries
     assert queries[key]["client_ip_counts"]["10.0.0.8"] == 1
