@@ -4,6 +4,17 @@ These bodies follow [VERSIONING.md](../VERSIONING.md) § **GitHub Release body (
 
 ---
 
+## Unreleased (integration branch / `fix/query-analysis-ui`)
+
+Planned documentation for the next patch release:
+
+- **Query Analysis UI:** inline diagnostics inside expanded table rows; sortable Findings column; readable admin-command pattern labels.
+- **Client IP per pattern:** `client_breakdown` on `/query-diagnostics`, Clients tab, `top_client_*` on `/queries`, storm findings, export report section.
+- **Connections:** MongoDB 6.3+/7+ `connection_log_profile`, ingress health metrics parsing, raw fallback when ingest lacks connection rows (`connections_v3` cache).
+- **Tests:** `test_query_clients.py`, `test_connection_log.py`.
+
+---
+
 # Pepi v1.0.0
 
 ## Summary

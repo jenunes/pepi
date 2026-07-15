@@ -14,6 +14,13 @@ let currentPreflight = null;
 let preflightAcknowledged = new Set();
 let currentAnalysisSource = 'raw';
 
+const REQUEST_GROUP = {
+    basic: 'tab-basic',
+    connections: 'tab-connections',
+    queries: 'tab-queries',
+    timeseries: 'tab-timeseries',
+};
+
 function startPerf(label) {
     return { label, startedAt: performance.now() };
 }
@@ -132,9 +139,22 @@ async function refreshIngestStatus(fileId) {
         const result = await fetchJson(`/api/ingest/${fileId}/status`, {}, 'ingest');
         const status = result?.data?.status;
         currentAnalysisSource = status === 'completed' ? 'ingest' : 'raw';
+        return status;
     } catch {
         currentAnalysisSource = 'raw';
+        return null;
     }
+}
+
+async function waitForIngestReady(fileId, maxWaitMs = 120000) {
+    const started = Date.now();
+    while (Date.now() - started < maxWaitMs) {
+        const status = await refreshIngestStatus(fileId);
+        if (status === 'completed') return true;
+        if (status === 'failed' || status === 'cancelled') return false;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    return currentAnalysisSource === 'ingest';
 }
 
 // Performance optimization functions
@@ -658,10 +678,6 @@ async function deleteFile(fileId) {
 // Tab switching
 function switchTab(tabName) {
     activeTabName = tabName;
-    // Cancel stale requests when moving between heavy tabs
-    abortRequestGroup('tab-analysis');
-    abortRequestGroup('extract');
-    abortRequestGroup('query-examples');
 
     // Update tab buttons
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -693,7 +709,7 @@ async function analyzeBasicInfo() {
         const result = await fetchJson(
             `/api/analyze/${currentFileId}/basic?sample=${samplePercentage}`,
             { method: 'POST' },
-            'tab-analysis'
+            REQUEST_GROUP.basic
         );
 
         if (result.status === 'success') {
@@ -784,7 +800,7 @@ async function analyzeConnections() {
         const result = await fetchJson(
             `/api/analyze/${currentFileId}/connections?sample=${samplePercentage}&include_details=false&source=${currentAnalysisSource}`,
             { method: 'POST' },
-            'tab-analysis'
+            REQUEST_GROUP.connections
         );
 
         if (result.status === 'success') {
@@ -807,10 +823,7 @@ function displayConnectionsData(data) {
     originalConnectionsData = data;
     connectionEventsData = data.connection_events;
 
-    // Display data quality warnings if any
-    if (data.data_quality && data.data_quality.warnings && data.data_quality.warnings.length > 0) {
-        displayDataQualityWarnings(data.data_quality);
-    }
+    const profile = data.connection_log_profile || {};
 
     // Display stats
     statsGrid.innerHTML = `
@@ -819,7 +832,7 @@ function displayConnectionsData(data) {
             <p>Connections Opened <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
             <small>${data.total_opened > 0 ? 'Active' : 'None'}</small>
             <div class="info-content" style="display: none;">
-                <p>Total number of network connections that were established to the MongoDB server during the log period. Each connection represents a client application connecting to the database.</p>
+                <p>Total number of network connections that were established to the MongoDB server during the log period. In classic logs this matches Connection accepted; in ingress health metrics logs it counts Ingress TLS handshake complete events.</p>
             </div>
         </div>
         <div class="stat-card data-quality-card">
@@ -827,7 +840,7 @@ function displayConnectionsData(data) {
             <p>Connections Closed <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
             <small>${data.total_closed > 0 ? 'Terminated' : 'None'}</small>
             <div class="info-content" style="display: none;">
-                <p>Total number of network connections that were terminated during the log period. This includes both normal disconnections and connection timeouts.</p>
+                <p>Total number of network connections that were terminated during the log period. Includes Connection ended and abnormal remote termination messages from the MongoDB network stack.</p>
             </div>
         </div>
         <div class="stat-card data-quality-card">
@@ -835,9 +848,18 @@ function displayConnectionsData(data) {
             <p>Unique IPs <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
             <small>${Object.keys(data.connections).length > 0 ? 'Distinct' : 'None'}</small>
             <div class="info-content" style="display: none;">
-                <p>Number of unique IP addresses that connected to the MongoDB server. This helps identify how many different client applications or servers are accessing the database.</p>
+                <p>Number of unique IP addresses that connected to the MongoDB server. In ingress health metrics logs, IPs come from Connection not authenticating (attr.client).</p>
             </div>
         </div>
+        ${data.total_rejected > 0 ? `
+        <div class="stat-card data-quality-card">
+            <h3>${data.total_rejected.toLocaleString()}</h3>
+            <p>Connections Refused <span class="info-icon" onclick="toggleInfo(this)">ⓘ</span></p>
+            <small>maxConns limit</small>
+            <div class="info-content" style="display: none;">
+                <p>Connections rejected because maxConns was reached (Connection refused because there are too many open connections).</p>
+            </div>
+        </div>` : ''}
         ${data.overall_stats ? `
         <div class="stat-card data-quality-card">
             <h3>${data.overall_stats.avg.toFixed(1)}s</h3>
@@ -867,16 +889,51 @@ function displayConnectionsData(data) {
         </div>` : ''}
     `;
 
+    if (profile.note && profile.profile && profile.profile !== 'none') {
+        const profileBanner = document.createElement('div');
+        profileBanner.className = 'data-quality-warning connection-log-profile-banner';
+        profileBanner.innerHTML = `
+            <div class="warning-header">
+                <i class="fas fa-info-circle"></i>
+                <strong>Connection log format: ${profile.profile}</strong>
+            </div>
+            <div class="warning-content"><p>${profile.note}</p></div>
+        `;
+        statsGrid.prepend(profileBanner);
+    }
+
+    if (data.data_quality && data.data_quality.warnings && data.data_quality.warnings.length > 0) {
+        displayDataQualityWarnings(data.data_quality);
+    }
+
     // IP filter dropdown removed - using interactive legend instead
 
-    // Create time series plots
-    if (data.connections_timeseries && data.connections_timeseries.length > 0) {
-        createConnectionsTimeSeriesPlot(data.connections_timeseries, data.connections_by_ip_timeseries);
-        createConnectionEventsTimeline(data.connection_events);
-        createTotalConnectionsPlot(data.connections_timeseries);
+    const hasTimeseries = data.connections_timeseries && data.connections_timeseries.length > 0;
+    const hasByIp = data.connections_by_ip_timeseries
+        && Object.keys(data.connections_by_ip_timeseries).length > 0;
+    const hasIpCounts = data.connections && Object.keys(data.connections).length > 0;
+
+    if (hasTimeseries || hasByIp) {
+        createConnectionsTimeSeriesPlot(
+            data.connections_timeseries || [],
+            data.connections_by_ip_timeseries || {},
+        );
+        createConnectionEventsTimeline(data.connection_events || []);
+        createTotalConnectionsPlot(data.connections_timeseries || []);
+    } else if (hasIpCounts) {
+        setPlotPlaceholder(
+            'connectionsTimeSeriesPlot',
+            'No per-IP time series in this dataset. Showing opened/closed totals by IP.',
+        );
+        createConnectionsByIpBarChart(data.connections);
+        setPlotPlaceholder(
+            'connectionEventsPlot',
+            'No connection event timeline available (use include_details or raw source).',
+        );
     } else {
-        // Fallback to old chart if no time series data
-        createConnectionsChart(data.connections);
+        setPlotPlaceholder('connectionsTimeSeriesPlot', 'No connection data found in the log file.');
+        setPlotPlaceholder('connectionsPlot', 'No connection data found in the log file.');
+        setPlotPlaceholder('connectionEventsPlot', 'No connection data found in the log file.');
     }
 
     // Create initial connections table with all data
@@ -911,55 +968,48 @@ function displayDataQualityWarnings(dataQuality) {
     warningsContainer.insertBefore(warningBanner, warningsContainer.firstChild);
 }
 
-function createConnectionsChart(connections) {
-    const ctx = document.getElementById('connectionsChart').getContext('2d');
+function setPlotPlaceholder(plotId, message) {
+    const el = document.getElementById(plotId);
+    if (!el) return;
+    el.innerHTML = `<p style="text-align: center; padding: 20px;">${escapeHtml(message)}</p>`;
+}
 
-    // Destroy existing chart if it exists
-    if (charts.connections) {
-        charts.connections.destroy();
+function createConnectionsByIpBarChart(connections) {
+    const ips = Object.keys(connections || {}).slice(0, 15);
+    const plotId = 'connectionsPlot';
+    if (!ips.length) {
+        setPlotPlaceholder(plotId, 'No connection data found in the log file.');
+        return;
     }
 
-    const ips = Object.keys(connections).slice(0, 10); // Top 10 IPs
-    const opened = ips.map(ip => connections[ip].opened);
-    const closed = ips.map(ip => connections[ip].closed);
+    const opened = ips.map((ip) => connections[ip].opened || 0);
+    const closed = ips.map((ip) => connections[ip].closed || 0);
 
-    charts.connections = new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: ips,
-            datasets: [
-                {
-                    label: 'Opened',
-                    data: opened,
-                    backgroundColor: 'rgba(102, 126, 234, 0.7)',
-                    borderColor: 'rgba(102, 126, 234, 1)',
-                    borderWidth: 1
-                },
-                {
-                    label: 'Closed',
-                    data: closed,
-                    backgroundColor: 'rgba(118, 75, 162, 0.7)',
-                    borderColor: 'rgba(118, 75, 162, 1)',
-                    borderWidth: 1
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                title: {
-                    display: true,
-                    text: 'Connections by IP Address (Top 10)'
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: true
-                }
-            }
-        }
-    });
+    const layout = {
+        title: '',
+        barmode: 'group',
+        xaxis: { title: 'IP address', tickangle: -35 },
+        yaxis: { title: 'Count', rangemode: 'tozero' },
+        margin: { t: 20, r: 20, b: 100, l: 60 },
+        showlegend: true,
+        legend: { orientation: 'h', y: -0.25 },
+    };
+    const config = { responsive: true, displayModeBar: true, displaylogo: false };
+
+    renderChartProgressively(
+        plotId,
+        [
+            { x: ips, y: opened, name: 'Opened', type: 'bar', marker: { color: '#667eea' } },
+            { x: ips, y: closed, name: 'Closed', type: 'bar', marker: { color: '#764ba2' } },
+        ],
+        layout,
+        config,
+    );
+}
+
+// Legacy Chart.js helper removed — connections tab uses Plotly only.
+function createConnectionsChart(connections) {
+    createConnectionsByIpBarChart(connections);
 }
 
 // New Plotly-based connection charts
@@ -1626,7 +1676,7 @@ async function analyzeQueries() {
 
         if (params.toString()) url += '?' + params.toString();
 
-        const result = await fetchJson(url, { method: 'POST' }, 'tab-analysis');
+        const result = await fetchJson(url, { method: 'POST' }, REQUEST_GROUP.queries);
 
         if (result.status === 'success') {
             displayQueriesData(result.data);
@@ -1657,6 +1707,50 @@ let queriesTableState = {
 };
 const queriesExpandedGlobalIndices = new Set();
 let queriesClientFilterTimer = null;
+let queriesDiagnosticsRowIndex = null;
+let lastDiagnosticsPayload = null;
+
+function formatQueryMs(value, decimals = 1) {
+    const n = Number(value);
+    if (value == null || Number.isNaN(n)) return '—';
+    return n.toFixed(decimals);
+}
+
+function healthSeverityClass(severity) {
+    if (severity === 'CRITICAL') return 'health-critical';
+    if (severity === 'WARNING') return 'health-warning';
+    return 'health-healthy';
+}
+
+function healthScoreSeverityClass(score) {
+    const n = Number(score) || 0;
+    if (n >= 80) return 'health-healthy';
+    if (n >= 50) return 'health-warning';
+    return 'health-critical';
+}
+
+function formatHealthBadgeCell(query, globalIdx) {
+    const sev = query.health_severity || 'HEALTHY';
+    const score = query.health_score != null ? query.health_score : '—';
+    const sevClass = healthSeverityClass(sev);
+    const title = score === '—' ? sev : `${sev}: ${score}/100 — click for diagnostics`;
+    return `<td data-testid="query-health-badge"><span class="health-badge ${sevClass} health-badge-clickable" title="${escapeHtml(title)}" role="button" tabindex="0" onclick="openQueryDiagnostics(${globalIdx})">${score}</span></td>`;
+}
+
+function formatScanRatioCell(query) {
+    const ratio = Number(query.scan_ratio);
+    if (!query.scan_ratio || Number.isNaN(ratio) || ratio <= 0) {
+        return '<td data-testid="query-scan-ratio"><span>—</span></td>';
+    }
+    const scanClass = ratio > 100 ? 'scan-ratio-bad' : ratio > 10 ? 'scan-ratio-warn' : '';
+    return `<td data-testid="query-scan-ratio"><span class="${scanClass}">${ratio.toFixed(1)}:1</span></td>`;
+}
+
+function formatFindingsCountCell(query, globalIdx) {
+    const fc = query.findings_count || 0;
+    const cls = fc > 0 ? 'findings-badge has-findings' : 'findings-badge';
+    return `<td data-testid="query-findings-count"><span class="${cls}" onclick="openQueryDiagnostics(${globalIdx})" title="${fc} findings" role="button" tabindex="0">${fc}</span></td>`;
+}
 
 function resetQueriesTableState() {
     queriesTableState = {
@@ -1669,6 +1763,8 @@ function resetQueriesTableState() {
         sortDirection: 'desc',
     };
     queriesExpandedGlobalIndices.clear();
+    queriesDiagnosticsRowIndex = null;
+    lastDiagnosticsPayload = null;
 }
 
 function getQueriesTotalWorkloadMs(queries) {
@@ -1709,11 +1805,17 @@ function sortQueriesEntries(entries, totalWorkloadMs) {
             case 'pct':
                 return pct(q);
             case 'mean_ms':
-                return q.mean_ms;
+                return Number(q.mean_ms) || 0;
             case 'count':
                 return q.count;
+            case 'health_score':
+                return Number(q.health_score) || 0;
+            case 'scan_ratio':
+                return Number(q.scan_ratio) || 0;
             case 'index':
                 return (q.indexes || []).join(',');
+            case 'findings_count':
+                return Number(q.findings_count) || 0;
             default:
                 return Number(q.sum_ms) || 0;
         }
@@ -1787,10 +1889,60 @@ function toggleQueriesDetailRow(globalIdx) {
     } else {
         detail.classList.remove('is-open');
         queriesExpandedGlobalIndices.delete(globalIdx);
+        if (globalIdx === queriesDiagnosticsRowIndex) {
+            closeDiagnosticsPanel();
+        }
     }
     btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     const icon = btn.querySelector('i');
     if (icon) icon.className = open ? 'fas fa-chevron-down' : 'fas fa-chevron-right';
+}
+
+function getDiagnosticsSlot(rowIndex) {
+    return document.querySelector(
+        `#queriesTable tr.queries-row-detail[data-parent-index="${rowIndex}"] .queries-diagnostics-slot`,
+    );
+}
+
+function ensureDiagnosticsRowVisible(globalIdx) {
+    if (!currentQueriesData || !currentQueriesData.queries.length) return false;
+
+    queriesExpandedGlobalIndices.add(globalIdx);
+
+    const entries = sortQueriesEntries(
+        filterQueriesEntries(currentQueriesData.queries),
+        getQueriesTotalWorkloadMs(currentQueriesData.queries),
+    );
+    const pos = entries.findIndex((entry) => entry.globalIdx === globalIdx);
+    if (pos < 0) return false;
+
+    const pageSize = queriesTableState.pageSize;
+    if (pageSize !== 0) {
+        const targetPage = Math.floor(pos / pageSize) + 1;
+        if (queriesTableState.page !== targetPage) {
+            queriesTableState.page = targetPage;
+            renderQueriesTable();
+            return Boolean(getDiagnosticsSlot(globalIdx));
+        }
+    }
+
+    const detail = document.querySelector(
+        `#queriesTable tr.queries-row-detail[data-parent-index="${globalIdx}"]`,
+    );
+    if (!detail) return false;
+
+    if (!detail.classList.contains('is-open')) {
+        detail.classList.add('is-open');
+        const btn = document.querySelector(
+            `#queriesTable button.queries-expand-btn[data-global-index="${globalIdx}"]`,
+        );
+        if (btn) {
+            btn.setAttribute('aria-expanded', 'true');
+            const icon = btn.querySelector('i');
+            if (icon) icon.className = 'fas fa-chevron-down';
+        }
+    }
+    return true;
 }
 
 function queriesTableGoPage(page) {
@@ -1896,7 +2048,7 @@ function renderQueriesTable() {
     tableContainer.innerHTML = `
         <div class="queries-table-wrap">
             <div class="queries-client-toolbar">
-                <label class="queries-toolbar-label">Table filter</label>
+                <label class="queries-toolbar-label">Client-side filter <span class="queries-toolbar-hint">(refine loaded results)</span></label>
                 <input type="text" id="queriesClientNs" class="queries-toolbar-input" placeholder="Namespace contains…"
                     value="${escapeHtml(queriesTableState.clientNamespace)}" autocomplete="off">
                 <select id="queriesClientOp" class="queries-toolbar-select">${opOpts}</select>
@@ -1917,11 +2069,14 @@ function renderQueriesTable() {
                         <col class="queries-col-namespace">
                         <col class="queries-col-operation">
                         <col class="queries-col-pattern">
+                        <col class="queries-col-health">
                         <col class="queries-col-num">
                         <col class="queries-col-num">
                         <col class="queries-col-num">
                         <col class="queries-col-num">
+                        <col class="queries-col-scan">
                         <col class="queries-col-index">
+                        <col class="queries-col-findings">
                     </colgroup>
                     <thead>
                         <tr>
@@ -1929,11 +2084,14 @@ function renderQueriesTable() {
                             <th class="sortable" data-sort-key="namespace" scope="col" title="Database.collection">Namespace</th>
                             <th class="sortable" data-sort-key="operation" scope="col">Operation</th>
                             <th class="sortable" data-sort-key="pattern" scope="col">Pattern</th>
+                            <th class="sortable" data-sort-key="health_score" scope="col" title="AWR health score (0–100)">Health</th>
                             <th class="sortable queries-col-em col-num" data-sort-key="sum_ms" scope="col">Total (ms)</th>
                             <th class="sortable queries-col-em col-num" data-sort-key="pct" scope="col" title="Share of total workload time">%</th>
                             <th class="sortable queries-col-em col-num" data-sort-key="mean_ms" scope="col">Mean (ms)</th>
                             <th class="sortable col-num" data-sort-key="count" scope="col">Count</th>
+                            <th class="sortable queries-col-scan" data-sort-key="scan_ratio" scope="col" title="docsExamined:nreturned">Scan</th>
                             <th class="sortable" data-sort-key="index" scope="col">Index</th>
+                            <th class="sortable col-num queries-col-findings" data-sort-key="findings_count" scope="col" title="Number of AWR findings">Findings</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -1990,14 +2148,17 @@ function renderQueriesTable() {
                     data-pattern="${encodeURIComponent(query.pattern)}"
                     data-row-index="${globalIdx}"
                     onclick="showQueryExamplesFromElement(this)">
-                    ${escapeHtml(truncateText(query.pattern, 56))}
+                    ${formatQueryPatternCellContent(query)}
                 </span>
             </td>
-            <td class="col-num queries-col-em">${(Number(query.sum_ms) || 0).toFixed(1)}</td>
+            ${formatHealthBadgeCell(query, globalIdx)}
+            <td class="col-num queries-col-em">${formatQueryMs(query.sum_ms)}</td>
             <td class="col-num queries-col-em">${pct}%</td>
-            <td class="col-num queries-col-em">${query.mean_ms.toFixed(1)}</td>
+            <td class="col-num queries-col-em">${formatQueryMs(query.mean_ms)}</td>
             <td class="col-num">${query.count}</td>
+            ${formatScanRatioCell(query)}
             <td class="col-index-wrap">${formatIndexes(query.indexes)}</td>
+            ${formatFindingsCountCell(query, globalIdx)}
         `;
         fragment.appendChild(mainTr);
 
@@ -2005,7 +2166,7 @@ function renderQueriesTable() {
         detailTr.className = `queries-row-detail${isOpen ? ' is-open' : ''}`;
         detailTr.setAttribute('data-parent-index', String(globalIdx));
         detailTr.innerHTML = `
-            <td colspan="9" class="queries-detail-cell">
+            <td colspan="12" class="queries-detail-cell">
                 <div class="queries-detail-grid">
                     <div class="queries-detail-item">
                         <span class="queries-detail-label">Sort / pipeline</span>
@@ -2025,10 +2186,17 @@ function renderQueriesTable() {
                         <span class="queries-detail-label">Fetch Δ</span>
                         <span class="eff-badge ${feClass}">${formatFetchEfficiencyCell(fe)}</span>
                     </div>
-                    <div class="queries-detail-item col-num"><span class="queries-detail-label">Min (ms)</span> ${query.min_ms.toFixed(1)}</div>
-                    <div class="queries-detail-item col-num"><span class="queries-detail-label">Max (ms)</span> ${query.max_ms.toFixed(1)}</div>
-                    <div class="queries-detail-item col-num"><span class="queries-detail-label">P95 (ms)</span> ${query.percentile_95_ms.toFixed(1)}</div>
+                    <div class="queries-detail-item col-num"><span class="queries-detail-label">Min (ms)</span> ${formatQueryMs(query.min_ms)}</div>
+                    <div class="queries-detail-item col-num"><span class="queries-detail-label">Max (ms)</span> ${formatQueryMs(query.max_ms)}</div>
+                    <div class="queries-detail-item col-num"><span class="queries-detail-label">P95 (ms)</span> ${formatQueryMs(query.percentile_95_ms)}</div>
+                    ${formatQueryTopClientDetail(query)}
+                    <div class="queries-detail-item">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="openQueryDiagnostics(${globalIdx})">
+                            <i class="fas fa-stethoscope"></i> Diagnostics &amp; clients
+                        </button>
+                    </div>
                 </div>
+                <div class="queries-diagnostics-slot" data-testid="diagnostics-panel" data-diagnostics-row="${globalIdx}" style="display: none;"></div>
             </td>
         `;
         fragment.appendChild(detailTr);
@@ -2037,6 +2205,34 @@ function renderQueriesTable() {
     tbody.appendChild(fragment);
     attachQueriesTableToolbarListeners(tableContainer);
     updateQueriesSortHeaderClasses(tableContainer);
+
+    if (lastDiagnosticsPayload && queriesDiagnosticsRowIndex !== null) {
+        const rowOnPage = pag.slice.some((entry) => entry.globalIdx === queriesDiagnosticsRowIndex);
+        if (rowOnPage) {
+            renderDiagnosticsPanel(
+                lastDiagnosticsPayload.query,
+                lastDiagnosticsPayload.diag,
+                lastDiagnosticsPayload.rowIndex,
+            );
+        }
+    }
+}
+
+function formatQueryTopClientDetail(query) {
+    if (!query.top_client_ip || query.top_client_ip === 'unknown') {
+        return `<div class="queries-detail-item queries-detail-client">
+            <span class="queries-detail-label">Top client</span>
+            <span class="muted">—</span>
+        </div>`;
+    }
+    const app = query.top_client_app
+        ? ` <span class="muted">· ${escapeHtml(query.top_client_app)}</span>`
+        : '';
+    return `<div class="queries-detail-item queries-detail-client" data-testid="query-top-client">
+        <span class="queries-detail-label">Top client</span>
+        <code>${escapeHtml(query.top_client_ip)}</code>
+        <span class="mono-tiny">${formatQueryMs(query.top_client_pct || 0, 1)}% (${Number(query.top_client_count || 0).toLocaleString()})${app}</span>
+    </div>`;
 }
 
 function escapeHtml(s) {
@@ -2153,6 +2349,563 @@ function generateESRBreakdownHTML(breakdown, suboptimalOrder) {
         </div>`;
 }
 
+function renderAWRSummaryPanel(data) {
+    const panel = document.getElementById('awrSummaryPanel');
+    if (!panel) return;
+    const summary = data.summary;
+    if (!summary) {
+        panel.style.display = 'none';
+        panel.innerHTML = '';
+        return;
+    }
+
+    const dist = summary.health_distribution || {};
+    const overall = summary.overall_health_score || 0;
+    const sevClass = healthScoreSeverityClass(overall);
+    const topTime = (summary.top_by_total_time || []).slice(0, 3);
+    const findings = data.findings || [];
+
+    panel.style.display = 'block';
+    panel.innerHTML = `
+        <div class="awr-summary" data-testid="awr-summary">
+            <div class="awr-summary-header">
+                <h3><i class="fas fa-heartbeat"></i> Query Health Overview</h3>
+                <button class="btn btn-secondary btn-sm" data-testid="export-report-btn" onclick="exportAWRReport()">
+                    <i class="fas fa-download"></i> Export Report
+                </button>
+            </div>
+            <div class="awr-summary-grid">
+                <div class="awr-health-gauge" data-testid="query-health-gauge">
+                    <svg viewBox="0 0 120 80" class="gauge-svg">
+                        <path d="M 10 70 A 50 50 0 0 1 110 70" fill="none" stroke="#e9ecef" stroke-width="10" stroke-linecap="round"/>
+                        <path d="M 10 70 A 50 50 0 0 1 110 70" fill="none" stroke-width="10" stroke-linecap="round"
+                              class="gauge-fill ${sevClass}"
+                              stroke-dasharray="${(overall / 100) * 157} 157"/>
+                    </svg>
+                    <div class="gauge-value ${sevClass}">${overall}</div>
+                    <div class="gauge-label">Overall Health</div>
+                </div>
+                <div class="awr-distribution" data-testid="health-distribution">
+                    <div class="dist-card dist-healthy"><span class="dist-count">${dist.healthy || 0}</span><span class="dist-label">Healthy</span></div>
+                    <div class="dist-card dist-warning"><span class="dist-count">${dist.warning || 0}</span><span class="dist-label">Warning</span></div>
+                    <div class="dist-card dist-critical"><span class="dist-count">${dist.critical || 0}</span><span class="dist-label">Critical</span></div>
+                </div>
+                <div class="awr-top-offenders" data-testid="top-offenders">
+                    <h4>Top Offenders (by DB time)</h4>
+                    ${topTime.length > 0 ? '<ol>' + topTime.map((p) => {
+                        const pSev = healthScoreSeverityClass(p.health_score);
+                        return `<li><span class="health-badge ${pSev}" style="font-size:11px;">${p.health_score}</span> ${escapeHtml(p.namespace)}.${escapeHtml(p.operation)} <small>(${Number(p.value).toLocaleString()} ms·count)</small></li>`;
+                    }).join('') + '</ol>' : '<p class="muted">No data</p>'}
+                </div>
+                <div class="awr-key-alerts">
+                    <h4>Key Alerts</h4>
+                    <div class="alert-chips">
+                        ${summary.collection_scan_patterns > 0 ? `<span class="alert-chip alert-critical"><i class="fas fa-exclamation-triangle"></i> ${summary.collection_scan_patterns} COLLSCAN</span>` : ''}
+                        ${summary.in_memory_sort_patterns > 0 ? `<span class="alert-chip alert-warning"><i class="fas fa-sort"></i> ${summary.in_memory_sort_patterns} in-memory sorts</span>` : ''}
+                        ${summary.disk_spill_patterns > 0 ? `<span class="alert-chip alert-critical"><i class="fas fa-hdd"></i> ${summary.disk_spill_patterns} disk spills</span>` : ''}
+                        ${!summary.collection_scan_patterns && !summary.in_memory_sort_patterns && !summary.disk_spill_patterns ? '<span class="alert-chip alert-ok"><i class="fas fa-check"></i> No critical alerts</span>' : ''}
+                    </div>
+                </div>
+            </div>
+            ${findings.length > 0 ? `
+            <details class="awr-findings-collapse">
+                <summary>Aggregated findings (${findings.length})</summary>
+                <div class="awr-findings-list">
+                    ${findings.map((f) => `
+                        <div class="finding-card finding-${escapeHtml(f.severity)}">
+                            <div class="finding-header">
+                                <span class="finding-severity ${escapeHtml(f.severity)}">${escapeHtml(String(f.severity).toUpperCase())}</span>
+                                <span class="finding-category">${escapeHtml(f.category)}</span>
+                                <strong>${escapeHtml(f.title)}</strong>
+                            </div>
+                            <p>${escapeHtml(f.detail)}</p>
+                            <p class="finding-rec"><i class="fas fa-lightbulb"></i> ${escapeHtml(f.recommendation)}</p>
+                        </div>
+                    `).join('')}
+                </div>
+            </details>` : ''}
+        </div>
+    `;
+}
+
+async function openQueryDiagnostics(rowIndex) {
+    if (!currentQueriesData || !currentFileId) return;
+    const query = currentQueriesData.queries[rowIndex];
+    if (!query) return;
+
+    if (!ensureDiagnosticsRowVisible(rowIndex)) {
+        showToast('error', 'Could not open diagnostics for this row');
+        return;
+    }
+
+    showLoading('Loading diagnostics...');
+    const samplePercentage = cliSamplePercentage || document.getElementById('samplePercentage')?.value || 100;
+    try {
+        const result = await fetchJson(
+            `/api/analyze/${currentFileId}/query-diagnostics?sample=${samplePercentage}`,
+            {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ namespace: query.namespace, operation: query.operation, pattern: query.pattern }),
+            },
+            'query-diagnostics',
+        );
+
+        if (result.status === 'success') {
+            renderDiagnosticsPanel(query, result.data, rowIndex);
+        } else {
+            showToast('error', 'Failed to load diagnostics');
+        }
+    } catch (error) {
+        if (error.name === 'AbortError') return;
+        showToast('error', `Diagnostics failed: ${error.message}`);
+    } finally {
+        hideLoading();
+    }
+}
+
+let lastDiagClientBreakdown = [];
+
+function renderQueryClientsOverviewSnippet(clientBreakdown) {
+    const clients = (clientBreakdown || []).slice(0, 3);
+    if (!clients.length) return '';
+    const rows = clients.map((row) => `
+        <li><code>${escapeHtml(row.ip)}</code> — ${Number(row.count).toLocaleString()} (${formatQueryMs(row.pct || 0, 1)}%)
+        ${row.app_name ? `<span class="muted"> · ${escapeHtml(row.app_name)}</span>` : ''}</li>
+    `).join('');
+    return `
+        <div class="diag-clients-overview" data-testid="diagnostics-clients-overview">
+            <strong>Top client IPs</strong>
+            <ul class="diag-clients-overview-list">${rows}</ul>
+            <button type="button" class="btn btn-secondary btn-sm" data-testid="diagnostics-clients-jump"
+                onclick="document.querySelector('[data-testid=diagnostics-tab-clients]')?.click()">
+                View all clients
+            </button>
+        </div>
+    `;
+}
+
+function renderQueryClientsPane(clientBreakdown, meta) {
+    const clients = clientBreakdown || [];
+    const metaObj = meta || {};
+    if (!clients.length) {
+        return '<p class="muted" data-testid="diagnostics-clients-empty">No client IP data found for this pattern. Slow query lines may lack attr.remote.</p>';
+    }
+
+    const coverageWarn = metaObj.has_remote_pct < 90
+        ? `<div class="diag-client-coverage-warn" data-testid="diagnostics-clients-coverage-warn">
+            <i class="fas fa-exclamation-triangle"></i>
+            Some events lack attr.remote (${formatQueryMs(metaObj.has_remote_pct || 0, 1)}% coverage); counts may be incomplete.
+           </div>`
+        : '';
+
+    const sampledNote = metaObj.sampling_metadata?.is_sampled
+        ? `<p class="muted diag-client-sample-note">Sampled parse (every ${metaObj.sampling_metadata.sample_rate} lines, ${Number(metaObj.sampling_metadata.total_lines || 0).toLocaleString()} total).</p>`
+        : '';
+
+    const rows = clients.map((row) => `
+        <tr>
+            <td><code>${escapeHtml(row.ip)}</code></td>
+            <td>${Number(row.count).toLocaleString()}</td>
+            <td>${formatQueryMs(row.pct || 0, 1)}%</td>
+            <td>${row.app_name ? escapeHtml(row.app_name) : '—'}</td>
+        </tr>
+    `).join('');
+
+    return `
+        ${coverageWarn}
+        ${sampledNote}
+        <div id="queryClientsChart" data-testid="diagnostics-clients-chart" class="diag-clients-chart"></div>
+        <table class="diag-clients-table" data-testid="diagnostics-clients-table">
+            <thead>
+                <tr>
+                    <th>Client IP</th>
+                    <th>Count</th>
+                    <th>% of pattern</th>
+                    <th>App name</th>
+                </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+        </table>
+    `;
+}
+
+function createQueryClientsBarChart(clients) {
+    const plotId = 'queryClientsChart';
+    const el = document.getElementById(plotId);
+    if (!el || !clients || !clients.length) return;
+
+    const sorted = [...clients].sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 15);
+    const ips = sorted.map((row) => row.ip);
+    const counts = sorted.map((row) => row.count || 0);
+
+    const layout = {
+        title: '',
+        barmode: 'group',
+        xaxis: { title: 'Event count', rangemode: 'tozero' },
+        yaxis: { title: 'Client IP', automargin: true },
+        margin: { t: 20, r: 20, b: 60, l: 100 },
+        showlegend: false,
+    };
+    const config = { responsive: true, displayModeBar: true, displaylogo: false };
+
+    renderChartProgressively(
+        plotId,
+        [{
+            y: ips,
+            x: counts,
+            type: 'bar',
+            orientation: 'h',
+            marker: { color: '#667eea' },
+            name: 'Events',
+        }],
+        layout,
+        config,
+    );
+}
+
+function renderDiagnosticsPanel(query, diag, rowIndex) {
+    const slot = getDiagnosticsSlot(rowIndex);
+    if (!slot) return;
+
+    lastDiagnosticsPayload = { query, diag, rowIndex };
+    queriesDiagnosticsRowIndex = rowIndex;
+
+    document.querySelectorAll('#queriesTable .queries-diagnostics-slot').forEach((el) => {
+        if (el !== slot) {
+            el.innerHTML = '';
+            el.style.display = 'none';
+        }
+    });
+
+    const h = diag.health || {};
+    const findings = diag.findings || [];
+    const exec = diag.exec_stats || {};
+    const clientBreakdown = diag.client_breakdown || [];
+    const clientMeta = diag.client_breakdown_meta || {};
+    const clientCount = clientBreakdown.length;
+    const score = h.total || 0;
+    const sev = h.severity || 'HEALTHY';
+    const sevClass = healthSeverityClass(sev);
+
+    const factors = [
+        { label: 'Plan Type', value: h.plan_type_score, weight: 25 },
+        { label: 'Scan Ratio', value: h.scan_ratio_score, weight: 25 },
+        { label: 'Key Efficiency', value: h.key_efficiency_score, weight: 15 },
+        { label: 'Sort', value: h.sort_score, weight: 10 },
+        { label: 'Latency P95', value: h.latency_score, weight: 15 },
+        { label: 'Disk Usage', value: h.disk_score, weight: 10 },
+    ];
+
+    const isOptimized = score >= 80 && findings.length === 0;
+    const defaultTab = clientCount > 0 ? 'clients' : 'overview';
+    const tabActive = (id) => (id === defaultTab ? ' active' : '');
+    const paneActive = (id) => (id === defaultTab ? ' active' : '');
+
+    slot.style.display = 'block';
+    slot.innerHTML = `
+        <div class="diag-panel diag-panel-inline">
+            <div class="diag-header">
+                <h3><i class="fas fa-stethoscope"></i> ${escapeHtml(query.namespace)} — ${escapeHtml(query.operation)}</h3>
+                <div class="diag-header-actions">
+                    ${isOptimized ? '<span class="status-badge status-good"><i class="fas fa-check"></i> Optimized</span>' : ''}
+                    <button class="btn btn-secondary btn-sm" onclick="getIndexRecommendationForQuery(${rowIndex})"><i class="fas fa-magic"></i> Index Rec</button>
+                    <button class="close-examples" onclick="closeDiagnosticsPanel()"><i class="fas fa-times"></i> Close</button>
+                </div>
+            </div>
+            <div class="diag-tabs">
+                <button class="diag-tab${tabActive('overview')}" data-testid="diagnostics-tab-overview" onclick="switchDiagTab(this,'diag-overview')">Overview</button>
+                <button class="diag-tab${tabActive('findings')}" data-testid="diagnostics-tab-findings" onclick="switchDiagTab(this,'diag-findings')">Findings (${findings.length})</button>
+                <button class="diag-tab${tabActive('exec')}" data-testid="diagnostics-tab-exec-stats" onclick="switchDiagTab(this,'diag-exec')">Exec Stats</button>
+                <button class="diag-tab${tabActive('clients')}" data-testid="diagnostics-tab-clients" onclick="switchDiagTab(this,'diag-clients')">Clients (${clientCount})</button>
+                <button class="diag-tab${tabActive('examples')}" data-testid="diagnostics-tab-examples" onclick="switchDiagTab(this,'diag-examples')">Examples</button>
+                <button class="diag-tab${tabActive('index')}" data-testid="diagnostics-tab-index-rec" onclick="switchDiagTab(this,'diag-index')">Index Rec</button>
+            </div>
+            <div class="diag-body">
+                <div class="diag-pane${paneActive('overview')}" id="diag-overview">
+                    <div class="diag-overview-grid">
+                        <div class="diag-score-card">
+                            <div class="health-badge-lg ${sevClass}">${score}</div>
+                            <div class="diag-score-label">${escapeHtml(sev)}</div>
+                        </div>
+                        <div class="diag-factors">
+                            ${factors.map((f) => {
+                                const val = Number(f.value) || 0;
+                                const barClass = val >= 80 ? 'bar-good' : val >= 50 ? 'bar-warn' : 'bar-bad';
+                                return `<div class="factor-row">
+                                    <span class="factor-label">${escapeHtml(f.label)} (${f.weight}%)</span>
+                                    <div class="factor-bar"><div class="factor-fill ${barClass}" style="width:${val}%"></div></div>
+                                    <span class="factor-val">${val}</span>
+                                </div>`;
+                            }).join('')}
+                        </div>
+                        <div class="diag-quick-stats">
+                            <p><strong>Count:</strong> ${query.count}</p>
+                            <p><strong>Mean:</strong> ${formatQueryMs(query.mean_ms)} ms</p>
+                            <p><strong>P95:</strong> ${formatQueryMs(query.percentile_95_ms)} ms</p>
+                            <p><strong>Scan Ratio:</strong> ${formatQueryMs(query.scan_ratio || 0)}:1</p>
+                            <p><strong>In-Memory Sort:</strong> ${formatQueryMs(query.in_memory_sort_pct || 0, 0)}%</p>
+                            <p><strong>Disk Usage:</strong> ${formatQueryMs(query.disk_usage_pct || 0, 0)}%</p>
+                            ${renderQueryClientsOverviewSnippet(clientBreakdown)}
+                        </div>
+                    </div>
+                </div>
+                <div class="diag-pane${paneActive('findings')}" id="diag-findings">
+                    ${findings.length === 0 ? '<p class="muted">No findings — this query follows best practices.</p>'
+                        : findings.map((f) => `
+                            <div class="finding-card finding-${escapeHtml(f.severity)}">
+                                <div class="finding-header">
+                                    <span class="finding-severity ${escapeHtml(f.severity)}">${escapeHtml(String(f.severity).toUpperCase())}</span>
+                                    <span class="finding-category">${escapeHtml(f.category)}</span>
+                                    <strong>${escapeHtml(f.title)}</strong>
+                                </div>
+                                <p>${escapeHtml(f.detail)}</p>
+                                <p class="finding-rec"><i class="fas fa-lightbulb"></i> ${escapeHtml(f.recommendation)}</p>
+                            </div>
+                        `).join('')}
+                </div>
+                <div class="diag-pane${paneActive('exec')}" id="diag-exec">
+                    ${renderExecStatsPane(exec)}
+                </div>
+                <div class="diag-pane${paneActive('clients')}" id="diag-clients">
+                    ${renderQueryClientsPane(clientBreakdown, clientMeta)}
+                </div>
+                <div class="diag-pane${paneActive('examples')}" id="diag-examples">
+                    <p class="muted">Click to load examples for this pattern.</p>
+                    <button class="btn btn-primary btn-sm" onclick="loadDiagExamples(${rowIndex})"><i class="fas fa-code"></i> Load Examples</button>
+                    <div id="diag-examples-content"></div>
+                </div>
+                <div class="diag-pane${paneActive('index')}" id="diag-index">
+                    <p class="muted">Click to get index recommendation for this pattern.</p>
+                    <button class="btn btn-primary btn-sm" onclick="getIndexRecommendationForQuery(${rowIndex})"><i class="fas fa-magic"></i> Get Recommendation</button>
+                </div>
+            </div>
+        </div>
+    `;
+    if (clientBreakdown.length > 0) {
+        lastDiagClientBreakdown = clientBreakdown;
+        requestAnimationFrame(() => createQueryClientsBarChart(clientBreakdown));
+    } else {
+        lastDiagClientBreakdown = [];
+    }
+
+    const detailRow = slot.closest('tr.queries-row-detail');
+    if (detailRow) {
+        detailRow.classList.add('has-inline-diagnostics');
+        detailRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+}
+
+function renderExecStatsPane(exec) {
+    if (!exec) return '<p class="muted">No execution statistics available.</p>';
+    const metrics = [
+        { key: 'keysExamined', label: 'Keys Examined' },
+        { key: 'docsExamined', label: 'Docs Examined' },
+        { key: 'nreturned', label: 'Docs Returned' },
+        { key: 'numYields', label: 'Yields' },
+        { key: 'reslen', label: 'Response Size (bytes)' },
+    ];
+    let html = '<div class="exec-stats-grid">';
+    for (const m of metrics) {
+        const arr = exec[m.key] || [];
+        if (!arr.length) continue;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const min = sorted[0];
+        const max = sorted[sorted.length - 1];
+        const mean = sorted.reduce((a, b) => a + b, 0) / sorted.length;
+        const p95idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95));
+        html += `<div class="exec-stat-card">
+            <h5>${escapeHtml(m.label)}</h5>
+            <div class="exec-stat-row"><span>Min</span><span>${min.toLocaleString()}</span></div>
+            <div class="exec-stat-row"><span>Mean</span><span>${Math.round(mean).toLocaleString()}</span></div>
+            <div class="exec-stat-row"><span>P95</span><span>${sorted[p95idx].toLocaleString()}</span></div>
+            <div class="exec-stat-row"><span>Max</span><span>${max.toLocaleString()}</span></div>
+        </div>`;
+    }
+    const boolMetrics = [
+        { key: 'hasSortStage', label: 'In-Memory Sort', pctKey: 'in_memory_sort_pct' },
+        { key: 'usedDisk', label: 'Used Disk', pctKey: 'disk_usage_pct' },
+    ];
+    for (const m of boolMetrics) {
+        const pct = exec[m.pctKey] || 0;
+        html += `<div class="exec-stat-card">
+            <h5>${escapeHtml(m.label)}</h5>
+            <div class="exec-stat-pct">${Number(pct).toFixed(1)}%</div>
+            <div class="exec-stat-row"><span>of executions</span></div>
+        </div>`;
+    }
+    html += '</div>';
+    return html;
+}
+
+function switchDiagTab(btn, paneId) {
+    const panel = btn.closest('.diag-panel');
+    panel.querySelectorAll('.diag-tab').forEach((t) => t.classList.remove('active'));
+    panel.querySelectorAll('.diag-pane').forEach((p) => p.classList.remove('active'));
+    btn.classList.add('active');
+    const pane = panel.querySelector(`#${paneId}`);
+    if (pane) pane.classList.add('active');
+    if (paneId === 'diag-clients' && lastDiagClientBreakdown.length > 0) {
+        createQueryClientsBarChart(lastDiagClientBreakdown);
+    }
+}
+
+async function loadDiagExamples(rowIndex) {
+    if (!currentQueriesData || !currentFileId) return;
+    const query = currentQueriesData.queries[rowIndex];
+    if (!query) return;
+    const container = document.getElementById('diag-examples-content');
+    if (!container) return;
+    container.innerHTML = '<p class="muted">Loading...</p>';
+    try {
+        const result = await fetchJson(`/api/analyze/${currentFileId}/query-examples`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ namespace: query.namespace, operation: query.operation, pattern: query.pattern }),
+        }, 'query-examples');
+        if (result.status === 'success' && result.data.examples.length > 0) {
+            container.innerHTML = result.data.examples.map((ex, i) => {
+                let logEntry = {};
+                try { logEntry = JSON.parse(ex.raw_log_line); } catch (e) { logEntry = { raw: ex.raw_log_line }; }
+                return `<div class="query-example">
+                    <div class="query-example-header">
+                        <strong>Example ${i + 1}</strong>
+                        <span><i class="fas fa-stopwatch"></i> ${ex.duration_ms}ms</span>
+                        <span><i class="fas fa-search"></i> ${escapeHtml(ex.plan_summary)}</span>
+                    </div>
+                    <pre class="json-viewer-compact">${syntaxHighlightJson(logEntry)}</pre>
+                </div>`;
+            }).join('');
+        } else {
+            container.innerHTML = '<p class="muted">No examples found for this pattern.</p>';
+        }
+    } catch (err) {
+        container.innerHTML = `<p class="muted">Failed: ${escapeHtml(err.message)}</p>`;
+    }
+}
+
+function closeDiagnosticsPanel() {
+    document.querySelectorAll('#queriesTable .queries-diagnostics-slot').forEach((slot) => {
+        slot.innerHTML = '';
+        slot.style.display = 'none';
+    });
+    document.querySelectorAll('#queriesTable tr.queries-row-detail.has-inline-diagnostics').forEach((row) => {
+        row.classList.remove('has-inline-diagnostics');
+    });
+
+    const external = document.getElementById('queryDiagnosticsPanel');
+    if (external) {
+        external.style.display = 'none';
+        external.innerHTML = '';
+    }
+
+    queriesDiagnosticsRowIndex = null;
+    lastDiagnosticsPayload = null;
+    lastDiagClientBreakdown = [];
+}
+
+function exportAWRReport() {
+    exportAWRReportAsync();
+}
+
+async function exportAWRReportAsync() {
+    if (!currentQueriesData || !currentFileId) {
+        showToast('warning', 'Analyze queries first.');
+        return;
+    }
+    const data = currentQueriesData;
+    const summary = data.summary || {};
+    const dist = summary.health_distribution || {};
+    const samplePercentage = cliSamplePercentage || document.getElementById('samplePercentage')?.value || 100;
+
+    showLoading('Building report with client IPs...');
+    const lines = [
+        '# Query Diagnostics Report',
+        '',
+        '## Summary',
+        `- **Overall Health:** ${summary.overall_health_score || 0}/100`,
+        `- **Patterns:** ${data.total_patterns}`,
+        `- **Healthy / Warning / Critical:** ${dist.healthy || 0} / ${dist.warning || 0} / ${dist.critical || 0}`,
+        `- **COLLSCAN patterns:** ${summary.collection_scan_patterns || 0}`,
+        `- **In-memory sort patterns:** ${summary.in_memory_sort_patterns || 0}`,
+        `- **Disk spill patterns:** ${summary.disk_spill_patterns || 0}`,
+        '',
+        '## Top Queries by Total Time',
+        '| Namespace | Operation | Health | DB Time (ms·count) |',
+        '|-----------|-----------|--------|--------------------|',
+    ];
+    (summary.top_by_total_time || []).forEach((p) => {
+        lines.push(`| ${p.namespace} | ${p.operation} | ${p.health_score} | ${Number(p.value).toLocaleString()} |`);
+    });
+    lines.push('', '## Top Queries by Scan Ratio', '| Namespace | Operation | Health | Scan Ratio |', '|-----------|-----------|--------|------------|');
+    (summary.top_by_scan_ratio || []).forEach((p) => {
+        lines.push(`| ${p.namespace} | ${p.operation} | ${p.health_score} | ${Number(p.value).toFixed(1)} |`);
+    });
+    if (data.findings && data.findings.length > 0) {
+        lines.push('', '## Findings');
+        data.findings.forEach((f) => {
+            lines.push(`- **[${String(f.severity).toUpperCase()}]** ${f.title}: ${f.detail}`);
+            lines.push(`  - _Recommendation:_ ${f.recommendation}`);
+        });
+    }
+    lines.push('', '## Per-Pattern Details', '| Health | Namespace | Operation | Count | Mean ms | P95 ms | Scan Ratio | Top Client IP | Top Client % | Findings |',
+        '|--------|-----------|-----------|-------|---------|--------|------------|---------------|--------------|----------|');
+    data.queries.forEach((q) => {
+        const topIp = q.top_client_ip && q.top_client_ip !== 'unknown' ? q.top_client_ip : '—';
+        const topPct = q.top_client_pct != null ? `${formatQueryMs(q.top_client_pct, 1)}%` : '—';
+        lines.push(`| ${q.health_score} ${q.health_severity} | ${q.namespace} | ${q.operation} | ${q.count} | ${formatQueryMs(q.mean_ms)} | ${formatQueryMs(q.percentile_95_ms)} | ${formatQueryMs(q.scan_ratio || 0)} | ${topIp} | ${topPct} | ${q.findings_count || 0} |`);
+    });
+
+    const stormPatterns = (data.queries || [])
+        .filter((q) => q.count >= 10 || q.operation === 'hello' || q.operation === 'isMaster')
+        .slice(0, 8);
+
+    if (stormPatterns.length > 0) {
+        lines.push('', '## Top Client IPs by Storm Pattern', '');
+        for (const q of stormPatterns) {
+            try {
+                const result = await fetchJson(
+                    `/api/analyze/${currentFileId}/query-diagnostics?sample=${samplePercentage}`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            namespace: q.namespace,
+                            operation: q.operation,
+                            pattern: q.pattern,
+                        }),
+                    },
+                );
+                const clients = result.data?.client_breakdown || [];
+                if (!clients.length) continue;
+                lines.push(`### ${q.namespace} / ${q.operation} (count ${q.count})`, '');
+                lines.push('| IP | Count | % | App |', '|----|-------|---|-----|');
+                clients.slice(0, 10).forEach((c) => {
+                    lines.push(`| ${c.ip} | ${c.count} | ${c.pct}% | ${c.app_name || '—'} |`);
+                });
+                lines.push('');
+            } catch (err) {
+                lines.push(`### ${q.namespace} / ${q.operation}`, `_Client breakdown unavailable: ${err.message}_`, '');
+            }
+        }
+    }
+
+    hideLoading();
+    const md = lines.join('\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(md).then(() => showToast('success', 'Report copied to clipboard'));
+    } else {
+        const blob = new Blob([md], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'query-diagnostics-report.md';
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('success', 'Report downloaded');
+    }
+}
+
 function displayQueriesData(data) {
     const perf = startPerf('displayQueriesData');
     currentQueriesData = data;
@@ -2163,17 +2916,20 @@ function displayQueriesData(data) {
     if (!data.queries || !data.queries.length) {
         statsGrid.innerHTML = '<p class="muted">No query data.</p>';
         tableContainer.innerHTML = '';
+        renderAWRSummaryPanel(data);
+        closeDiagnosticsPanel();
         renderCollscanTrendsSection(data);
         endPerf(perf, { rows: 0 });
         return;
     }
 
     resetQueriesTableState();
+    closeDiagnosticsPanel();
     data.queries.sort((a, b) => (Number(b.sum_ms) || 0) - (Number(a.sum_ms) || 0));
 
     const totalQueries = data.queries.reduce((sum, q) => sum + q.count, 0);
-    const avgExecutionTime = data.queries.reduce((sum, q) => sum + q.mean_ms, 0) / data.queries.length;
-    const slowestQuery = Math.max(...data.queries.map(q => q.max_ms));
+    const avgExecutionTime = data.queries.reduce((sum, q) => sum + (Number(q.mean_ms) || 0), 0) / data.queries.length;
+    const slowestQuery = Math.max(...data.queries.map((q) => Number(q.max_ms) || 0));
     const collscans = data.queries.filter(q => q.indexes && q.indexes.includes('COLLSCAN')).length;
     const totalWorkloadMs = data.queries.reduce((sum, q) => sum + (Number(q.sum_ms) || 0), 0);
 
@@ -2246,6 +3002,8 @@ function displayQueriesData(data) {
             </div>
         </div>
     `;
+
+    renderAWRSummaryPanel(data);
 
     createQueriesChart(data.queries);
 
@@ -2345,6 +3103,120 @@ function formatIndexes(indexes) {
 function truncateText(text, maxLength) {
     if (text.length <= maxLength) return text;
     return text.substring(0, maxLength) + '...';
+}
+
+const COMMAND_PATTERN_KEY_DENYLIST = new Set([
+    '$db',
+    '$clusterTime',
+    '$readPreference',
+    '$client',
+    '$configServerState',
+    '$configTime',
+    '$topologyTime',
+    '$audit',
+    '$oplogQueryData',
+    'lsid',
+    'apiVersion',
+    'apiStrict',
+    'apiDeprecationErrors',
+    'signature',
+    'keyId',
+    'txnNumber',
+    'autocommit',
+    'startTransaction',
+    'stmtId',
+    'writeConcern',
+    'comment',
+]);
+
+const ADMIN_COMMAND_ICONS = {
+    hello: 'fa-handshake',
+    isMaster: 'fa-handshake',
+    ismaster: 'fa-handshake',
+    ping: 'fa-heartbeat',
+    replSetHeartbeat: 'fa-heartbeat',
+    replSetGetStatus: 'fa-server',
+    replSetGetConfig: 'fa-server',
+    replSetUpdatePosition: 'fa-server',
+    replSetRequestVotes: 'fa-server',
+    replSetFreeze: 'fa-server',
+    replSetStepDown: 'fa-server',
+    replSetSyncFrom: 'fa-server',
+    replSetMaintenance: 'fa-server',
+    replSetInitiate: 'fa-server',
+    replSetReconfig: 'fa-server',
+    replSetElect: 'fa-server',
+    saslStart: 'fa-key',
+    saslContinue: 'fa-key',
+    authenticate: 'fa-key',
+    logout: 'fa-key',
+    getnonce: 'fa-key',
+    buildInfo: 'fa-info-circle',
+    serverStatus: 'fa-info-circle',
+    connPoolStats: 'fa-info-circle',
+    top: 'fa-info-circle',
+    collStats: 'fa-info-circle',
+    dbStats: 'fa-info-circle',
+    getLog: 'fa-info-circle',
+    getParameter: 'fa-info-circle',
+    listDatabases: 'fa-database',
+    listCollections: 'fa-database',
+    listIndexes: 'fa-database',
+    createIndexes: 'fa-database',
+    dropIndexes: 'fa-database',
+    count: 'fa-hashtag',
+    distinct: 'fa-hashtag',
+    findAndModify: 'fa-pen',
+    getMore: 'fa-forward',
+};
+
+function isKeyListPattern(patternStr) {
+    if (!patternStr || typeof patternStr !== 'string') return false;
+    try {
+        const parsed = JSON.parse(patternStr);
+        return (
+            Array.isArray(parsed) &&
+            parsed.length > 0 &&
+            parsed.every((item) => typeof item === 'string')
+        );
+    } catch {
+        return false;
+    }
+}
+
+function adminCommandIconClass(operation) {
+    if (!operation) return 'fa-plug';
+    return ADMIN_COMMAND_ICONS[operation] || 'fa-plug';
+}
+
+function formatCommandPatternDisplay(query) {
+    let keys = [];
+    try {
+        keys = JSON.parse(query.pattern);
+    } catch {
+        return escapeHtml(truncateText(String(query.pattern || ''), 56));
+    }
+
+    const operation = String(query.operation || '').trim();
+    const meaningfulKeys = keys
+        .filter((key) => key !== operation && !COMMAND_PATTERN_KEY_DENYLIST.has(key))
+        .sort();
+
+    const iconClass = adminCommandIconClass(operation);
+    const paramsLabel =
+        meaningfulKeys.length > 0
+            ? `params: ${meaningfulKeys.join(', ')}`
+            : 'no extra params';
+
+    return `<i class="fas ${iconClass} pattern-admin-icon" aria-hidden="true"></i>` +
+        `<span class="pattern-admin-label">${escapeHtml(truncateText(paramsLabel, 52))}</span>`;
+}
+
+function formatQueryPatternCellContent(query) {
+    if (isKeyListPattern(query.pattern)) {
+        return formatCommandPatternDisplay(query);
+    }
+    return escapeHtml(truncateText(query.pattern, 56));
 }
 
 function toggleInfo(element) {
@@ -3097,23 +3969,31 @@ function copyQueryExample(exampleIndex) {
 // Time Series Analysis Functions
 async function analyzeTimeSeries() {
     if (!currentFileId) return;
-    await refreshIngestStatus(currentFileId);
 
     const namespace = document.getElementById('timeseriesNamespaceFilter').value;
 
     showLoading('Analyzing time-series data...');
 
     try {
+        if (isLargeDatasetMode && currentAnalysisSource !== 'ingest') {
+            showToast('info', 'Waiting for background ingest to finish (large file)…');
+            await waitForIngestReady(currentFileId);
+        } else {
+            await refreshIngestStatus(currentFileId);
+        }
+
         const params = new URLSearchParams();
         if (namespace) params.append('namespace', namespace);
-        params.append('include_raw', String(!isLargeDatasetMode));
+        // Ingest caps raw series at 10k rows — safe for charts on large files.
+        const includeRaw = currentAnalysisSource === 'ingest' || !isLargeDatasetMode;
+        params.append('include_raw', String(includeRaw));
         params.append('source', currentAnalysisSource);
         const url = `/api/analyze/${currentFileId}/timeseries?${params.toString()}`;
 
-        const result = await fetchJson(url, { method: 'POST' }, 'tab-analysis');
+        const result = await fetchJson(url, { method: 'POST' }, REQUEST_GROUP.timeseries);
 
         if (result.status === 'success') {
-            displayTimeSeriesData(result.data);
+            displayTimeSeriesData(result.data, { includeRaw });
         } else {
             showToast('error', 'Time-series analysis failed');
         }
@@ -3125,22 +4005,70 @@ async function analyzeTimeSeries() {
     }
 }
 
-function displayTimeSeriesData(data) {
+function renderTimeSeriesSummary(data, meta = {}) {
+    const panel = document.getElementById('timeseriesSummary');
+    if (!panel) return;
+
+    const total = data.total_slow_queries || 0;
+    const namespaces = (data.unique_namespaces || []).length;
+    const aggQueries = data.aggregated_queries || [];
+    const aggErrors = data.aggregated_errors || [];
+    const hasCharts = (data.slow_queries || []).length > 0 || (data.errors || []).length > 0;
+
+    if (!total && !aggQueries.length && !aggErrors.length) {
+        panel.style.display = 'none';
+        panel.innerHTML = '';
+        return;
+    }
+
+    let chartNote = '';
+    if (!hasCharts && total > 0) {
+        chartNote = meta.includeRaw
+            ? ''
+            : '<p class="timeseries-summary-note"><i class="fas fa-info-circle"></i> Charts are omitted for this large file (aggregated tables below). Ingest completes first for faster reloads.</p>';
+    } else if (hasCharts && total > (data.slow_queries || []).length) {
+        chartNote = `<p class="timeseries-summary-note"><i class="fas fa-info-circle"></i> Charts show a capped sample; tables reflect <strong>${total.toLocaleString()}</strong> slow-query events.</p>`;
+    }
+
+    panel.style.display = 'block';
+    panel.innerHTML = `
+        <div class="timeseries-summary-grid">
+            <div class="timeseries-summary-card">
+                <span class="timeseries-summary-value">${total.toLocaleString()}</span>
+                <span class="timeseries-summary-label">Slow queries</span>
+            </div>
+            <div class="timeseries-summary-card">
+                <span class="timeseries-summary-value">${namespaces}</span>
+                <span class="timeseries-summary-label">Namespaces</span>
+            </div>
+            <div class="timeseries-summary-card">
+                <span class="timeseries-summary-value">${aggErrors.reduce((s, e) => s + e.count, 0).toLocaleString()}</span>
+                <span class="timeseries-summary-label">Errors / warnings</span>
+            </div>
+            <div class="timeseries-summary-card">
+                <span class="timeseries-summary-value">${currentAnalysisSource}</span>
+                <span class="timeseries-summary-label">Data source</span>
+            </div>
+        </div>
+        ${chartNote}
+    `;
+}
+
+function displayTimeSeriesData(data, meta = {}) {
     // Update namespace filter
     const namespaceFilter = document.getElementById('timeseriesNamespaceFilter');
     namespaceFilter.innerHTML = '<option value="">All namespaces</option>';
-    data.unique_namespaces.forEach(ns => {
+    (data.unique_namespaces || []).forEach(ns => {
         const option = document.createElement('option');
         option.value = ns;
         option.textContent = ns;
         namespaceFilter.appendChild(option);
     });
 
+    renderTimeSeriesSummary(data, meta);
+
     // Create slow queries plot
     createSlowQueriesPlot(data.slow_queries);
-
-    // Create connections plot
-    createConnectionsPlot(data.connections);
 
     // Create errors plot
     createErrorsPlot(data.errors);
@@ -3401,7 +4329,7 @@ function syncTimeSeriesZoom(sourceId, eventData) {
     }
 
     // Update all plots except the source
-    const plotIds = ['slowQueriesPlot', 'connectionsPlot', 'errorsPlot'];
+    const plotIds = ['slowQueriesPlot', 'errorsPlot'];
     let syncPromises = [];
 
     plotIds.forEach(plotId => {
