@@ -338,6 +338,15 @@ Package layout: Python package under `pepi/`, tests under `tests/`.
 
 ---
 
+## Contributing
+
+- **`main`** is the release branch (tags and GitHub Releases). **`dev`** is the integration branch for the next release.
+- Open PRs into `dev`; merge to `main` only when shipping a version (with `pepi/version.py`, FAQ, and README aligned).
+- Preserve feature work on topic branches (e.g. `feature/...`); do not force-push `main` without a local backup (see `backups/` snapshots).
+- CI must pass before merge (`Lint and Unit`, integration scope, Python matrix on push).
+
+---
+
 ## Documentation changelog (2.3.0)
 
 **Added:** COLLSCAN Trend UI (Plotly chart, severity cards, namespace table); advanced Queries table (filters, pagination, sticky columns); `/api/analyze/{file_id}/log-context`; integrated parser/advisor enhancements from the feature line while preserving v2.2.4/2.2.5 stabilization (deterministic Time Series ordering, sample-aware cache keys, `query-diagnostics` endpoint).
